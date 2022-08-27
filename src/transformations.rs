@@ -3,56 +3,26 @@
 use std::sync::atomic::AtomicUsize;
 
 use crate::{
-    volume::{VolumeBlock, VolumeWindow, VolumeWindowMut},
-    wavelet::Wavelet,
+    volume::{VolumeBlock, VolumeWindowMut},
+    wavelet::{backwards_window, forwards_window, Wavelet},
 };
 
 pub trait Transformation {
-    fn forwards(&self, wavelet: &impl Wavelet, input: VolumeBlock, steps: &[u32]) -> VolumeBlock;
+    fn forwards(&self, input: VolumeBlock, steps: &[u32]) -> VolumeBlock;
 
-    fn backwards(&self, wavelet: &impl Wavelet, input: VolumeBlock, steps: &[u32]) -> VolumeBlock;
-
-    fn forwards_step(
-        &self,
-        dim: usize,
-        wavelet: &impl Wavelet,
-        input: &VolumeWindow<'_>,
-        low: &mut VolumeWindowMut<'_>,
-        high: &mut VolumeWindowMut<'_>,
-    ) {
-        let input_rows = input.rows(dim);
-        let low_rows = low.rows_mut(dim);
-        let high_rows = high.rows_mut(dim);
-
-        for ((input, mut low), mut high) in input_rows.zip(low_rows).zip(high_rows) {
-            wavelet.forwards(&input, &mut low, &mut high)
-        }
-    }
-
-    fn backwards_step(
-        &self,
-        dim: usize,
-        wavelet: &impl Wavelet,
-        output: &mut VolumeWindowMut<'_>,
-        low: &VolumeWindow<'_>,
-        high: &VolumeWindow<'_>,
-    ) {
-        let output_rows = output.rows_mut(dim);
-        let low_rows = low.rows(dim);
-        let high_rows = high.rows(dim);
-
-        for ((mut output, low), high) in output_rows.zip(low_rows).zip(high_rows) {
-            wavelet.backwards(&low, &high, &mut output)
-        }
-    }
+    fn backwards(&self, input: VolumeBlock, steps: &[u32]) -> VolumeBlock;
 }
 
-pub struct WaveletTransform;
+pub struct WaveletTransform<T: Wavelet>(T);
 
-impl WaveletTransform {
+impl<T: Wavelet> WaveletTransform<T> {
+    /// Constructs a new `WaveletTransform` with the provided wavelet.
+    pub fn new(wavelet: T) -> Self {
+        Self(wavelet)
+    }
+
     fn forw_(
         &self,
-        wavelet: &impl Wavelet,
         input: VolumeWindowMut<'_>,
         output: VolumeWindowMut<'_>,
         ops: &[ForwardsOperation],
@@ -66,7 +36,7 @@ impl WaveletTransform {
         let dim = ops[0].dim;
         let has_high_pass = ops.get(1).map(|o| o.dim > dim).unwrap_or(false);
         let (mut low, mut high) = output.split_into(dim);
-        self.forwards_step(dim, wavelet, &input.window(), &mut low, &mut high);
+        forwards_window(dim, &self.0, &input.window(), &mut low, &mut high);
 
         let (mut input_low, mut input_high) = input.split_into(dim);
         low.copy_to(&mut input_low);
@@ -77,41 +47,26 @@ impl WaveletTransform {
         {
             std::thread::scope(|scope| {
                 let t = scope.spawn(move || {
-                    self.forw_(wavelet, input_low, low, &ops[1..], threads, max_threads);
+                    self.forw_(input_low, low, &ops[1..], threads, max_threads);
                 });
 
                 if has_high_pass {
-                    self.forw_high(
-                        wavelet,
-                        input_high,
-                        high,
-                        &ops[1..],
-                        dim,
-                        (threads, max_threads),
-                    );
+                    self.forw_high(input_high, high, &ops[1..], dim, (threads, max_threads));
                 }
                 t.join().unwrap();
             });
             threads.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         } else {
-            self.forw_(wavelet, input_low, low, &ops[1..], threads, max_threads);
+            self.forw_(input_low, low, &ops[1..], threads, max_threads);
 
             if has_high_pass {
-                self.forw_high(
-                    wavelet,
-                    input_high,
-                    high,
-                    &ops[1..],
-                    dim,
-                    (threads, max_threads),
-                );
+                self.forw_high(input_high, high, &ops[1..], dim, (threads, max_threads));
             }
         }
     }
 
     fn forw_high(
         &self,
-        wavelet: &impl Wavelet,
         input: VolumeWindowMut<'_>,
         output: VolumeWindowMut<'_>,
         ops: &[ForwardsOperation],
@@ -124,7 +79,7 @@ impl WaveletTransform {
 
         let dim = ops[0].dim;
         let (mut low, mut high) = output.split_into(dim);
-        self.forwards_step(dim, wavelet, &input.window(), &mut low, &mut high);
+        forwards_window(dim, &self.0, &input.window(), &mut low, &mut high);
 
         let (mut input_low, mut input_high) = input.split_into(dim);
         low.copy_to(&mut input_low);
@@ -135,22 +90,21 @@ impl WaveletTransform {
         {
             std::thread::scope(|scope| {
                 let t = scope.spawn(move || {
-                    self.forw_high(wavelet, input_low, low, &ops[1..], dim, threads);
+                    self.forw_high(input_low, low, &ops[1..], dim, threads);
                 });
 
-                self.forw_high(wavelet, input_high, high, &ops[1..], dim, threads);
+                self.forw_high(input_high, high, &ops[1..], dim, threads);
                 t.join().unwrap();
             });
             threads.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         } else {
-            self.forw_high(wavelet, input_low, low, &ops[1..], dim, threads);
-            self.forw_high(wavelet, input_high, high, &ops[1..], dim, threads);
+            self.forw_high(input_low, low, &ops[1..], dim, threads);
+            self.forw_high(input_high, high, &ops[1..], dim, threads);
         }
     }
 
     fn back_(
         &self,
-        wavelet: &impl Wavelet,
         mut input: VolumeWindowMut<'_>,
         mut output: VolumeWindowMut<'_>,
         ops: &[BackwardsOperation],
@@ -173,39 +127,25 @@ impl WaveletTransform {
             {
                 std::thread::scope(|scope| {
                     let t = scope.spawn(move || {
-                        self.back_(wavelet, low, output_low, &ops[1..], threads, max_threads);
+                        self.back_(low, output_low, &ops[1..], threads, max_threads);
                     });
 
                     if has_high_pass {
-                        self.back_high(
-                            wavelet,
-                            high,
-                            output_high,
-                            &ops[1..],
-                            dim,
-                            (threads, max_threads),
-                        );
+                        self.back_high(high, output_high, &ops[1..], dim, (threads, max_threads));
                     }
                     t.join().unwrap();
                 });
                 threads.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             } else {
-                self.back_(wavelet, low, output_low, &ops[1..], threads, max_threads);
+                self.back_(low, output_low, &ops[1..], threads, max_threads);
 
                 if has_high_pass {
-                    self.back_high(
-                        wavelet,
-                        high,
-                        output_high,
-                        &ops[1..],
-                        dim,
-                        (threads, max_threads),
-                    );
+                    self.back_high(high, output_high, &ops[1..], dim, (threads, max_threads));
                 }
             }
 
             let (mut low, mut high) = input.split_into(dim);
-            self.backwards_step(dim, wavelet, &mut output, &low.window(), &high.window());
+            backwards_window(dim, &self.0, &mut output, &low.window(), &high.window());
 
             let (output_low, output_high) = output.split_into(dim);
             output_low.copy_to(&mut low);
@@ -215,7 +155,6 @@ impl WaveletTransform {
 
     fn back_high(
         &self,
-        wavelet: &impl Wavelet,
         mut input: VolumeWindowMut<'_>,
         mut output: VolumeWindowMut<'_>,
         ops: &[BackwardsOperation],
@@ -240,20 +179,20 @@ impl WaveletTransform {
             {
                 std::thread::scope(|scope| {
                     let t = scope.spawn(move || {
-                        self.back_high(wavelet, low, output_low, &ops[1..], dim, threads);
+                        self.back_high(low, output_low, &ops[1..], dim, threads);
                     });
 
-                    self.back_high(wavelet, high, output_high, &ops[1..], dim, threads);
+                    self.back_high(high, output_high, &ops[1..], dim, threads);
                     t.join().unwrap();
                 });
                 threads.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             } else {
-                self.back_high(wavelet, low, output_low, &ops[1..], dim, threads);
-                self.back_high(wavelet, high, output_high, &ops[1..], dim, threads);
+                self.back_high(low, output_low, &ops[1..], dim, threads);
+                self.back_high(high, output_high, &ops[1..], dim, threads);
             }
 
             let (mut low, mut high) = input.split_into(dim);
-            self.backwards_step(dim, wavelet, &mut output, &low.window(), &high.window());
+            backwards_window(dim, &self.0, &mut output, &low.window(), &high.window());
 
             let (output_low, output_high) = output.split_into(dim);
             output_low.copy_to(&mut low);
@@ -262,13 +201,8 @@ impl WaveletTransform {
     }
 }
 
-impl Transformation for WaveletTransform {
-    fn forwards(
-        &self,
-        wavelet: &impl Wavelet,
-        mut input: VolumeBlock,
-        steps: &[u32],
-    ) -> VolumeBlock {
+impl<T: Wavelet> Transformation for WaveletTransform<T> {
+    fn forwards(&self, mut input: VolumeBlock, steps: &[u32]) -> VolumeBlock {
         let dims = input.dims();
 
         assert!(dims.len() == steps.len());
@@ -295,24 +229,12 @@ impl Transformation for WaveletTransform {
             .unwrap_or(1);
         let threads = AtomicUsize::new(1);
 
-        self.forw_(
-            wavelet,
-            input_window,
-            output_window,
-            &ops,
-            &threads,
-            max_threads,
-        );
+        self.forw_(input_window, output_window, &ops, &threads, max_threads);
 
         output
     }
 
-    fn backwards(
-        &self,
-        wavelet: &impl Wavelet,
-        mut input: VolumeBlock,
-        steps: &[u32],
-    ) -> VolumeBlock {
+    fn backwards(&self, mut input: VolumeBlock, steps: &[u32]) -> VolumeBlock {
         let dims = input.dims();
 
         assert!(dims.len() == steps.len());
@@ -339,25 +261,22 @@ impl Transformation for WaveletTransform {
             .unwrap_or(1);
         let threads = AtomicUsize::new(1);
 
-        self.back_(
-            wavelet,
-            input_window,
-            output_window,
-            &ops,
-            &threads,
-            max_threads,
-        );
+        self.back_(input_window, output_window, &ops, &threads, max_threads);
 
         output
     }
 }
 
-pub struct WaveletPacketTransform;
+pub struct WaveletPacketTransform<T: Wavelet>(T);
 
-impl WaveletPacketTransform {
+impl<T: Wavelet> WaveletPacketTransform<T> {
+    /// Constructs a new `WaveletPacketTransform` with the provided wavelet.
+    pub fn new(wavelet: T) -> Self {
+        Self(wavelet)
+    }
+
     fn forw_(
         &self,
-        wavelet: &impl Wavelet,
         input: VolumeWindowMut<'_>,
         output: VolumeWindowMut<'_>,
         ops: &[ForwardsOperation],
@@ -370,7 +289,7 @@ impl WaveletPacketTransform {
 
         let dim = ops[0].dim;
         let (mut low, mut high) = output.split_into(dim);
-        self.forwards_step(dim, wavelet, &input.window(), &mut low, &mut high);
+        forwards_window(dim, &self.0, &input.window(), &mut low, &mut high);
 
         let (mut input_low, mut input_high) = input.split_into(dim);
         low.copy_to(&mut input_low);
@@ -381,22 +300,21 @@ impl WaveletPacketTransform {
         {
             std::thread::scope(|scope| {
                 let t = scope.spawn(move || {
-                    self.forw_(wavelet, input_low, low, &ops[1..], threads, max_threads);
+                    self.forw_(input_low, low, &ops[1..], threads, max_threads);
                 });
 
-                self.forw_(wavelet, input_high, high, &ops[1..], threads, max_threads);
+                self.forw_(input_high, high, &ops[1..], threads, max_threads);
                 t.join().unwrap();
             });
             threads.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         } else {
-            self.forw_(wavelet, input_low, low, &ops[1..], threads, max_threads);
-            self.forw_(wavelet, input_high, high, &ops[1..], threads, max_threads);
+            self.forw_(input_low, low, &ops[1..], threads, max_threads);
+            self.forw_(input_high, high, &ops[1..], threads, max_threads);
         }
     }
 
     fn back_(
         &self,
-        wavelet: &impl Wavelet,
         mut input: VolumeWindowMut<'_>,
         mut output: VolumeWindowMut<'_>,
         ops: &[BackwardsOperation],
@@ -417,20 +335,20 @@ impl WaveletPacketTransform {
             {
                 std::thread::scope(|scope| {
                     let t = scope.spawn(move || {
-                        self.back_(wavelet, low, output_low, &ops[1..], threads, max_threads);
+                        self.back_(low, output_low, &ops[1..], threads, max_threads);
                     });
 
-                    self.back_(wavelet, high, output_high, &ops[1..], threads, max_threads);
+                    self.back_(high, output_high, &ops[1..], threads, max_threads);
                     t.join().unwrap();
                 });
                 threads.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             } else {
-                self.back_(wavelet, low, output_low, &ops[1..], threads, max_threads);
-                self.back_(wavelet, high, output_high, &ops[1..], threads, max_threads);
+                self.back_(low, output_low, &ops[1..], threads, max_threads);
+                self.back_(high, output_high, &ops[1..], threads, max_threads);
             }
 
             let (mut low, mut high) = input.split_into(dim);
-            self.backwards_step(dim, wavelet, &mut output, &low.window(), &high.window());
+            backwards_window(dim, &self.0, &mut output, &low.window(), &high.window());
 
             let (output_low, output_high) = output.split_into(dim);
             output_low.copy_to(&mut low);
@@ -439,13 +357,8 @@ impl WaveletPacketTransform {
     }
 }
 
-impl Transformation for WaveletPacketTransform {
-    fn forwards(
-        &self,
-        wavelet: &impl Wavelet,
-        mut input: VolumeBlock,
-        steps: &[u32],
-    ) -> VolumeBlock {
+impl<T: Wavelet> Transformation for WaveletPacketTransform<T> {
+    fn forwards(&self, mut input: VolumeBlock, steps: &[u32]) -> VolumeBlock {
         let dims = input.dims();
 
         assert!(dims.len() == steps.len());
@@ -472,24 +385,12 @@ impl Transformation for WaveletPacketTransform {
             .unwrap_or(1);
         let threads = AtomicUsize::new(1);
 
-        self.forw_(
-            wavelet,
-            input_window,
-            output_window,
-            &ops,
-            &threads,
-            max_threads,
-        );
+        self.forw_(input_window, output_window, &ops, &threads, max_threads);
 
         output
     }
 
-    fn backwards(
-        &self,
-        wavelet: &impl Wavelet,
-        mut input: VolumeBlock,
-        steps: &[u32],
-    ) -> VolumeBlock {
+    fn backwards(&self, mut input: VolumeBlock, steps: &[u32]) -> VolumeBlock {
         let dims = input.dims();
 
         assert!(dims.len() == steps.len());
@@ -516,14 +417,7 @@ impl Transformation for WaveletPacketTransform {
             .unwrap_or(1);
         let threads = AtomicUsize::new(1);
 
-        self.back_(
-            wavelet,
-            input_window,
-            output_window,
-            &ops,
-            &threads,
-            max_threads,
-        );
+        self.back_(input_window, output_window, &ops, &threads, max_threads);
 
         output
     }
@@ -600,7 +494,7 @@ mod tests {
     use crate::{
         transformations::WaveletTransform,
         volume::VolumeBlock,
-        wavelet::{HaarAverageWavelet, HaarWavelet, Wavelet},
+        wavelet::{HaarAverageWavelet, HaarWavelet},
     };
 
     use super::{Transformation, WaveletPacketTransform};
@@ -615,13 +509,12 @@ mod tests {
         let block_clone = block.clone();
         println!("Block {:?}", block);
 
-        let transform = WaveletTransform;
-        let wavelet = HaarWavelet;
+        let transform = WaveletTransform::new(HaarWavelet);
 
-        let transformed = transform.forwards(&wavelet, block, &[3]);
+        let transformed = transform.forwards(block, &[3]);
         println!("Transformed {:?}", transformed);
 
-        let backwards = transform.backwards(&wavelet, transformed, &[3]);
+        let backwards = transform.backwards(transformed, &[3]);
         println!("Original {:?}", backwards);
         assert!(block_clone.is_equal(&backwards, TRANSFORM_ERROR));
     }
@@ -634,13 +527,12 @@ mod tests {
         let block_clone = block.clone();
         println!("Block {:?}", block);
 
-        let transform = WaveletTransform;
-        let wavelet = HaarAverageWavelet;
+        let transform = WaveletTransform::new(HaarAverageWavelet);
 
-        let transformed = transform.forwards(&wavelet, block, &[1, 1, 1]);
+        let transformed = transform.forwards(block, &[1, 1, 1]);
         println!("Transformed {:?}", transformed);
 
-        let backwards = transform.backwards(&wavelet, transformed, &[1, 1, 1]);
+        let backwards = transform.backwards(transformed, &[1, 1, 1]);
         println!("Original {:?}", backwards);
         assert!(block_clone.is_equal(&backwards, TRANSFORM_ERROR));
     }
@@ -658,11 +550,10 @@ mod tests {
         let block_clone = block.clone();
 
         let steps = dims.map(|d| d.ilog2());
-        let transform = WaveletTransform;
-        let wavelet = HaarAverageWavelet;
+        let transform = WaveletTransform::new(HaarAverageWavelet);
 
-        let transformed = transform.forwards(&wavelet, block, &steps);
-        let backwards = transform.backwards(&wavelet, transformed, &steps);
+        let transformed = transform.forwards(block, &steps);
+        let backwards = transform.backwards(transformed, &steps);
         assert!(block_clone.is_equal(&backwards, TRANSFORM_ERROR));
     }
 
@@ -675,16 +566,8 @@ mod tests {
         let img_forwards_path = res_path.join("img_forwards_haar.png");
         let img_backwards_path = res_path.join("img_backwards_haar.png");
 
-        let transform = WaveletTransform;
-        let wavelet = HaarWavelet;
-
-        build_img(
-            transform,
-            wavelet,
-            img_path,
-            img_forwards_path,
-            img_backwards_path,
-        );
+        let transform = WaveletTransform::new(HaarWavelet);
+        build_img(transform, img_path, img_forwards_path, img_backwards_path);
     }
 
     #[test]
@@ -696,16 +579,8 @@ mod tests {
         let img_forwards_path = res_path.join("img_forwards_haar_average.png");
         let img_backwards_path = res_path.join("img_backwards_haar_average.png");
 
-        let transform = WaveletTransform;
-        let wavelet = HaarAverageWavelet;
-
-        build_img(
-            transform,
-            wavelet,
-            img_path,
-            img_forwards_path,
-            img_backwards_path,
-        );
+        let transform = WaveletTransform::new(HaarAverageWavelet);
+        build_img(transform, img_path, img_forwards_path, img_backwards_path);
     }
 
     #[test]
@@ -716,13 +591,12 @@ mod tests {
         let block_clone = block.clone();
         println!("Block {:?}", block);
 
-        let transform = WaveletPacketTransform;
-        let wavelet = HaarWavelet;
+        let transform = WaveletPacketTransform::new(HaarWavelet);
 
-        let transformed = transform.forwards(&wavelet, block, &[3]);
+        let transformed = transform.forwards(block, &[3]);
         println!("Transformed {:?}", transformed);
 
-        let backwards = transform.backwards(&wavelet, transformed, &[3]);
+        let backwards = transform.backwards(transformed, &[3]);
         println!("Original {:?}", backwards);
         assert!(block_clone.is_equal(&backwards, TRANSFORM_ERROR));
     }
@@ -735,13 +609,12 @@ mod tests {
         let block_clone = block.clone();
         println!("Block {:?}", block);
 
-        let transform = WaveletPacketTransform;
-        let wavelet = HaarAverageWavelet;
+        let transform = WaveletPacketTransform::new(HaarAverageWavelet);
 
-        let transformed = transform.forwards(&wavelet, block, &[1, 1, 1]);
+        let transformed = transform.forwards(block, &[1, 1, 1]);
         println!("Transformed {:?}", transformed);
 
-        let backwards = transform.backwards(&wavelet, transformed, &[1, 1, 1]);
+        let backwards = transform.backwards(transformed, &[1, 1, 1]);
         println!("Original {:?}", backwards);
         assert!(block_clone.is_equal(&backwards, TRANSFORM_ERROR));
     }
@@ -759,11 +632,10 @@ mod tests {
         let block_clone = block.clone();
 
         let steps = dims.map(|d| d.ilog2());
-        let transform = WaveletPacketTransform;
-        let wavelet = HaarAverageWavelet;
+        let transform = WaveletPacketTransform::new(HaarAverageWavelet);
 
-        let transformed = transform.forwards(&wavelet, block, &steps);
-        let backwards = transform.backwards(&wavelet, transformed, &steps);
+        let transformed = transform.forwards(block, &steps);
+        let backwards = transform.backwards(transformed, &steps);
         assert!(block_clone.is_equal(&backwards, TRANSFORM_ERROR));
     }
 
@@ -776,16 +648,8 @@ mod tests {
         let img_forwards_path = res_path.join("img_forwards_haar_package.png");
         let img_backwards_path = res_path.join("img_backwards_haar_package.png");
 
-        let transform = WaveletPacketTransform;
-        let wavelet = HaarWavelet;
-
-        build_img(
-            transform,
-            wavelet,
-            img_path,
-            img_forwards_path,
-            img_backwards_path,
-        );
+        let transform = WaveletPacketTransform::new(HaarWavelet);
+        build_img(transform, img_path, img_forwards_path, img_backwards_path);
     }
 
     #[test]
@@ -797,21 +661,12 @@ mod tests {
         let img_forwards_path = res_path.join("img_forwards_haar_average_package.png");
         let img_backwards_path = res_path.join("img_backwards_haar_average_package.png");
 
-        let transform = WaveletPacketTransform;
-        let wavelet = HaarAverageWavelet;
-
-        build_img(
-            transform,
-            wavelet,
-            img_path,
-            img_forwards_path,
-            img_backwards_path,
-        );
+        let transform = WaveletPacketTransform::new(HaarAverageWavelet);
+        build_img(transform, img_path, img_forwards_path, img_backwards_path);
     }
 
     fn build_img(
         transform: impl Transformation,
-        wavelet: impl Wavelet,
         img_path: impl AsRef<Path>,
         img_forwards_path: impl AsRef<Path>,
         img_backwards_path: impl AsRef<Path>,
@@ -840,9 +695,9 @@ mod tests {
         let g_volume = VolumeBlock::new_with_data(&volume_dims, g_data).unwrap();
         let b_volume = VolumeBlock::new_with_data(&volume_dims, b_data).unwrap();
 
-        let r_volume = transform.forwards(&wavelet, r_volume, &steps);
-        let g_volume = transform.forwards(&wavelet, g_volume, &steps);
-        let b_volume = transform.forwards(&wavelet, b_volume, &steps);
+        let r_volume = transform.forwards(r_volume, &steps);
+        let g_volume = transform.forwards(g_volume, &steps);
+        let b_volume = transform.forwards(b_volume, &steps);
 
         let mut img = image::Rgb32FImage::new(width as u32, height as u32);
         for (((rgb, r), g), b) in img
@@ -856,9 +711,9 @@ mod tests {
         let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
         img.save(img_forwards_path).unwrap();
 
-        let r_volume = transform.backwards(&wavelet, r_volume, &steps);
-        let g_volume = transform.backwards(&wavelet, g_volume, &steps);
-        let b_volume = transform.backwards(&wavelet, b_volume, &steps);
+        let r_volume = transform.backwards(r_volume, &steps);
+        let g_volume = transform.backwards(g_volume, &steps);
+        let b_volume = transform.backwards(b_volume, &steps);
 
         let mut img = image::Rgb32FImage::new(width as u32, height as u32);
         for (((rgb, r), g), b) in img

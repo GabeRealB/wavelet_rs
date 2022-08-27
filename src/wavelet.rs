@@ -1,6 +1,6 @@
 //! Definition of common wavelets.
 
-use crate::volume::{Row, RowMut};
+use crate::volume::{Row, RowMut, VolumeWindow, VolumeWindowMut};
 
 pub trait Wavelet: Sync {
     fn forwards(&self, input: &Row<'_>, low: &mut RowMut<'_>, high: &mut RowMut<'_>);
@@ -68,5 +68,41 @@ impl Wavelet for HaarAverageWavelet {
             output[idx_left] = left;
             output[idx_right] = right;
         }
+    }
+}
+
+/// Applies the forward procedure on each row of a [`VolumeWindow`]
+/// across the dimension `dim`.
+pub fn forwards_window(
+    dim: usize,
+    wavelet: &impl Wavelet,
+    input: &VolumeWindow<'_>,
+    low: &mut VolumeWindowMut<'_>,
+    high: &mut VolumeWindowMut<'_>,
+) {
+    let input_rows = input.rows(dim);
+    let low_rows = low.rows_mut(dim);
+    let high_rows = high.rows_mut(dim);
+
+    for ((input, mut low), mut high) in input_rows.zip(low_rows).zip(high_rows) {
+        wavelet.forwards(&input, &mut low, &mut high)
+    }
+}
+
+/// Applies the backwards procedure on each row of the low and high pass [`VolumeWindow`]s
+/// across the dimension `dim`.
+pub fn backwards_window(
+    dim: usize,
+    wavelet: &impl Wavelet,
+    output: &mut VolumeWindowMut<'_>,
+    low: &VolumeWindow<'_>,
+    high: &VolumeWindow<'_>,
+) {
+    let output_rows = output.rows_mut(dim);
+    let low_rows = low.rows(dim);
+    let high_rows = high.rows(dim);
+
+    for ((mut output, low), high) in output_rows.zip(low_rows).zip(high_rows) {
+        wavelet.backwards(&low, &high, &mut output)
     }
 }
