@@ -139,6 +139,16 @@ impl VolumeBlock {
                 .all(|(this, other)| (*this - *other).abs() < eps)
     }
 
+    /// Returns a slice to the flat representation of the volume.
+    pub fn flatten(&self) -> &[f32] {
+        &self.data
+    }
+
+    /// Returns a mutable slice to the flat representation of the volume.
+    pub fn flatten_mut(&mut self) -> &mut [f32] {
+        &mut self.data
+    }
+
     fn flatten_idx(&self, index: &[usize]) -> usize {
         assert!(index.len() == self.dims.len());
 
