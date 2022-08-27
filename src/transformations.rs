@@ -38,142 +38,73 @@ impl WaveletTransform {}
 pub struct WaveletPacketTransform;
 
 impl WaveletPacketTransform {
-    #[allow(clippy::too_many_arguments)]
     fn forwards_impl(
         &self,
         wavelet: &impl Wavelet,
         input: VolumeWindowMut<'_>,
         output: VolumeWindowMut<'_>,
-        steps: &[u32],
-        steps_taken: &mut [u32],
-        dim: usize,
+        ops: &[ForwardsOperation],
         threads: &AtomicUsize,
         max_threads: usize,
     ) {
-        let can_continue = steps
-            .iter()
-            .zip(steps_taken.iter())
-            .any(|(steps, taken)| taken < steps);
-        if !can_continue {
+        if ops.is_empty() {
             return;
         }
 
-        let next_dim = (dim + 1) % steps.len();
-        let transform = steps_taken[dim] < steps[dim];
-        if transform {
-            let (mut low, mut high) = output.split_into(dim);
-            self.forwards_step(dim, wavelet, &input.window(), &mut low, &mut high);
+        let dim = ops[0].dim;
+        let (mut low, mut high) = output.split_into(dim);
+        self.forwards_step(dim, wavelet, &input.window(), &mut low, &mut high);
 
-            steps_taken[dim] += 1;
-            let (mut input_low, mut input_high) = input.split_into(dim);
-            low.copy_to(&mut input_low);
-            high.copy_to(&mut input_high);
+        let (mut input_low, mut input_high) = input.split_into(dim);
+        low.copy_to(&mut input_low);
+        high.copy_to(&mut input_high);
 
-            if threads.fetch_add(1, std::sync::atomic::Ordering::AcqRel) < max_threads {
-                let mut steps_taken_clone = Vec::from(&*steps_taken);
-                std::thread::scope(|scope| {
-                    let t = scope.spawn(move || {
-                        self.forwards_impl(
-                            wavelet,
-                            input_low,
-                            low,
-                            steps,
-                            &mut steps_taken_clone,
-                            next_dim,
-                            threads,
-                            max_threads,
-                        );
-                    });
-
-                    self.forwards_impl(
-                        wavelet,
-                        input_high,
-                        high,
-                        steps,
-                        steps_taken,
-                        next_dim,
-                        threads,
-                        max_threads,
-                    );
-                    t.join().unwrap();
+        if threads.load(std::sync::atomic::Ordering::Relaxed) < max_threads
+            && threads.fetch_add(1, std::sync::atomic::Ordering::AcqRel) < max_threads
+        {
+            std::thread::scope(|scope| {
+                let t = scope.spawn(move || {
+                    self.forwards_impl(wavelet, input_low, low, &ops[1..], threads, max_threads);
                 });
-            } else {
-                self.forwards_impl(
-                    wavelet,
-                    input_low,
-                    low,
-                    steps,
-                    steps_taken,
-                    next_dim,
-                    threads,
-                    max_threads,
-                );
-                self.forwards_impl(
-                    wavelet,
-                    input_high,
-                    high,
-                    steps,
-                    steps_taken,
-                    next_dim,
-                    threads,
-                    max_threads,
-                );
-            }
 
-            steps_taken[dim] -= 1;
+                self.forwards_impl(wavelet, input_high, high, &ops[1..], threads, max_threads);
+                t.join().unwrap();
+            });
+            threads.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         } else {
-            self.forwards_impl(
-                wavelet,
-                input,
-                output,
-                steps,
-                steps_taken,
-                next_dim,
-                threads,
-                max_threads,
-            );
+            self.forwards_impl(wavelet, input_low, low, &ops[1..], threads, max_threads);
+            self.forwards_impl(wavelet, input_high, high, &ops[1..], threads, max_threads);
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn backwards_impl(
         &self,
         wavelet: &impl Wavelet,
         mut input: VolumeWindowMut<'_>,
         mut output: VolumeWindowMut<'_>,
-        steps: &[u32],
-        steps_taken: &mut [u32],
-        dim: usize,
+        ops: &[BackwardsOperation],
         threads: &AtomicUsize,
         max_threads: usize,
     ) {
-        let can_continue = steps
-            .iter()
-            .zip(steps_taken.iter())
-            .any(|(steps, taken)| taken < steps);
-        if !can_continue {
+        if ops.is_empty() {
             return;
         }
 
-        let next_dim = (dim + 1) % steps.len();
-        let transform = steps_taken[dim] < steps[dim];
-        if transform {
+        #[allow(irrefutable_let_patterns)]
+        if let BackwardsOperation::Backwards { dim } = ops[0] {
             let (low, high) = input.split_mut(dim);
             let (output_low, output_high) = output.split_mut(dim);
 
-            steps_taken[dim] += 1;
-
-            if threads.fetch_add(1, std::sync::atomic::Ordering::AcqRel) < max_threads {
-                let mut steps_taken_clone = Vec::from(&*steps_taken);
+            if threads.load(std::sync::atomic::Ordering::Relaxed) < max_threads
+                && threads.fetch_add(1, std::sync::atomic::Ordering::AcqRel) < max_threads
+            {
                 std::thread::scope(|scope| {
                     let t = scope.spawn(move || {
                         self.backwards_impl(
                             wavelet,
                             low,
                             output_low,
-                            steps,
-                            &mut steps_taken_clone,
-                            next_dim,
+                            &ops[1..],
                             threads,
                             max_threads,
                         );
@@ -183,37 +114,17 @@ impl WaveletPacketTransform {
                         wavelet,
                         high,
                         output_high,
-                        steps,
-                        steps_taken,
-                        next_dim,
+                        &ops[1..],
                         threads,
                         max_threads,
                     );
                     t.join().unwrap();
                 });
+                threads.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
             } else {
-                self.backwards_impl(
-                    wavelet,
-                    low,
-                    output_low,
-                    steps,
-                    steps_taken,
-                    next_dim,
-                    threads,
-                    max_threads,
-                );
-                self.backwards_impl(
-                    wavelet,
-                    high,
-                    output_high,
-                    steps,
-                    steps_taken,
-                    next_dim,
-                    threads,
-                    max_threads,
-                );
+                self.backwards_impl(wavelet, low, output_low, &ops[1..], threads, max_threads);
+                self.backwards_impl(wavelet, high, output_high, &ops[1..], threads, max_threads);
             }
-            steps_taken[dim] -= 1;
 
             let (mut low, mut high) = input.split_into(dim);
             self.backwards_step(dim, wavelet, &mut output, &low.window(), &high.window());
@@ -221,17 +132,6 @@ impl WaveletPacketTransform {
             let (output_low, output_high) = output.split_into(dim);
             output_low.copy_to(&mut low);
             output_high.copy_to(&mut high);
-        } else {
-            self.backwards_impl(
-                wavelet,
-                input,
-                output,
-                steps,
-                steps_taken,
-                next_dim,
-                threads,
-                max_threads,
-            );
         }
     }
 }
@@ -259,7 +159,7 @@ impl Transformation for WaveletPacketTransform {
             return input;
         }
 
-        let mut steps_taken = vec![0u32; steps.len()];
+        let ops = ForwardsOperation::new(steps);
         let mut output = VolumeBlock::new(dims).unwrap();
         let input_window = input.window_mut();
         let output_window = output.window_mut();
@@ -273,9 +173,7 @@ impl Transformation for WaveletPacketTransform {
             wavelet,
             input_window,
             output_window,
-            steps,
-            &mut steps_taken,
-            0,
+            &ops,
             &threads,
             max_threads,
         );
@@ -305,7 +203,7 @@ impl Transformation for WaveletPacketTransform {
             return input;
         }
 
-        let mut steps_taken = vec![0u32; steps.len()];
+        let ops = BackwardsOperation::new(steps);
         let mut output = VolumeBlock::new(dims).unwrap();
         let input_window = input.window_mut();
         let output_window = output.window_mut();
@@ -319,9 +217,7 @@ impl Transformation for WaveletPacketTransform {
             wavelet,
             input_window,
             output_window,
-            steps,
-            &mut steps_taken,
-            0,
+            &ops,
             &threads,
             max_threads,
         );
@@ -361,6 +257,60 @@ impl Transformation for WaveletPacketTransform {
         for ((mut output, low), high) in output_rows.zip(low_rows).zip(high_rows) {
             wavelet.backwards(&low, &high, &mut output)
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ForwardsOperation {
+    dim: usize,
+}
+
+impl ForwardsOperation {
+    fn new(steps: &[u32]) -> Vec<Self> {
+        let mut ops = Vec::new();
+        let mut step = vec![0; steps.len()];
+
+        let mut stop = false;
+        while !stop {
+            stop = true;
+
+            for (i, (step, max)) in step.iter_mut().zip(steps).enumerate() {
+                if *step < *max {
+                    *step += 1;
+                    stop = false;
+                    ops.push(Self { dim: i });
+                }
+            }
+        }
+
+        ops
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BackwardsOperation {
+    Backwards { dim: usize },
+}
+
+impl BackwardsOperation {
+    fn new(steps: &[u32]) -> Vec<Self> {
+        let mut ops = Vec::new();
+        let mut step = vec![0; steps.len()];
+
+        let mut stop = false;
+        while !stop {
+            stop = true;
+
+            for (i, (step, max)) in step.iter_mut().zip(steps).enumerate() {
+                if *step < *max {
+                    *step += 1;
+                    stop = false;
+                    ops.push(BackwardsOperation::Backwards { dim: i });
+                }
+            }
+        }
+
+        ops
     }
 }
 
