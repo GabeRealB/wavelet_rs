@@ -57,7 +57,7 @@ impl<T: Num + Copy> VolumeBlock<T> {
 
         if dims.is_empty() {
             Err(VolumeError::ZeroBlockLength)
-        } else if let Some(len) = dims.iter().find(|&&len| len == 0 || !len.is_power_of_two()) {
+        } else if let Some(len) = dims.iter().find(|&&len| len == 0) {
             Err(VolumeError::InvalidDimensionLenght { length: *len })
         } else if num_elements != data.len() {
             Err(VolumeError::InvalidNumberOfElements {
@@ -293,7 +293,7 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
     /// assert_eq!(bottom[[1usize, 0usize].as_ref()], 4.0);
     /// ```
     pub fn split(&self, dim: usize) -> (VolumeWindow<'_, T>, VolumeWindow<'_, T>) {
-        assert!(self.dims[dim] > 1);
+        assert!(self.dims[dim] % 2 == 0);
         let mut dims = self.dims.clone();
         let offsets_left = self.dim_offsets.clone();
         let mut offsets_right = offsets_left.clone();
@@ -347,7 +347,7 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
     /// assert_eq!(bottom[[1usize, 0usize].as_ref()], 4.0);
     /// ```
     pub fn split_into(self, dim: usize) -> (VolumeWindow<'a, T>, VolumeWindow<'a, T>) {
-        assert!(self.dims[dim] > 1);
+        assert!(self.dims[dim] % 2 == 0);
         let mut dims = self.dims;
         let offsets_left = self.dim_offsets;
         let mut offsets_right = offsets_left.clone();
@@ -559,7 +559,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     /// assert_eq!(bottom[[1usize, 0usize].as_ref()], 4.0);
     /// ```
     pub fn split(&self, dim: usize) -> (VolumeWindow<'_, T>, VolumeWindow<'_, T>) {
-        assert!(self.dims[dim] > 1);
+        assert!(self.dims[dim] % 2 == 0);
         let mut dims = self.dims.clone();
         let offsets_left = self.dim_offsets.clone();
         let mut offsets_right = offsets_left.clone();
@@ -612,7 +612,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     /// assert_eq!(bottom[[1usize, 0usize].as_ref()], 4.0);
     /// ```
     pub fn split_mut(&mut self, dim: usize) -> (VolumeWindowMut<'_, T>, VolumeWindowMut<'_, T>) {
-        assert!(self.dims[dim] > 1);
+        assert!(self.dims[dim] % 2 == 0);
         let mut dims = self.dims.clone();
         let offsets_left = self.dim_offsets.clone();
         let mut offsets_right = offsets_left.clone();
@@ -666,7 +666,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     /// assert_eq!(bottom[[1usize, 0usize].as_ref()], 4.0);
     /// ```
     pub fn split_into(self, dim: usize) -> (VolumeWindowMut<'a, T>, VolumeWindowMut<'a, T>) {
-        assert!(self.dims[dim] > 1);
+        assert!(self.dims[dim] % 2 == 0);
         let mut dims = self.dims;
         let offsets_left = self.dim_offsets;
         let mut offsets_right = offsets_left.clone();

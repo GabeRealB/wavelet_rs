@@ -7,6 +7,8 @@ use std::{
 
 use num_traits::{Float, FloatConst, Num, NumCast, One, ToPrimitive, Zero};
 
+use crate::transformations::Lerp;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Vector<T, const N: usize>([T; N]);
 
@@ -484,6 +486,15 @@ impl<T: Neg, const N: usize> Neg for Vector<T, N> {
     #[inline]
     fn neg(self) -> Self::Output {
         Vector(self.0.map(|v| v.neg()))
+    }
+}
+
+impl<T: Lerp, const N: usize> Lerp for Vector<T, N> {
+    type Output = Vector<T::Output, N>;
+
+    #[inline]
+    fn lerp(self, other: Self, t: f32) -> Self {
+        Vector(zip_array(self.0, other.0).map(|(l, r)| l.lerp(r, t)))
     }
 }
 
