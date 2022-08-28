@@ -495,6 +495,7 @@ mod tests {
 
     use crate::{
         transformations::WaveletTransform,
+        vector::Vector,
         volume::VolumeBlock,
         wavelet::{HaarAverageWavelet, HaarWavelet},
     };
@@ -668,7 +669,7 @@ mod tests {
     }
 
     fn build_img(
-        transform: impl Transformation<f32>,
+        transform: impl Transformation<Vector<f32, 3>>,
         img_path: impl AsRef<Path>,
         img_forwards_path: impl AsRef<Path>,
         img_backwards_path: impl AsRef<Path>,
@@ -680,51 +681,25 @@ mod tests {
             .to_rgb32f();
 
         let (width, height) = (img.width() as usize, img.height() as usize);
-        let mut r_data = Vec::with_capacity(width * height);
-        let mut g_data = Vec::with_capacity(width * height);
-        let mut b_data = Vec::with_capacity(width * height);
-
-        for p in img.pixels() {
-            let [r, g, b] = p.0;
-            r_data.push(r);
-            g_data.push(g);
-            b_data.push(b);
-        }
+        let data: Vec<_> = img.pixels().map(|p| Vector::new(p.0)).collect();
 
         let volume_dims = [width, height];
         let steps = [2, 2];
-        let r_volume = VolumeBlock::new_with_data(&volume_dims, r_data).unwrap();
-        let g_volume = VolumeBlock::new_with_data(&volume_dims, g_data).unwrap();
-        let b_volume = VolumeBlock::new_with_data(&volume_dims, b_data).unwrap();
-
-        let r_volume = transform.forwards(r_volume, &steps);
-        let g_volume = transform.forwards(g_volume, &steps);
-        let b_volume = transform.forwards(b_volume, &steps);
+        let volume = VolumeBlock::new_with_data(&volume_dims, data).unwrap();
+        let volume = transform.forwards(volume, &steps);
 
         let mut img = image::Rgb32FImage::new(width as u32, height as u32);
-        for (((rgb, r), g), b) in img
-            .pixels_mut()
-            .zip(r_volume.flatten())
-            .zip(g_volume.flatten())
-            .zip(b_volume.flatten())
-        {
-            rgb.0 = [*r, *g, *b];
+        for (p, rgb) in img.pixels_mut().zip(volume.flatten()) {
+            p.0 = *rgb.as_ref();
         }
         let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
         img.save(img_forwards_path).unwrap();
 
-        let r_volume = transform.backwards(r_volume, &steps);
-        let g_volume = transform.backwards(g_volume, &steps);
-        let b_volume = transform.backwards(b_volume, &steps);
+        let volume = transform.backwards(volume, &steps);
 
         let mut img = image::Rgb32FImage::new(width as u32, height as u32);
-        for (((rgb, r), g), b) in img
-            .pixels_mut()
-            .zip(r_volume.flatten())
-            .zip(g_volume.flatten())
-            .zip(b_volume.flatten())
-        {
-            rgb.0 = [*r, *g, *b];
+        for (p, rgb) in img.pixels_mut().zip(volume.flatten()) {
+            p.0 = *rgb.as_ref();
         }
         let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
         img.save(img_backwards_path).unwrap();

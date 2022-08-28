@@ -8,7 +8,7 @@ use std::{
 use num_traits::{Float, Num};
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VolumeBlock<T: Num + Copy> {
     data: Vec<T>,
     dims: Vec<usize>,
