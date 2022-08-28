@@ -1,39 +1,41 @@
 //! Definition of common wavelets.
 
+use num_traits::{Float, FloatConst, Num};
+
 use crate::volume::{Row, RowMut, VolumeWindow, VolumeWindowMut};
 
-pub trait Wavelet: Sync {
-    fn forwards(&self, input: &Row<'_>, low: &mut RowMut<'_>, high: &mut RowMut<'_>);
-    fn backwards(&self, low: &Row<'_>, high: &Row<'_>, output: &mut RowMut<'_>);
+pub trait Wavelet<T: Num + Copy>: Sync {
+    fn forwards(&self, input: &Row<'_, T>, low: &mut RowMut<'_, T>, high: &mut RowMut<'_, T>);
+    fn backwards(&self, low: &Row<'_, T>, high: &Row<'_, T>, output: &mut RowMut<'_, T>);
 }
 
 pub struct HaarWavelet;
 
-impl HaarWavelet {
-    const VALUE: f32 = std::f32::consts::FRAC_1_SQRT_2;
-}
+impl<T: Float + FloatConst> Wavelet<T> for HaarWavelet {
+    fn forwards(&self, input: &Row<'_, T>, low: &mut RowMut<'_, T>, high: &mut RowMut<'_, T>) {
+        let value = T::FRAC_1_SQRT_2();
 
-impl Wavelet for HaarWavelet {
-    fn forwards(&self, input: &Row<'_>, low: &mut RowMut<'_>, high: &mut RowMut<'_>) {
         for (i, (low, high)) in low.iter().zip(high.iter()).enumerate() {
             let idx_left = (2 * i) % input.len();
             let idx_right = ((2 * i) + 1) % input.len();
 
-            let sum = Self::VALUE * (input[idx_right] + input[idx_left]);
-            let diff = Self::VALUE * (input[idx_right] - input[idx_left]);
+            let sum = value * (input[idx_right] + input[idx_left]);
+            let diff = value * (input[idx_right] - input[idx_left]);
 
             *low = sum;
             *high = diff;
         }
     }
 
-    fn backwards(&self, low: &Row<'_>, high: &Row<'_>, output: &mut RowMut<'_>) {
+    fn backwards(&self, low: &Row<'_, T>, high: &Row<'_, T>, output: &mut RowMut<'_, T>) {
+        let value = T::FRAC_1_SQRT_2();
+
         for (i, (low, high)) in low.iter().zip(high.iter()).enumerate() {
             let idx_left = (2 * i) % output.len();
             let idx_right = ((2 * i) + 1) % output.len();
 
-            let left = Self::VALUE * (low - high);
-            let right = Self::VALUE * (low + high);
+            let left = value * (*low - *high);
+            let right = value * (*low + *high);
 
             output[idx_left] = left;
             output[idx_right] = right;
@@ -43,13 +45,15 @@ impl Wavelet for HaarWavelet {
 
 pub struct HaarAverageWavelet;
 
-impl Wavelet for HaarAverageWavelet {
-    fn forwards(&self, input: &Row<'_>, low: &mut RowMut<'_>, high: &mut RowMut<'_>) {
+impl<T: Float + FloatConst> Wavelet<T> for HaarAverageWavelet {
+    fn forwards(&self, input: &Row<'_, T>, low: &mut RowMut<'_, T>, high: &mut RowMut<'_, T>) {
+        let two = T::from(2.0).unwrap();
+
         for (i, (low, high)) in low.iter().zip(high.iter()).enumerate() {
             let idx_left = (2 * i) % input.len();
             let idx_right = ((2 * i) + 1) % input.len();
 
-            let average = (input[idx_right] + input[idx_left]) / 2.0;
+            let average = (input[idx_right] + input[idx_left]) / two;
             let diff = input[idx_left] - average;
 
             *low = average;
@@ -57,13 +61,15 @@ impl Wavelet for HaarAverageWavelet {
         }
     }
 
-    fn backwards(&self, low: &Row<'_>, high: &Row<'_>, output: &mut RowMut<'_>) {
+    fn backwards(&self, low: &Row<'_, T>, high: &Row<'_, T>, output: &mut RowMut<'_, T>) {
+        let two = T::from(2.0).unwrap();
+
         for (i, (low, high)) in low.iter().zip(high.iter()).enumerate() {
             let idx_left = (2 * i) % output.len();
             let idx_right = ((2 * i) + 1) % output.len();
 
-            let left = high + low;
-            let right = (2.0 * low) - left;
+            let left = *high + *low;
+            let right = (two * *low) - left;
 
             output[idx_left] = left;
             output[idx_right] = right;
@@ -73,12 +79,12 @@ impl Wavelet for HaarAverageWavelet {
 
 /// Applies the forward procedure on each row of a [`VolumeWindow`]
 /// across the dimension `dim`.
-pub fn forwards_window(
+pub fn forwards_window<T: Num + Copy>(
     dim: usize,
-    wavelet: &impl Wavelet,
-    input: &VolumeWindow<'_>,
-    low: &mut VolumeWindowMut<'_>,
-    high: &mut VolumeWindowMut<'_>,
+    wavelet: &impl Wavelet<T>,
+    input: &VolumeWindow<'_, T>,
+    low: &mut VolumeWindowMut<'_, T>,
+    high: &mut VolumeWindowMut<'_, T>,
 ) {
     let input_rows = input.rows(dim);
     let low_rows = low.rows_mut(dim);
@@ -91,12 +97,12 @@ pub fn forwards_window(
 
 /// Applies the backwards procedure on each row of the low and high pass [`VolumeWindow`]s
 /// across the dimension `dim`.
-pub fn backwards_window(
+pub fn backwards_window<T: Num + Copy>(
     dim: usize,
-    wavelet: &impl Wavelet,
-    output: &mut VolumeWindowMut<'_>,
-    low: &VolumeWindow<'_>,
-    high: &VolumeWindow<'_>,
+    wavelet: &impl Wavelet<T>,
+    output: &mut VolumeWindowMut<'_, T>,
+    low: &VolumeWindow<'_, T>,
+    high: &VolumeWindow<'_, T>,
 ) {
     let output_rows = output.rows_mut(dim);
     let low_rows = low.rows(dim);

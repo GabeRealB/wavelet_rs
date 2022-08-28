@@ -5,15 +5,16 @@ use std::{
     ops::{Index, IndexMut},
 };
 
+use num_traits::{Float, Num};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
-pub struct VolumeBlock {
-    data: Vec<f32>,
+pub struct VolumeBlock<T: Num + Copy> {
+    data: Vec<T>,
     dims: Vec<usize>,
 }
 
-impl VolumeBlock {
+impl<T: Num + Copy> VolumeBlock<T> {
     /// Constructs a new block.
     ///
     /// # Examples
@@ -31,7 +32,7 @@ impl VolumeBlock {
     /// ```
     pub fn new(dims: &[usize]) -> Result<Self, VolumeError> {
         let num_elements = dims.iter().product();
-        let data = vec![0.0; num_elements];
+        let data = vec![T::zero(); num_elements];
         Self::new_with_data(dims, data)
     }
 
@@ -51,7 +52,7 @@ impl VolumeBlock {
     /// assert_eq!(block[[0usize, 1usize].as_ref()], 3.0);
     /// assert_eq!(block[[1usize, 1usize].as_ref()], 4.0);
     /// ```
-    pub fn new_with_data(dims: &[usize], data: Vec<f32>) -> Result<Self, VolumeError> {
+    pub fn new_with_data(dims: &[usize], data: Vec<T>) -> Result<Self, VolumeError> {
         let num_elements = dims.iter().product();
 
         if dims.is_empty() {
@@ -93,7 +94,7 @@ impl VolumeBlock {
     /// assert_eq!(window[[0usize, 1usize].as_ref()], 3.0);
     /// assert_eq!(window[[1usize, 1usize].as_ref()], 4.0);
     /// ```
-    pub fn window(&self) -> VolumeWindow<'_> {
+    pub fn window(&self) -> VolumeWindow<'_, T> {
         VolumeWindow {
             block: self,
             dims: self.dims.clone(),
@@ -119,7 +120,7 @@ impl VolumeBlock {
     /// assert_eq!(window[[0usize, 1usize].as_ref()], 3.0);
     /// assert_eq!(window[[1usize, 1usize].as_ref()], 4.0);
     /// ```
-    pub fn window_mut(&mut self) -> VolumeWindowMut<'_> {
+    pub fn window_mut(&mut self) -> VolumeWindowMut<'_, T> {
         VolumeWindowMut {
             block: self,
             dims: self.dims.clone(),
@@ -130,7 +131,10 @@ impl VolumeBlock {
 
     /// Checks that the data contained inside the volumes is equal
     /// apart from a specified error value.
-    pub fn is_equal(&self, other: &Self, eps: f32) -> bool {
+    pub fn is_equal(&self, other: &Self, eps: T) -> bool
+    where
+        T: Float,
+    {
         self.dims == other.dims
             && self
                 .data
@@ -140,12 +144,12 @@ impl VolumeBlock {
     }
 
     /// Returns a slice to the flat representation of the volume.
-    pub fn flatten(&self) -> &[f32] {
+    pub fn flatten(&self) -> &[T] {
         &self.data
     }
 
     /// Returns a mutable slice to the flat representation of the volume.
-    pub fn flatten_mut(&mut self) -> &mut [f32] {
+    pub fn flatten_mut(&mut self) -> &mut [T] {
         &mut self.data
     }
 
@@ -193,41 +197,41 @@ impl VolumeBlock {
         idx
     }
 
-    fn index_offset(&self, index: &[usize], offset: &[usize]) -> &f32 {
+    fn index_offset(&self, index: &[usize], offset: &[usize]) -> &T {
         let idx = self.flatten_idx_with_offset(index, offset);
         &self.data[idx]
     }
 
-    fn index_offset_mut(&mut self, index: &[usize], offset: &[usize]) -> &mut f32 {
+    fn index_offset_mut(&mut self, index: &[usize], offset: &[usize]) -> &mut T {
         let idx = self.flatten_idx_with_offset(index, offset);
         &mut self.data[idx]
     }
 
-    fn sub_slice(&self, start: usize, len: usize) -> &[f32] {
+    fn sub_slice(&self, start: usize, len: usize) -> &[T] {
         &self.data[start..start + len]
     }
 
-    fn sub_slice_mut(&mut self, start: usize, len: usize) -> &mut [f32] {
+    fn sub_slice_mut(&mut self, start: usize, len: usize) -> &mut [T] {
         &mut self.data[start..start + len]
     }
 }
 
-impl Index<usize> for VolumeBlock {
-    type Output = f32;
+impl<T: Num + Copy> Index<usize> for VolumeBlock<T> {
+    type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
         &self.data[index]
     }
 }
 
-impl IndexMut<usize> for VolumeBlock {
+impl<T: Num + Copy> IndexMut<usize> for VolumeBlock<T> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         &mut self.data[index]
     }
 }
 
-impl Index<&[usize]> for VolumeBlock {
-    type Output = f32;
+impl<T: Num + Copy> Index<&[usize]> for VolumeBlock<T> {
+    type Output = T;
 
     fn index(&self, index: &[usize]) -> &Self::Output {
         let idx = self.flatten_idx(index);
@@ -235,7 +239,7 @@ impl Index<&[usize]> for VolumeBlock {
     }
 }
 
-impl IndexMut<&[usize]> for VolumeBlock {
+impl<T: Num + Copy> IndexMut<&[usize]> for VolumeBlock<T> {
     fn index_mut(&mut self, index: &[usize]) -> &mut Self::Output {
         let idx = self.flatten_idx(index);
         &mut self[idx]
@@ -253,14 +257,14 @@ pub enum VolumeError {
 }
 
 #[derive(Debug, Clone)]
-pub struct VolumeWindow<'a> {
+pub struct VolumeWindow<'a, T: Num + Copy> {
     dims: Vec<usize>,
     dim_offsets: Vec<usize>,
-    block: *const VolumeBlock,
-    _phantom: PhantomData<&'a VolumeBlock>,
+    block: *const VolumeBlock<T>,
+    _phantom: PhantomData<&'a VolumeBlock<T>>,
 }
 
-impl<'a> VolumeWindow<'a> {
+impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
     /// Splits a window into two non overlapping halves.
     ///
     /// # Examples
@@ -288,7 +292,7 @@ impl<'a> VolumeWindow<'a> {
     /// assert_eq!(bottom[[0usize, 0usize].as_ref()], 3.0);
     /// assert_eq!(bottom[[1usize, 0usize].as_ref()], 4.0);
     /// ```
-    pub fn split(&self, dim: usize) -> (VolumeWindow<'_>, VolumeWindow<'_>) {
+    pub fn split(&self, dim: usize) -> (VolumeWindow<'_, T>, VolumeWindow<'_, T>) {
         assert!(self.dims[dim] > 1);
         let mut dims = self.dims.clone();
         let offsets_left = self.dim_offsets.clone();
@@ -342,7 +346,7 @@ impl<'a> VolumeWindow<'a> {
     /// assert_eq!(bottom[[0usize, 0usize].as_ref()], 3.0);
     /// assert_eq!(bottom[[1usize, 0usize].as_ref()], 4.0);
     /// ```
-    pub fn split_into(self, dim: usize) -> (VolumeWindow<'a>, VolumeWindow<'a>) {
+    pub fn split_into(self, dim: usize) -> (VolumeWindow<'a, T>, VolumeWindow<'a, T>) {
         assert!(self.dims[dim] > 1);
         let mut dims = self.dims;
         let offsets_left = self.dim_offsets;
@@ -419,7 +423,7 @@ impl<'a> VolumeWindow<'a> {
     /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 6.0]);
     /// assert!(rows_z.next().is_none());
     /// ```
-    pub fn rows(&self, dim: usize) -> Rows<'_, 'a> {
+    pub fn rows(&self, dim: usize) -> Rows<'_, 'a, T> {
         let num_rows =
             self.dims.iter().enumerate().fold(
                 1,
@@ -484,7 +488,7 @@ impl<'a> VolumeWindow<'a> {
     ///
     /// assert_eq!(right[[0usize, 0usize].as_ref()], 1.0);
     /// assert_eq!(right[[0usize, 1usize].as_ref()], 3.0);
-    pub fn copy_to(&self, window: &mut VolumeWindowMut<'_>) {
+    pub fn copy_to(&self, window: &mut VolumeWindowMut<'_, T>) {
         assert!(self.dims == window.dims);
         let src_rows = self.rows(0);
         let dst_rows = window.rows_mut(0);
@@ -497,11 +501,11 @@ impl<'a> VolumeWindow<'a> {
     }
 }
 
-unsafe impl<'a> Send for VolumeWindow<'a> where &'a VolumeBlock: Send {}
-unsafe impl<'a> Sync for VolumeWindow<'a> where &'a VolumeBlock: Sync {}
+unsafe impl<'a, T: Num + Copy> Send for VolumeWindow<'a, T> where &'a VolumeBlock<T>: Send {}
+unsafe impl<'a, T: Num + Copy> Sync for VolumeWindow<'a, T> where &'a VolumeBlock<T>: Sync {}
 
-impl<'a> Index<&[usize]> for VolumeWindow<'a> {
-    type Output = f32;
+impl<'a, T: Num + Copy> Index<&[usize]> for VolumeWindow<'a, T> {
+    type Output = T;
 
     fn index(&self, index: &[usize]) -> &Self::Output {
         unsafe { (*self.block).index_offset(index, &self.dim_offsets) }
@@ -509,16 +513,16 @@ impl<'a> Index<&[usize]> for VolumeWindow<'a> {
 }
 
 #[derive(Debug)]
-pub struct VolumeWindowMut<'a> {
+pub struct VolumeWindowMut<'a, T: Num + Copy> {
     dims: Vec<usize>,
     dim_offsets: Vec<usize>,
-    block: *mut VolumeBlock,
-    _phantom: PhantomData<&'a mut VolumeBlock>,
+    block: *mut VolumeBlock<T>,
+    _phantom: PhantomData<&'a mut VolumeBlock<T>>,
 }
 
-impl<'a> VolumeWindowMut<'a> {
+impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     /// Constructs a shared window from the mutable window.
-    pub fn window(&self) -> VolumeWindow {
+    pub fn window(&self) -> VolumeWindow<T> {
         VolumeWindow {
             block: self.block,
             dims: self.dims.clone(),
@@ -554,7 +558,7 @@ impl<'a> VolumeWindowMut<'a> {
     /// assert_eq!(bottom[[0usize, 0usize].as_ref()], 3.0);
     /// assert_eq!(bottom[[1usize, 0usize].as_ref()], 4.0);
     /// ```
-    pub fn split(&self, dim: usize) -> (VolumeWindow<'_>, VolumeWindow<'_>) {
+    pub fn split(&self, dim: usize) -> (VolumeWindow<'_, T>, VolumeWindow<'_, T>) {
         assert!(self.dims[dim] > 1);
         let mut dims = self.dims.clone();
         let offsets_left = self.dim_offsets.clone();
@@ -607,7 +611,7 @@ impl<'a> VolumeWindowMut<'a> {
     /// assert_eq!(bottom[[0usize, 0usize].as_ref()], 3.0);
     /// assert_eq!(bottom[[1usize, 0usize].as_ref()], 4.0);
     /// ```
-    pub fn split_mut(&mut self, dim: usize) -> (VolumeWindowMut<'_>, VolumeWindowMut<'_>) {
+    pub fn split_mut(&mut self, dim: usize) -> (VolumeWindowMut<'_, T>, VolumeWindowMut<'_, T>) {
         assert!(self.dims[dim] > 1);
         let mut dims = self.dims.clone();
         let offsets_left = self.dim_offsets.clone();
@@ -661,7 +665,7 @@ impl<'a> VolumeWindowMut<'a> {
     /// assert_eq!(bottom[[0usize, 0usize].as_ref()], 3.0);
     /// assert_eq!(bottom[[1usize, 0usize].as_ref()], 4.0);
     /// ```
-    pub fn split_into(self, dim: usize) -> (VolumeWindowMut<'a>, VolumeWindowMut<'a>) {
+    pub fn split_into(self, dim: usize) -> (VolumeWindowMut<'a, T>, VolumeWindowMut<'a, T>) {
         assert!(self.dims[dim] > 1);
         let mut dims = self.dims;
         let offsets_left = self.dim_offsets;
@@ -738,7 +742,7 @@ impl<'a> VolumeWindowMut<'a> {
     /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 6.0]);
     /// assert!(rows_z.next().is_none());
     /// ```
-    pub fn rows(&self, dim: usize) -> Rows<'_, 'a> {
+    pub fn rows(&self, dim: usize) -> Rows<'_, 'a, T> {
         let num_rows =
             self.dims.iter().enumerate().fold(
                 1,
@@ -826,7 +830,7 @@ impl<'a> VolumeWindowMut<'a> {
     /// assert_eq!(rows_z.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [2.0, 6.0]);
     /// assert!(rows_z.next().is_none());
     /// ```
-    pub fn rows_mut(&mut self, dim: usize) -> RowsMut<'_, 'a> {
+    pub fn rows_mut(&mut self, dim: usize) -> RowsMut<'_, 'a, T> {
         let num_rows =
             self.dims.iter().enumerate().fold(
                 1,
@@ -890,7 +894,7 @@ impl<'a> VolumeWindowMut<'a> {
     ///
     /// assert_eq!(right[[0usize, 0usize].as_ref()], 1.0);
     /// assert_eq!(right[[0usize, 1usize].as_ref()], 3.0);
-    pub fn copy_to(&self, window: &mut VolumeWindowMut<'_>) {
+    pub fn copy_to(&self, window: &mut VolumeWindowMut<'_, T>) {
         assert!(self.dims == window.dims);
         let src_rows = self.rows(0);
         let dst_rows = window.rows_mut(0);
@@ -903,24 +907,24 @@ impl<'a> VolumeWindowMut<'a> {
     }
 }
 
-unsafe impl<'a> Send for VolumeWindowMut<'a> where &'a mut VolumeBlock: Send {}
-unsafe impl<'a> Sync for VolumeWindowMut<'a> where &'a mut VolumeBlock: Sync {}
+unsafe impl<'a, T: Num + Copy> Send for VolumeWindowMut<'a, T> where &'a mut VolumeBlock<T>: Send {}
+unsafe impl<'a, T: Num + Copy> Sync for VolumeWindowMut<'a, T> where &'a mut VolumeBlock<T>: Sync {}
 
-impl<'a> Index<&[usize]> for VolumeWindowMut<'a> {
-    type Output = f32;
+impl<'a, T: Num + Copy> Index<&[usize]> for VolumeWindowMut<'a, T> {
+    type Output = T;
 
     fn index(&self, index: &[usize]) -> &Self::Output {
         unsafe { (*self.block).index_offset(index, &self.dim_offsets) }
     }
 }
 
-impl<'a> IndexMut<&[usize]> for VolumeWindowMut<'a> {
+impl<'a, T: Num + Copy> IndexMut<&[usize]> for VolumeWindowMut<'a, T> {
     fn index_mut(&mut self, index: &[usize]) -> &mut Self::Output {
         unsafe { (*self.block).index_offset_mut(index, &self.dim_offsets) }
     }
 }
 
-pub struct Rows<'a, 'b> {
+pub struct Rows<'a, 'b, T: Num + Copy> {
     idx: usize,
     dim: usize,
     stride: usize,
@@ -929,12 +933,12 @@ pub struct Rows<'a, 'b> {
     row_idx: Vec<usize>,
     dims: &'a [usize],
     dim_offsets: &'a [usize],
-    block: *const VolumeBlock,
-    _phantom: PhantomData<&'b VolumeBlock>,
+    block: *const VolumeBlock<T>,
+    _phantom: PhantomData<&'b VolumeBlock<T>>,
 }
 
-impl<'a, 'b> Iterator for Rows<'a, 'b> {
-    type Item = Row<'a>;
+impl<'a, 'b, T: Num + Copy + 'a> Iterator for Rows<'a, 'b, T> {
+    type Item = Row<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx < self.num_rows {
@@ -967,7 +971,7 @@ impl<'a, 'b> Iterator for Rows<'a, 'b> {
     }
 }
 
-pub struct RowsMut<'a, 'b> {
+pub struct RowsMut<'a, 'b, T: Num + Copy> {
     idx: usize,
     dim: usize,
     stride: usize,
@@ -976,12 +980,12 @@ pub struct RowsMut<'a, 'b> {
     row_idx: Vec<usize>,
     dims: &'a [usize],
     dim_offsets: &'a [usize],
-    block: *mut VolumeBlock,
-    _phantom: PhantomData<&'b mut VolumeBlock>,
+    block: *mut VolumeBlock<T>,
+    _phantom: PhantomData<&'b mut VolumeBlock<T>>,
 }
 
-impl<'a, 'b> Iterator for RowsMut<'a, 'b> {
-    type Item = RowMut<'a>;
+impl<'a, 'b, T: Num + Copy + 'a> Iterator for RowsMut<'a, 'b, T> {
+    type Item = RowMut<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx < self.num_rows {
@@ -1014,15 +1018,15 @@ impl<'a, 'b> Iterator for RowsMut<'a, 'b> {
     }
 }
 
-pub struct Row<'a> {
+pub struct Row<'a, T: Num + Copy> {
     stride: usize,
     row_len: usize,
     row_start: usize,
-    block: *const VolumeBlock,
-    _phantom: PhantomData<&'a VolumeBlock>,
+    block: *const VolumeBlock<T>,
+    _phantom: PhantomData<&'a VolumeBlock<T>>,
 }
 
-impl<'a> Row<'a> {
+impl<'a, T: Num + Copy> Row<'a, T> {
     pub fn is_empty(&self) -> bool {
         self.row_len == 0
     }
@@ -1031,7 +1035,7 @@ impl<'a> Row<'a> {
         self.row_len
     }
 
-    pub fn as_slice(&self) -> Option<&[f32]> {
+    pub fn as_slice(&self) -> Option<&[T]> {
         if self.stride == 1 {
             unsafe { Some((*self.block).sub_slice(self.row_start, self.row_len)) }
         } else {
@@ -1039,13 +1043,13 @@ impl<'a> Row<'a> {
         }
     }
 
-    pub fn iter(&self) -> RowIter<'_, 'a> {
+    pub fn iter(&self) -> RowIter<'_, 'a, T> {
         self.into_iter()
     }
 }
 
-impl<'a> Index<usize> for Row<'a> {
-    type Output = f32;
+impl<'a, T: Num + Copy> Index<usize> for Row<'a, T> {
+    type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
         assert!(index < self.row_len);
@@ -1054,23 +1058,23 @@ impl<'a> Index<usize> for Row<'a> {
     }
 }
 
-impl<'a, 'b> IntoIterator for &'a Row<'b> {
-    type Item = &'a f32;
+impl<'a, 'b, T: Num + Copy> IntoIterator for &'a Row<'b, T> {
+    type Item = &'a T;
 
-    type IntoIter = RowIter<'a, 'b>;
+    type IntoIter = RowIter<'a, 'b, T>;
 
     fn into_iter(self) -> Self::IntoIter {
         RowIter { idx: 0, row: self }
     }
 }
 
-pub struct RowIter<'a, 'b> {
+pub struct RowIter<'a, 'b, T: Num + Copy> {
     idx: usize,
-    row: &'a Row<'b>,
+    row: &'a Row<'b, T>,
 }
 
-impl<'a, 'b> Iterator for RowIter<'a, 'b> {
-    type Item = &'a f32;
+impl<'a, 'b, T: Num + Copy> Iterator for RowIter<'a, 'b, T> {
+    type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx < self.row.row_len {
@@ -1086,15 +1090,15 @@ impl<'a, 'b> Iterator for RowIter<'a, 'b> {
     }
 }
 
-pub struct RowMut<'a> {
+pub struct RowMut<'a, T: Num + Copy> {
     stride: usize,
     row_len: usize,
     row_start: usize,
-    block: *mut VolumeBlock,
-    _phantom: PhantomData<&'a mut VolumeBlock>,
+    block: *mut VolumeBlock<T>,
+    _phantom: PhantomData<&'a mut VolumeBlock<T>>,
 }
 
-impl<'a> RowMut<'a> {
+impl<'a, T: Num + Copy> RowMut<'a, T> {
     pub fn is_empty(&self) -> bool {
         self.row_len == 0
     }
@@ -1103,7 +1107,7 @@ impl<'a> RowMut<'a> {
         self.row_len
     }
 
-    pub fn as_slice(&self) -> Option<&[f32]> {
+    pub fn as_slice(&self) -> Option<&[T]> {
         if self.stride == 1 {
             unsafe { Some((*self.block).sub_slice(self.row_start, self.row_len)) }
         } else {
@@ -1111,7 +1115,7 @@ impl<'a> RowMut<'a> {
         }
     }
 
-    pub fn as_slice_mut(&mut self) -> Option<&mut [f32]> {
+    pub fn as_slice_mut(&mut self) -> Option<&mut [T]> {
         if self.stride == 1 {
             unsafe { Some((*self.block).sub_slice_mut(self.row_start, self.row_len)) }
         } else {
@@ -1119,13 +1123,13 @@ impl<'a> RowMut<'a> {
         }
     }
 
-    pub fn iter(&mut self) -> RowIterMut<'_, 'a> {
+    pub fn iter(&mut self) -> RowIterMut<'_, 'a, T> {
         self.into_iter()
     }
 }
 
-impl<'a> Index<usize> for RowMut<'a> {
-    type Output = f32;
+impl<'a, T: Num + Copy> Index<usize> for RowMut<'a, T> {
+    type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
         assert!(index < self.row_len);
@@ -1134,7 +1138,7 @@ impl<'a> Index<usize> for RowMut<'a> {
     }
 }
 
-impl<'a> IndexMut<usize> for RowMut<'a> {
+impl<'a, T: Num + Copy> IndexMut<usize> for RowMut<'a, T> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         assert!(index < self.row_len);
         let flat_idx = self.row_start + (index * self.stride);
@@ -1142,23 +1146,23 @@ impl<'a> IndexMut<usize> for RowMut<'a> {
     }
 }
 
-impl<'a, 'b> IntoIterator for &'a mut RowMut<'b> {
-    type Item = &'a mut f32;
+impl<'a, 'b, T: Num + Copy> IntoIterator for &'a mut RowMut<'b, T> {
+    type Item = &'a mut T;
 
-    type IntoIter = RowIterMut<'a, 'b>;
+    type IntoIter = RowIterMut<'a, 'b, T>;
 
     fn into_iter(self) -> Self::IntoIter {
         RowIterMut { idx: 0, row: self }
     }
 }
 
-pub struct RowIterMut<'a, 'b> {
+pub struct RowIterMut<'a, 'b, T: Num + Copy> {
     idx: usize,
-    row: &'a mut RowMut<'b>,
+    row: &'a mut RowMut<'b, T>,
 }
 
-impl<'a, 'b> Iterator for RowIterMut<'a, 'b> {
-    type Item = &'a mut f32;
+impl<'a, 'b, T: Num + Copy> Iterator for RowIterMut<'a, 'b, T> {
+    type Item = &'a mut T;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx < self.row.row_len {

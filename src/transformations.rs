@@ -1,30 +1,32 @@
 //! Wavelet based transformations.
 
-use std::sync::atomic::AtomicUsize;
+use std::{marker::PhantomData, sync::atomic::AtomicUsize};
+
+use num_traits::Num;
 
 use crate::{
     volume::{VolumeBlock, VolumeWindowMut},
     wavelet::{backwards_window, forwards_window, Wavelet},
 };
 
-pub trait Transformation {
-    fn forwards(&self, input: VolumeBlock, steps: &[u32]) -> VolumeBlock;
+pub trait Transformation<T: Num + Copy> {
+    fn forwards(&self, input: VolumeBlock<T>, steps: &[u32]) -> VolumeBlock<T>;
 
-    fn backwards(&self, input: VolumeBlock, steps: &[u32]) -> VolumeBlock;
+    fn backwards(&self, input: VolumeBlock<T>, steps: &[u32]) -> VolumeBlock<T>;
 }
 
-pub struct WaveletTransform<T: Wavelet>(T);
+pub struct WaveletTransform<N: Num + Copy + Send, T: Wavelet<N>>(T, PhantomData<fn() -> N>);
 
-impl<T: Wavelet> WaveletTransform<T> {
+impl<N: Num + Copy + Send, T: Wavelet<N>> WaveletTransform<N, T> {
     /// Constructs a new `WaveletTransform` with the provided wavelet.
     pub fn new(wavelet: T) -> Self {
-        Self(wavelet)
+        Self(wavelet, PhantomData)
     }
 
     fn forw_(
         &self,
-        input: VolumeWindowMut<'_>,
-        output: VolumeWindowMut<'_>,
+        input: VolumeWindowMut<'_, N>,
+        output: VolumeWindowMut<'_, N>,
         ops: &[ForwardsOperation],
         threads: &AtomicUsize,
         max_threads: usize,
@@ -67,8 +69,8 @@ impl<T: Wavelet> WaveletTransform<T> {
 
     fn forw_high(
         &self,
-        input: VolumeWindowMut<'_>,
-        output: VolumeWindowMut<'_>,
+        input: VolumeWindowMut<'_, N>,
+        output: VolumeWindowMut<'_, N>,
         ops: &[ForwardsOperation],
         last_dim: usize,
         threads: (&AtomicUsize, usize),
@@ -105,8 +107,8 @@ impl<T: Wavelet> WaveletTransform<T> {
 
     fn back_(
         &self,
-        mut input: VolumeWindowMut<'_>,
-        mut output: VolumeWindowMut<'_>,
+        mut input: VolumeWindowMut<'_, N>,
+        mut output: VolumeWindowMut<'_, N>,
         ops: &[BackwardsOperation],
         threads: &AtomicUsize,
         max_threads: usize,
@@ -155,8 +157,8 @@ impl<T: Wavelet> WaveletTransform<T> {
 
     fn back_high(
         &self,
-        mut input: VolumeWindowMut<'_>,
-        mut output: VolumeWindowMut<'_>,
+        mut input: VolumeWindowMut<'_, N>,
+        mut output: VolumeWindowMut<'_, N>,
         ops: &[BackwardsOperation],
         last_dim: usize,
         threads: (&AtomicUsize, usize),
@@ -201,8 +203,8 @@ impl<T: Wavelet> WaveletTransform<T> {
     }
 }
 
-impl<T: Wavelet> Transformation for WaveletTransform<T> {
-    fn forwards(&self, mut input: VolumeBlock, steps: &[u32]) -> VolumeBlock {
+impl<N: Num + Copy + Send, T: Wavelet<N>> Transformation<N> for WaveletTransform<N, T> {
+    fn forwards(&self, mut input: VolumeBlock<N>, steps: &[u32]) -> VolumeBlock<N> {
         let dims = input.dims();
 
         assert!(dims.len() == steps.len());
@@ -234,7 +236,7 @@ impl<T: Wavelet> Transformation for WaveletTransform<T> {
         output
     }
 
-    fn backwards(&self, mut input: VolumeBlock, steps: &[u32]) -> VolumeBlock {
+    fn backwards(&self, mut input: VolumeBlock<N>, steps: &[u32]) -> VolumeBlock<N> {
         let dims = input.dims();
 
         assert!(dims.len() == steps.len());
@@ -267,18 +269,18 @@ impl<T: Wavelet> Transformation for WaveletTransform<T> {
     }
 }
 
-pub struct WaveletPacketTransform<T: Wavelet>(T);
+pub struct WaveletPacketTransform<N: Num + Copy + Send, T: Wavelet<N>>(T, PhantomData<fn() -> N>);
 
-impl<T: Wavelet> WaveletPacketTransform<T> {
+impl<N: Num + Copy + Send, T: Wavelet<N>> WaveletPacketTransform<N, T> {
     /// Constructs a new `WaveletPacketTransform` with the provided wavelet.
     pub fn new(wavelet: T) -> Self {
-        Self(wavelet)
+        Self(wavelet, PhantomData)
     }
 
     fn forw_(
         &self,
-        input: VolumeWindowMut<'_>,
-        output: VolumeWindowMut<'_>,
+        input: VolumeWindowMut<'_, N>,
+        output: VolumeWindowMut<'_, N>,
         ops: &[ForwardsOperation],
         threads: &AtomicUsize,
         max_threads: usize,
@@ -315,8 +317,8 @@ impl<T: Wavelet> WaveletPacketTransform<T> {
 
     fn back_(
         &self,
-        mut input: VolumeWindowMut<'_>,
-        mut output: VolumeWindowMut<'_>,
+        mut input: VolumeWindowMut<'_, N>,
+        mut output: VolumeWindowMut<'_, N>,
         ops: &[BackwardsOperation],
         threads: &AtomicUsize,
         max_threads: usize,
@@ -357,8 +359,8 @@ impl<T: Wavelet> WaveletPacketTransform<T> {
     }
 }
 
-impl<T: Wavelet> Transformation for WaveletPacketTransform<T> {
-    fn forwards(&self, mut input: VolumeBlock, steps: &[u32]) -> VolumeBlock {
+impl<N: Num + Copy + Send, T: Wavelet<N>> Transformation<N> for WaveletPacketTransform<N, T> {
+    fn forwards(&self, mut input: VolumeBlock<N>, steps: &[u32]) -> VolumeBlock<N> {
         let dims = input.dims();
 
         assert!(dims.len() == steps.len());
@@ -390,7 +392,7 @@ impl<T: Wavelet> Transformation for WaveletPacketTransform<T> {
         output
     }
 
-    fn backwards(&self, mut input: VolumeBlock, steps: &[u32]) -> VolumeBlock {
+    fn backwards(&self, mut input: VolumeBlock<N>, steps: &[u32]) -> VolumeBlock<N> {
         let dims = input.dims();
 
         assert!(dims.len() == steps.len());
@@ -666,7 +668,7 @@ mod tests {
     }
 
     fn build_img(
-        transform: impl Transformation,
+        transform: impl Transformation<f32>,
         img_path: impl AsRef<Path>,
         img_forwards_path: impl AsRef<Path>,
         img_backwards_path: impl AsRef<Path>,
