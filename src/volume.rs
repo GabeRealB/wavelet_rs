@@ -5,6 +5,7 @@ use std::{
     ops::{Index, IndexMut},
 };
 
+use alloca::with_alloca_zeroed;
 use num_traits::{Float, Num};
 use thiserror::Error;
 
@@ -153,6 +154,36 @@ impl<T: Num + Copy> VolumeBlock<T> {
         &mut self.data
     }
 
+    /// Returns a reference to the element at the provided index.
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.data.get(index)
+    }
+
+    /// Returns a mutable reference to the element at the provided index.
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        self.data.get_mut(index)
+    }
+
+    /// Returns a reference to the element at the provided index.
+    ///
+    /// # Safety
+    ///
+    /// Calling this method with an out-of-bounds index is undefined
+    /// behavior even if the resulting reference is not used.
+    pub unsafe fn get_unchecked(&self, index: usize) -> &T {
+        self.data.get_unchecked(index)
+    }
+
+    /// Returns a mutable reference to the element at the provided index.
+    ///
+    /// # Safety
+    ///
+    /// Calling this method with an out-of-bounds index is undefined
+    /// behavior even if the resulting reference is not used.
+    pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
+        self.data.get_unchecked_mut(index)
+    }
+
     fn flatten_idx(&self, index: &[usize]) -> usize {
         assert!(index.len() == self.dims.len());
 
@@ -187,6 +218,10 @@ impl<T: Num + Copy> VolumeBlock<T> {
             panic!("out of bounds");
         }
 
+        unsafe { self.flatten_idx_with_offset_unchecked(index, offset) }
+    }
+
+    unsafe fn flatten_idx_with_offset_unchecked(&self, index: &[usize], offset: &[usize]) -> usize {
         let mut idx = index[0] + offset[0];
         let mut offset_multiplier = 1;
         for (i, (&dim_idx, &offset)) in index.iter().zip(offset.iter()).enumerate().skip(1) {
@@ -207,12 +242,12 @@ impl<T: Num + Copy> VolumeBlock<T> {
         &mut self.data[idx]
     }
 
-    fn sub_slice(&self, start: usize, len: usize) -> &[T] {
-        &self.data[start..start + len]
+    unsafe fn sub_slice_unchecked(&self, start: usize, len: usize) -> &[T] {
+        self.data.get_unchecked(start..start + len)
     }
 
-    fn sub_slice_mut(&mut self, start: usize, len: usize) -> &mut [T] {
-        &mut self.data[start..start + len]
+    unsafe fn sub_slice_unchecked_mut(&mut self, start: usize, len: usize) -> &mut [T] {
+        self.data.get_unchecked_mut(start..start + len)
     }
 }
 
@@ -424,38 +459,70 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
     /// assert!(rows_z.next().is_none());
     /// ```
     pub fn rows(&self, dim: usize) -> Rows<'_, 'a, T> {
-        let num_rows =
-            self.dims.iter().enumerate().fold(
-                1,
-                |acc, (idx, &len)| {
-                    if dim != idx {
-                        acc * len
-                    } else {
-                        acc
-                    }
-                },
-            );
-
         let start_idx = unsafe { (*self.block).flatten_idx(&self.dim_offsets) };
 
-        let mut tmp_idx = vec![0; self.dims.len()];
-        tmp_idx[dim] = 1;
+        let (divisor, stride, row_strides) = with_alloca_zeroed(
+            self.dims.len() * 2 * std::mem::size_of::<usize>(),
+            |alloc| {
+                let (tmp_idx, row_starts) = unsafe {
+                    let (tmp_alloc, row_starts_alloc) = alloc.split_at_mut(alloc.len() / 2);
+                    let tmp_idx = std::slice::from_raw_parts_mut(
+                        tmp_alloc.as_mut_ptr() as *mut usize,
+                        self.dims.len(),
+                    );
+                    let row_starts = std::slice::from_raw_parts_mut(
+                        row_starts_alloc.as_mut_ptr() as *mut usize,
+                        self.dims.len(),
+                    );
+                    (tmp_idx, row_starts)
+                };
 
-        let stride = unsafe {
-            (*self.block).flatten_idx_with_offset(&tmp_idx, &self.dim_offsets) - start_idx
-        };
+                tmp_idx[dim] = 1;
+                let stride = unsafe {
+                    (*self.block).flatten_idx_with_offset_unchecked(tmp_idx, &self.dim_offsets)
+                        - start_idx
+                };
+                tmp_idx[dim] = 0;
 
-        let row_idx = vec![0; self.dims.len()];
+                let mut divisor = 1;
+                let mut row_start_idx = start_idx;
+                let mut row_strides = Vec::with_capacity(self.dims.len() - 1);
+                for (i, &d) in self.dims.iter().enumerate() {
+                    if i != dim {
+                        tmp_idx[i] = 1;
+                        let row_end = unsafe {
+                            (*self.block)
+                                .flatten_idx_with_offset_unchecked(tmp_idx, &self.dim_offsets)
+                        };
+                        tmp_idx[i] = 0;
+
+                        row_starts[i] = d - 1;
+                        let next_row_start_idx = unsafe {
+                            (*self.block)
+                                .flatten_idx_with_offset_unchecked(row_starts, &self.dim_offsets)
+                        };
+
+                        let row_stride = row_end - row_start_idx;
+                        row_strides.push((divisor, row_stride));
+
+                        divisor *= d;
+                        row_start_idx = next_row_start_idx;
+                    }
+                }
+
+                (divisor, stride, row_strides)
+            },
+        );
+
+        let num_rows = divisor;
         Rows {
-            dim,
             idx: 0,
             stride,
-            row_len: self.dims[dim],
             num_rows,
-            row_idx,
+            row_strides,
+            row_idx: start_idx,
+            row_len: self.dims[dim],
             block: self.block,
-            dims: &self.dims,
-            dim_offsets: &self.dim_offsets,
             _phantom: PhantomData,
         }
     }
@@ -743,38 +810,70 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     /// assert!(rows_z.next().is_none());
     /// ```
     pub fn rows(&self, dim: usize) -> Rows<'_, 'a, T> {
-        let num_rows =
-            self.dims.iter().enumerate().fold(
-                1,
-                |acc, (idx, &len)| {
-                    if dim != idx {
-                        acc * len
-                    } else {
-                        acc
-                    }
-                },
-            );
-
         let start_idx = unsafe { (*self.block).flatten_idx(&self.dim_offsets) };
 
-        let mut tmp_idx = vec![0; self.dims.len()];
-        tmp_idx[dim] = 1;
+        let (divisor, stride, row_strides) = with_alloca_zeroed(
+            self.dims.len() * 2 * std::mem::size_of::<usize>(),
+            |alloc| {
+                let (tmp_idx, row_starts) = unsafe {
+                    let (tmp_alloc, row_starts_alloc) = alloc.split_at_mut(alloc.len() / 2);
+                    let tmp_idx = std::slice::from_raw_parts_mut(
+                        tmp_alloc.as_mut_ptr() as *mut usize,
+                        self.dims.len(),
+                    );
+                    let row_starts = std::slice::from_raw_parts_mut(
+                        row_starts_alloc.as_mut_ptr() as *mut usize,
+                        self.dims.len(),
+                    );
+                    (tmp_idx, row_starts)
+                };
 
-        let stride = unsafe {
-            (*self.block).flatten_idx_with_offset(&tmp_idx, &self.dim_offsets) - start_idx
-        };
+                tmp_idx[dim] = 1;
+                let stride = unsafe {
+                    (*self.block).flatten_idx_with_offset_unchecked(tmp_idx, &self.dim_offsets)
+                        - start_idx
+                };
+                tmp_idx[dim] = 0;
 
-        let row_idx = vec![0; self.dims.len()];
+                let mut divisor = 1;
+                let mut row_start_idx = start_idx;
+                let mut row_strides = Vec::with_capacity(self.dims.len() - 1);
+                for (i, &d) in self.dims.iter().enumerate() {
+                    if i != dim {
+                        tmp_idx[i] = 1;
+                        let row_end = unsafe {
+                            (*self.block)
+                                .flatten_idx_with_offset_unchecked(tmp_idx, &self.dim_offsets)
+                        };
+                        tmp_idx[i] = 0;
+
+                        row_starts[i] = d - 1;
+                        let next_row_start_idx = unsafe {
+                            (*self.block)
+                                .flatten_idx_with_offset_unchecked(row_starts, &self.dim_offsets)
+                        };
+
+                        let row_stride = row_end - row_start_idx;
+                        row_strides.push((divisor, row_stride));
+
+                        divisor *= d;
+                        row_start_idx = next_row_start_idx;
+                    }
+                }
+
+                (divisor, stride, row_strides)
+            },
+        );
+
+        let num_rows = divisor;
         Rows {
-            dim,
             idx: 0,
             stride,
-            row_len: self.dims[dim],
             num_rows,
-            row_idx,
+            row_strides,
+            row_idx: start_idx,
+            row_len: self.dims[dim],
             block: self.block,
-            dims: &self.dims,
-            dim_offsets: &self.dim_offsets,
             _phantom: PhantomData,
         }
     }
@@ -831,38 +930,70 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     /// assert!(rows_z.next().is_none());
     /// ```
     pub fn rows_mut(&mut self, dim: usize) -> RowsMut<'_, 'a, T> {
-        let num_rows =
-            self.dims.iter().enumerate().fold(
-                1,
-                |acc, (idx, &len)| {
-                    if dim != idx {
-                        acc * len
-                    } else {
-                        acc
-                    }
-                },
-            );
-
         let start_idx = unsafe { (*self.block).flatten_idx(&self.dim_offsets) };
 
-        let mut tmp_idx = vec![0; self.dims.len()];
-        tmp_idx[dim] = 1;
+        let (divisor, stride, row_strides) = with_alloca_zeroed(
+            self.dims.len() * 2 * std::mem::size_of::<usize>(),
+            |alloc| {
+                let (tmp_idx, row_starts) = unsafe {
+                    let (tmp_alloc, row_starts_alloc) = alloc.split_at_mut(alloc.len() / 2);
+                    let tmp_idx = std::slice::from_raw_parts_mut(
+                        tmp_alloc.as_mut_ptr() as *mut usize,
+                        self.dims.len(),
+                    );
+                    let row_starts = std::slice::from_raw_parts_mut(
+                        row_starts_alloc.as_mut_ptr() as *mut usize,
+                        self.dims.len(),
+                    );
+                    (tmp_idx, row_starts)
+                };
 
-        let stride = unsafe {
-            (*self.block).flatten_idx_with_offset(&tmp_idx, &self.dim_offsets) - start_idx
-        };
+                tmp_idx[dim] = 1;
+                let stride = unsafe {
+                    (*self.block).flatten_idx_with_offset_unchecked(tmp_idx, &self.dim_offsets)
+                        - start_idx
+                };
+                tmp_idx[dim] = 0;
 
-        let row_idx = vec![0; self.dims.len()];
+                let mut divisor = 1;
+                let mut row_start_idx = start_idx;
+                let mut row_strides = Vec::with_capacity(self.dims.len() - 1);
+                for (i, &d) in self.dims.iter().enumerate() {
+                    if i != dim {
+                        tmp_idx[i] = 1;
+                        let row_end = unsafe {
+                            (*self.block)
+                                .flatten_idx_with_offset_unchecked(tmp_idx, &self.dim_offsets)
+                        };
+                        tmp_idx[i] = 0;
+
+                        row_starts[i] = d - 1;
+                        let next_row_start_idx = unsafe {
+                            (*self.block)
+                                .flatten_idx_with_offset_unchecked(row_starts, &self.dim_offsets)
+                        };
+
+                        let row_stride = row_end - row_start_idx;
+                        row_strides.push((divisor, row_stride));
+
+                        divisor *= d;
+                        row_start_idx = next_row_start_idx;
+                    }
+                }
+
+                (divisor, stride, row_strides)
+            },
+        );
+
+        let num_rows = divisor;
         RowsMut {
-            dim,
             idx: 0,
             stride,
-            row_len: self.dims[dim],
             num_rows,
-            row_idx,
+            row_strides,
+            row_idx: start_idx,
+            row_len: self.dims[dim],
             block: self.block,
-            dims: &self.dims,
-            dim_offsets: &self.dim_offsets,
             _phantom: PhantomData,
         }
     }
@@ -926,15 +1057,13 @@ impl<'a, T: Num + Copy> IndexMut<&[usize]> for VolumeWindowMut<'a, T> {
 
 pub struct Rows<'a, 'b, T: Num + Copy> {
     idx: usize,
-    dim: usize,
     stride: usize,
     row_len: usize,
+    row_idx: usize,
     num_rows: usize,
-    row_idx: Vec<usize>,
-    dims: &'a [usize],
-    dim_offsets: &'a [usize],
+    row_strides: Vec<(usize, usize)>,
     block: *const VolumeBlock<T>,
-    _phantom: PhantomData<&'b VolumeBlock<T>>,
+    _phantom: PhantomData<&'a VolumeWindowMut<'b, T>>,
 }
 
 impl<'a, 'b, T: Num + Copy + 'a> Iterator for Rows<'a, 'b, T> {
@@ -944,19 +1073,14 @@ impl<'a, 'b, T: Num + Copy + 'a> Iterator for Rows<'a, 'b, T> {
         if self.idx < self.num_rows {
             self.idx += 1;
 
-            let row_start =
-                unsafe { (*self.block).flatten_idx_with_offset(&self.row_idx, self.dim_offsets) };
-
-            for (i, idx) in self.row_idx.iter_mut().enumerate() {
-                if i != self.dim {
-                    if *idx + 1 < self.dims[i] {
-                        *idx += 1;
-                        break;
-                    } else {
-                        *idx = 0;
-                    }
-                }
-            }
+            let row_start = self.row_idx;
+            let &(_, row_stride) = self
+                .row_strides
+                .iter()
+                .rev()
+                .find(|(div, _)| self.idx % div == 0)
+                .unwrap_or(&(0, 0));
+            self.row_idx += row_stride;
 
             Some(Row {
                 stride: self.stride,
@@ -973,15 +1097,13 @@ impl<'a, 'b, T: Num + Copy + 'a> Iterator for Rows<'a, 'b, T> {
 
 pub struct RowsMut<'a, 'b, T: Num + Copy> {
     idx: usize,
-    dim: usize,
     stride: usize,
     row_len: usize,
+    row_idx: usize,
     num_rows: usize,
-    row_idx: Vec<usize>,
-    dims: &'a [usize],
-    dim_offsets: &'a [usize],
+    row_strides: Vec<(usize, usize)>,
     block: *mut VolumeBlock<T>,
-    _phantom: PhantomData<&'b mut VolumeBlock<T>>,
+    _phantom: PhantomData<&'a mut VolumeWindowMut<'b, T>>,
 }
 
 impl<'a, 'b, T: Num + Copy + 'a> Iterator for RowsMut<'a, 'b, T> {
@@ -991,19 +1113,14 @@ impl<'a, 'b, T: Num + Copy + 'a> Iterator for RowsMut<'a, 'b, T> {
         if self.idx < self.num_rows {
             self.idx += 1;
 
-            let row_start =
-                unsafe { (*self.block).flatten_idx_with_offset(&self.row_idx, self.dim_offsets) };
-
-            for (i, idx) in self.row_idx.iter_mut().enumerate() {
-                if i != self.dim {
-                    if *idx + 1 < self.dims[i] {
-                        *idx += 1;
-                        break;
-                    } else {
-                        *idx = 0;
-                    }
-                }
-            }
+            let row_start = self.row_idx;
+            let &(_, row_stride) = self
+                .row_strides
+                .iter()
+                .rev()
+                .find(|(div, _)| self.idx % div == 0)
+                .unwrap_or(&(0, 0));
+            self.row_idx += row_stride;
 
             Some(RowMut {
                 stride: self.stride,
@@ -1037,7 +1154,7 @@ impl<'a, T: Num + Copy> Row<'a, T> {
 
     pub fn as_slice(&self) -> Option<&[T]> {
         if self.stride == 1 {
-            unsafe { Some((*self.block).sub_slice(self.row_start, self.row_len)) }
+            unsafe { Some((*self.block).sub_slice_unchecked(self.row_start, self.row_len)) }
         } else {
             None
         }
@@ -1082,7 +1199,7 @@ impl<'a, 'b, T: Num + Copy> Iterator for RowIter<'a, 'b, T> {
             self.idx += 1;
 
             let flat_idx = self.row.row_start + (idx * self.row.stride);
-            let val = unsafe { &(*self.row.block)[flat_idx] };
+            let val = unsafe { (*self.row.block).get_unchecked(flat_idx) };
             Some(val)
         } else {
             None
@@ -1109,7 +1226,7 @@ impl<'a, T: Num + Copy> RowMut<'a, T> {
 
     pub fn as_slice(&self) -> Option<&[T]> {
         if self.stride == 1 {
-            unsafe { Some((*self.block).sub_slice(self.row_start, self.row_len)) }
+            unsafe { Some((*self.block).sub_slice_unchecked(self.row_start, self.row_len)) }
         } else {
             None
         }
@@ -1117,7 +1234,7 @@ impl<'a, T: Num + Copy> RowMut<'a, T> {
 
     pub fn as_slice_mut(&mut self) -> Option<&mut [T]> {
         if self.stride == 1 {
-            unsafe { Some((*self.block).sub_slice_mut(self.row_start, self.row_len)) }
+            unsafe { Some((*self.block).sub_slice_unchecked_mut(self.row_start, self.row_len)) }
         } else {
             None
         }
@@ -1170,7 +1287,7 @@ impl<'a, 'b, T: Num + Copy> Iterator for RowIterMut<'a, 'b, T> {
             self.idx += 1;
 
             let flat_idx = self.row.row_start + (idx * self.row.stride);
-            let val = unsafe { &mut (*self.row.block)[flat_idx] };
+            let val = unsafe { (*self.row.block).get_unchecked_mut(flat_idx) };
             Some(val)
         } else {
             None
