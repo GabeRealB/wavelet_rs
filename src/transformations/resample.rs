@@ -1,33 +1,37 @@
 use num_traits::Num;
 
+use crate::stream::{Deserializable, Serializable};
+
 use super::Transformation;
 
-pub struct Resample<const N: usize> {
-    orig: [usize; N],
-    resampled: [usize; N],
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Resample {
+    orig: Vec<usize>,
+    resampled: Vec<usize>,
 }
 
-impl<const N: usize> Resample<N> {
+impl Resample {
     /// Constructs a new `Resample`.
     #[inline]
-    pub fn new(from: [usize; N], to: [usize; N]) -> Self {
+    pub fn new(from: &[usize], to: &[usize]) -> Self {
+        assert_eq!(from.len(), to.len());
         Self {
-            orig: from,
-            resampled: to,
+            orig: from.into(),
+            resampled: to.into(),
         }
     }
 
     /// Constructs a new identity `Resample`.
     #[inline]
-    pub fn identity(samples: [usize; N]) -> Self {
+    pub fn identity(samples: &[usize]) -> Self {
         Self {
-            orig: samples,
-            resampled: samples,
+            orig: samples.into(),
+            resampled: samples.into(),
         }
     }
 }
 
-impl<T, const N: usize> Transformation<T> for Resample<N>
+impl<T> Transformation<T> for Resample
 where
     T: Num + Lerp + Copy,
 {
@@ -43,7 +47,7 @@ where
         let input_window = input.window();
         let mut output_window = resampled.window_mut();
 
-        for i in 0..N {
+        for i in 0..self.orig.len() {
             let num_steps = self.resampled[i];
             let step_size = (self.orig[i] as f32) / (self.resampled[i] as f32);
 
@@ -71,7 +75,23 @@ where
 
     #[inline]
     fn backwards(&self, input: crate::volume::VolumeBlock<T>) -> crate::volume::VolumeBlock<T> {
-        Resample::new(self.resampled, self.orig).forwards(input)
+        Resample::new(&self.resampled, &self.orig).forwards(input)
+    }
+}
+
+impl Serializable for Resample {
+    fn serialize(self, stream: &mut crate::stream::SerializeStream) {
+        self.orig.serialize(stream);
+        self.resampled.serialize(stream);
+    }
+}
+
+impl Deserializable for Resample {
+    fn deserialize(stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+        let orig = Deserializable::deserialize(stream);
+        let resampled = Deserializable::deserialize(stream);
+
+        Self { orig, resampled }
     }
 }
 

@@ -87,10 +87,10 @@ mod tests {
     };
 
     use crate::{
+        filter::{AverageFilter, HaarWavelet},
         transformations::WaveletTransform,
         vector::Vector,
         volume::VolumeBlock,
-        wavelet::{HaarAverageWavelet, HaarWavelet},
     };
 
     use super::{resample::Resample, Chain, Transformation, WaveletPacketTransform};
@@ -105,7 +105,7 @@ mod tests {
         let block_clone = block.clone();
         println!("Block {:?}", block);
 
-        let transform = WaveletTransform::new(HaarWavelet, [3]);
+        let transform = WaveletTransform::new(HaarWavelet, &[3]);
 
         let transformed = transform.forwards(block);
         println!("Transformed {:?}", transformed);
@@ -116,14 +116,14 @@ mod tests {
     }
 
     #[test]
-    fn haar_average() {
+    fn average_filter() {
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         let dims = [2, 2, 2];
         let block = VolumeBlock::new_with_data(&dims, data).unwrap();
         let block_clone = block.clone();
         println!("Block {:?}", block);
 
-        let transform = WaveletTransform::new(HaarAverageWavelet, [1, 1, 1]);
+        let transform = WaveletTransform::new(AverageFilter, &[1, 1, 1]);
 
         let transformed = transform.forwards(block);
         println!("Transformed {:?}", transformed);
@@ -146,7 +146,7 @@ mod tests {
         let block_clone = block.clone();
 
         let steps = dims.map(|d| d.ilog2());
-        let transform = WaveletTransform::new(HaarAverageWavelet, steps);
+        let transform = WaveletTransform::new(AverageFilter, &steps);
 
         let transformed = transform.forwards(block);
         let backwards = transform.backwards(transformed);
@@ -158,11 +158,11 @@ mod tests {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test");
 
-        let img_path = res_path.join("img.jpg");
-        let img_forwards_path = res_path.join("img_forwards_haar.png");
-        let img_backwards_path = res_path.join("img_backwards_haar.png");
+        let img_path = res_path.join("img_1.jpg");
+        let img_forwards_path = res_path.join("img_1_forwards_haar.png");
+        let img_backwards_path = res_path.join("img_1_backwards_haar.png");
 
-        let transform = WaveletTransform::new(HaarWavelet, [2, 2]);
+        let transform = WaveletTransform::new(HaarWavelet, &[2, 2]);
         build_img(
             false,
             transform,
@@ -173,15 +173,15 @@ mod tests {
     }
 
     #[test]
-    fn image_haar_average() {
+    fn image_average_filter() {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test");
 
-        let img_path = res_path.join("img.jpg");
-        let img_forwards_path = res_path.join("img_forwards_haar_average.png");
-        let img_backwards_path = res_path.join("img_backwards_haar_average.png");
+        let img_path = res_path.join("img_1.jpg");
+        let img_forwards_path = res_path.join("img_1_forwards_average_filter.png");
+        let img_backwards_path = res_path.join("img_1_backwards_average_filter.png");
 
-        let transform = WaveletTransform::new(HaarAverageWavelet, [2, 2]);
+        let transform = WaveletTransform::new(AverageFilter, &[2, 2]);
         build_img(
             false,
             transform,
@@ -196,11 +196,11 @@ mod tests {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test");
 
-        let img_path = res_path.join("img2.jpg");
-        let img_forwards_path = res_path.join("img2_forwards_haar.png");
-        let img_backwards_path = res_path.join("img2_backwards_haar.png");
+        let img_path = res_path.join("img_2.jpg");
+        let img_forwards_path = res_path.join("img_2_forwards_haar.png");
+        let img_backwards_path = res_path.join("img_2_backwards_haar.png");
 
-        let transform = WaveletTransform::new(HaarWavelet, [2, 2]);
+        let transform = WaveletTransform::new(HaarWavelet, &[2, 2]);
         build_img(
             true,
             transform,
@@ -211,15 +211,15 @@ mod tests {
     }
 
     #[test]
-    fn image_2_haar_average() {
+    fn image_2_average_filter() {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test");
 
-        let img_path = res_path.join("img2.jpg");
-        let img_forwards_path = res_path.join("img2_forwards_haar_average.png");
-        let img_backwards_path = res_path.join("img2_backwards_haar_average.png");
+        let img_path = res_path.join("img_2.jpg");
+        let img_forwards_path = res_path.join("img_2_forwards_average_filter.png");
+        let img_backwards_path = res_path.join("img_2_backwards_average_filter.png");
 
-        let transform = WaveletTransform::new(HaarAverageWavelet, [2, 2]);
+        let transform = WaveletTransform::new(AverageFilter, &[2, 2]);
         build_img(
             true,
             transform,
@@ -248,14 +248,14 @@ mod tests {
     }
 
     #[test]
-    fn haar_average_packet() {
+    fn average_filter_packet() {
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         let dims = [2, 2, 2];
         let block = VolumeBlock::new_with_data(&dims, data).unwrap();
         let block_clone = block.clone();
         println!("Block {:?}", block);
 
-        let transform = WaveletPacketTransform::new(HaarAverageWavelet, [1, 1, 1]);
+        let transform = WaveletPacketTransform::new(AverageFilter, [1, 1, 1]);
 
         let transformed = transform.forwards(block);
         println!("Transformed {:?}", transformed);
@@ -278,7 +278,7 @@ mod tests {
         let block_clone = block.clone();
 
         let steps = dims.map(|d| d.ilog2());
-        let transform = WaveletPacketTransform::new(HaarAverageWavelet, steps);
+        let transform = WaveletPacketTransform::new(AverageFilter, steps);
 
         let transformed = transform.forwards(block);
         let backwards = transform.backwards(transformed);
@@ -290,9 +290,9 @@ mod tests {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test");
 
-        let img_path = res_path.join("img.jpg");
-        let img_forwards_path = res_path.join("img_forwards_haar_package.png");
-        let img_backwards_path = res_path.join("img_backwards_haar_package.png");
+        let img_path = res_path.join("img_1.jpg");
+        let img_forwards_path = res_path.join("img_1_forwards_haar_package.png");
+        let img_backwards_path = res_path.join("img_1_backwards_haar_package.png");
 
         let transform = WaveletPacketTransform::new(HaarWavelet, [2, 2]);
         build_img(
@@ -305,15 +305,15 @@ mod tests {
     }
 
     #[test]
-    fn image_haar_average_package() {
+    fn image_average_filter_package() {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test");
 
-        let img_path = res_path.join("img.jpg");
-        let img_forwards_path = res_path.join("img_forwards_haar_average_package.png");
-        let img_backwards_path = res_path.join("img_backwards_haar_average_package.png");
+        let img_path = res_path.join("img_1.jpg");
+        let img_forwards_path = res_path.join("img_1_forwards_average_filter_package.png");
+        let img_backwards_path = res_path.join("img_1_backwards_average_filter_package.png");
 
-        let transform = WaveletPacketTransform::new(HaarAverageWavelet, [2, 2]);
+        let transform = WaveletPacketTransform::new(AverageFilter, [2, 2]);
         build_img(
             false,
             transform,
@@ -328,9 +328,9 @@ mod tests {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test");
 
-        let img_path = res_path.join("img2.jpg");
-        let img_forwards_path = res_path.join("img2_forwards_haar_package.png");
-        let img_backwards_path = res_path.join("img2_backwards_haar_package.png");
+        let img_path = res_path.join("img_2.jpg");
+        let img_forwards_path = res_path.join("img_2_forwards_haar_package.png");
+        let img_backwards_path = res_path.join("img_2_backwards_haar_package.png");
 
         let transform = WaveletPacketTransform::new(HaarWavelet, [2, 2]);
         build_img(
@@ -343,15 +343,15 @@ mod tests {
     }
 
     #[test]
-    fn image_2_haar_average_package() {
+    fn image_2_average_filter_package() {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test");
 
-        let img_path = res_path.join("img2.jpg");
-        let img_forwards_path = res_path.join("img2_forwards_haar_average_package.png");
-        let img_backwards_path = res_path.join("img2_backwards_haar_average_package.png");
+        let img_path = res_path.join("img_2.jpg");
+        let img_forwards_path = res_path.join("img_2_forwards_average_filter_package.png");
+        let img_backwards_path = res_path.join("img_2_backwards_average_filter_package.png");
 
-        let transform = WaveletPacketTransform::new(HaarAverageWavelet, [2, 2]);
+        let transform = WaveletPacketTransform::new(AverageFilter, [2, 2]);
         build_img(
             true,
             transform,
@@ -379,11 +379,11 @@ mod tests {
 
         let resample = if resample {
             Resample::new(
-                [width, height],
-                [width.next_power_of_two(), height.next_power_of_two()],
+                &[width, height],
+                &[width.next_power_of_two(), height.next_power_of_two()],
             )
         } else {
-            Resample::identity([width, height])
+            Resample::identity(&[width, height])
         };
         let transform = Chain::from((resample, transform));
 

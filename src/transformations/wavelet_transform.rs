@@ -3,22 +3,23 @@ use std::{marker::PhantomData, sync::atomic::AtomicUsize};
 use num_traits::Num;
 
 use crate::{
+    filter::{backwards_window, forwards_window, Filter},
+    stream::{Deserializable, Named, Serializable},
     volume::{VolumeBlock, VolumeWindowMut},
-    wavelet::{backwards_window, forwards_window, Wavelet},
 };
 
 use super::{BackwardsOperation, ForwardsOperation, Transformation};
 
-pub struct WaveletTransform<N: Num + Copy + Send, T: Wavelet<N>, const S: usize>(
+pub struct WaveletTransform<N: Num + Copy + Send, T: Filter<N>>(
     T,
-    [u32; S],
+    Vec<u32>,
     PhantomData<fn() -> N>,
 );
 
-impl<N: Num + Copy + Send, T: Wavelet<N>, const S: usize> WaveletTransform<N, T, S> {
+impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
     /// Constructs a new `WaveletTransform` with the provided wavelet.
-    pub fn new(wavelet: T, steps: [u32; S]) -> Self {
-        Self(wavelet, steps, PhantomData)
+    pub fn new(wavelet: T, steps: &[u32]) -> Self {
+        Self(wavelet, steps.into(), PhantomData)
     }
 
     fn forw_(
@@ -201,9 +202,7 @@ impl<N: Num + Copy + Send, T: Wavelet<N>, const S: usize> WaveletTransform<N, T,
     }
 }
 
-impl<N: Num + Copy + Send, T: Wavelet<N>, const S: usize> Transformation<N>
-    for WaveletTransform<N, T, S>
-{
+impl<N: Num + Copy + Send, T: Filter<N>> Transformation<N> for WaveletTransform<N, T> {
     fn forwards(&self, mut input: VolumeBlock<N>) -> VolumeBlock<N> {
         let dims = input.dims();
 
@@ -266,5 +265,29 @@ impl<N: Num + Copy + Send, T: Wavelet<N>, const S: usize> Transformation<N>
         self.back_(input_window, output_window, &ops, &threads, max_threads);
 
         output
+    }
+}
+
+impl<N: Num + Copy + Send, T: Filter<N> + Serializable> Serializable for WaveletTransform<N, T> {
+    fn serialize(self, stream: &mut crate::stream::SerializeStream) {
+        N::name().serialize(stream);
+        T::name().serialize(stream);
+        self.0.serialize(stream);
+        self.1.serialize(stream);
+    }
+}
+
+impl<N: Num + Copy + Send, T: Filter<N> + Deserializable> Deserializable
+    for WaveletTransform<N, T>
+{
+    fn deserialize(stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+        let n_type: String = Deserializable::deserialize(stream);
+        let t_type: String = Deserializable::deserialize(stream);
+        assert_eq!(n_type, N::name());
+        assert_eq!(t_type, T::name());
+
+        let elem_0 = Deserializable::deserialize(stream);
+        let elem_1 = Deserializable::deserialize(stream);
+        Self(elem_0, elem_1, PhantomData)
     }
 }

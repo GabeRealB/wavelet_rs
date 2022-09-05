@@ -1,5 +1,7 @@
 use num_traits::Num;
 
+use crate::stream::{Deserializable, Serializable};
+
 use super::Transformation;
 
 pub struct Identity;
@@ -13,6 +15,16 @@ impl<T: Num + Copy> Transformation<T> for Identity {
     #[inline(always)]
     fn backwards(&self, input: crate::volume::VolumeBlock<T>) -> crate::volume::VolumeBlock<T> {
         input
+    }
+}
+
+impl Serializable for Identity {
+    fn serialize(self, _stream: &mut crate::stream::SerializeStream) {}
+}
+
+impl Deserializable for Identity {
+    fn deserialize(_stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+        Self
     }
 }
 
@@ -46,6 +58,23 @@ where
     #[inline(always)]
     fn backwards(&self, input: crate::volume::VolumeBlock<N>) -> crate::volume::VolumeBlock<N> {
         self.0.forwards(input)
+    }
+}
+
+impl<T: Serializable> Serializable for Reverse<T> {
+    fn serialize(self, stream: &mut crate::stream::SerializeStream) {
+        T::name().serialize(stream);
+        self.0.serialize(stream);
+    }
+}
+
+impl<T: Deserializable> Deserializable for Reverse<T> {
+    fn deserialize(stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+        let t_ty: String = Deserializable::deserialize(stream);
+        assert_eq!(t_ty, T::name());
+
+        let elem = Deserializable::deserialize(stream);
+        Self(elem)
     }
 }
 
@@ -88,5 +117,27 @@ where
     fn backwards(&self, input: crate::volume::VolumeBlock<N>) -> crate::volume::VolumeBlock<N> {
         let tmp = self.1.backwards(input);
         self.0.backwards(tmp)
+    }
+}
+
+impl<T: Serializable, U: Serializable> Serializable for Chain<T, U> {
+    fn serialize(self, stream: &mut crate::stream::SerializeStream) {
+        T::name().serialize(stream);
+        U::name().serialize(stream);
+        self.0.serialize(stream);
+        self.1.serialize(stream);
+    }
+}
+
+impl<T: Deserializable, U: Deserializable> Deserializable for Chain<T, U> {
+    fn deserialize(stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+        let t_ty: String = Deserializable::deserialize(stream);
+        let u_ty: String = Deserializable::deserialize(stream);
+        assert_eq!(t_ty, T::name());
+        assert_eq!(u_ty, U::name());
+
+        let elem_0 = Deserializable::deserialize(stream);
+        let elem_1 = Deserializable::deserialize(stream);
+        Self(elem_0, elem_1)
     }
 }

@@ -2,22 +2,26 @@
 
 use num_traits::{Float, FloatConst, Num};
 
-use crate::volume::{Row, RowMut, VolumeWindow, VolumeWindowMut};
+use crate::{
+    stream::{Deserializable, Serializable},
+    volume::{Row, RowMut, VolumeWindow, VolumeWindowMut},
+};
 
-pub trait Wavelet<T: Num + Copy>: Sync {
+pub trait Filter<T: Num + Copy>: Sync {
     fn forwards(&self, input: &Row<'_, T>, low: &mut RowMut<'_, T>, high: &mut RowMut<'_, T>);
     fn backwards(&self, low: &Row<'_, T>, high: &Row<'_, T>, output: &mut RowMut<'_, T>);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HaarWavelet;
 
-impl<T: Float + FloatConst> Wavelet<T> for HaarWavelet {
+impl<T: Float + FloatConst> Filter<T> for HaarWavelet {
     fn forwards(&self, input: &Row<'_, T>, low: &mut RowMut<'_, T>, high: &mut RowMut<'_, T>) {
         let value = T::FRAC_1_SQRT_2();
 
         for (i, (low, high)) in low.iter().zip(high.iter()).enumerate() {
-            let idx_left = (2 * i) % input.len();
-            let idx_right = ((2 * i) + 1) % input.len();
+            let idx_left = (2 * i).min(input.len() - 1);
+            let idx_right = ((2 * i) + 1).min(input.len() - 1);
 
             let sum = value * (input[idx_right] + input[idx_left]);
             let diff = value * (input[idx_right] - input[idx_left]);
@@ -31,8 +35,8 @@ impl<T: Float + FloatConst> Wavelet<T> for HaarWavelet {
         let value = T::FRAC_1_SQRT_2();
 
         for (i, (low, high)) in low.iter().zip(high.iter()).enumerate() {
-            let idx_left = (2 * i) % output.len();
-            let idx_right = ((2 * i) + 1) % output.len();
+            let idx_left = (2 * i).min(output.len() - 1);
+            let idx_right = ((2 * i) + 1).min(output.len() - 1);
 
             let left = value * (*low - *high);
             let right = value * (*low + *high);
@@ -43,15 +47,26 @@ impl<T: Float + FloatConst> Wavelet<T> for HaarWavelet {
     }
 }
 
-pub struct HaarAverageWavelet;
+impl Serializable for HaarWavelet {
+    fn serialize(self, _stream: &mut crate::stream::SerializeStream) {}
+}
 
-impl<T: Float + FloatConst> Wavelet<T> for HaarAverageWavelet {
+impl Deserializable for HaarWavelet {
+    fn deserialize(_stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+        Self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AverageFilter;
+
+impl<T: Float + FloatConst> Filter<T> for AverageFilter {
     fn forwards(&self, input: &Row<'_, T>, low: &mut RowMut<'_, T>, high: &mut RowMut<'_, T>) {
         let two = T::from(2.0).unwrap();
 
         for (i, (low, high)) in low.iter().zip(high.iter()).enumerate() {
-            let idx_left = (2 * i) % input.len();
-            let idx_right = ((2 * i) + 1) % input.len();
+            let idx_left = (2 * i).min(input.len() - 1);
+            let idx_right = ((2 * i) + 1).min(input.len() - 1);
 
             let average = (input[idx_right] + input[idx_left]) / two;
             let diff = input[idx_left] - average;
@@ -65,8 +80,8 @@ impl<T: Float + FloatConst> Wavelet<T> for HaarAverageWavelet {
         let two = T::from(2.0).unwrap();
 
         for (i, (low, high)) in low.iter().zip(high.iter()).enumerate() {
-            let idx_left = (2 * i) % output.len();
-            let idx_right = ((2 * i) + 1) % output.len();
+            let idx_left = (2 * i).min(output.len() - 1);
+            let idx_right = ((2 * i) + 1).min(output.len() - 1);
 
             let left = *high + *low;
             let right = (two * *low) - left;
@@ -77,11 +92,21 @@ impl<T: Float + FloatConst> Wavelet<T> for HaarAverageWavelet {
     }
 }
 
+impl Serializable for AverageFilter {
+    fn serialize(self, _stream: &mut crate::stream::SerializeStream) {}
+}
+
+impl Deserializable for AverageFilter {
+    fn deserialize(_stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+        Self
+    }
+}
+
 /// Applies the forward procedure on each row of a [`VolumeWindow`]
 /// across the dimension `dim`.
 pub fn forwards_window<T: Num + Copy>(
     dim: usize,
-    wavelet: &impl Wavelet<T>,
+    wavelet: &impl Filter<T>,
     input: &VolumeWindow<'_, T>,
     low: &mut VolumeWindowMut<'_, T>,
     high: &mut VolumeWindowMut<'_, T>,
@@ -99,7 +124,7 @@ pub fn forwards_window<T: Num + Copy>(
 /// across the dimension `dim`.
 pub fn backwards_window<T: Num + Copy>(
     dim: usize,
-    wavelet: &impl Wavelet<T>,
+    wavelet: &impl Filter<T>,
     output: &mut VolumeWindowMut<'_, T>,
     low: &VolumeWindow<'_, T>,
     high: &VolumeWindow<'_, T>,

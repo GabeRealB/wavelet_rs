@@ -3,20 +3,20 @@ use std::{marker::PhantomData, sync::atomic::AtomicUsize};
 use num_traits::Num;
 
 use crate::{
+    filter::{backwards_window, forwards_window, Filter},
     transformations::{BackwardsOperation, ForwardsOperation},
     volume::{VolumeBlock, VolumeWindowMut},
-    wavelet::{backwards_window, forwards_window, Wavelet},
 };
 
 use super::Transformation;
 
-pub struct WaveletPacketTransform<N: Num + Copy + Send, T: Wavelet<N>, const S: usize>(
+pub struct WaveletPacketTransform<N: Num + Copy + Send, T: Filter<N>, const S: usize>(
     T,
     [u32; S],
     PhantomData<fn() -> N>,
 );
 
-impl<N: Num + Copy + Send, T: Wavelet<N>, const S: usize> WaveletPacketTransform<N, T, S> {
+impl<N: Num + Copy + Send, T: Filter<N>, const S: usize> WaveletPacketTransform<N, T, S> {
     /// Constructs a new `WaveletPacketTransform` with the provided wavelet.
     pub fn new(wavelet: T, steps: [u32; S]) -> Self {
         Self(wavelet, steps, PhantomData)
@@ -104,7 +104,7 @@ impl<N: Num + Copy + Send, T: Wavelet<N>, const S: usize> WaveletPacketTransform
     }
 }
 
-impl<N: Num + Copy + Send, T: Wavelet<N>, const S: usize> Transformation<N>
+impl<N: Num + Copy + Send, T: Filter<N>, const S: usize> Transformation<N>
     for WaveletPacketTransform<N, T, S>
 {
     fn forwards(&self, mut input: VolumeBlock<N>) -> VolumeBlock<N> {
