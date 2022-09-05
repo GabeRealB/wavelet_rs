@@ -87,7 +87,7 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
         assert!(roi
             .iter()
             .zip(&self.dims)
-            .all(|(region, volume_size)| region.contains(volume_size)));
+            .all(|(region, volume_size)| !region.contains(volume_size)));
 
         let input_steps: Vec<_> = self
             .input_block_dims
@@ -130,7 +130,7 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
                 .collect();
 
             if roi.iter().zip(&block_range).all(|(required, range)| {
-                range.contains(&required.start) || range.contains(&required.end)
+                required.contains(&range.start) || required.contains(&range.end)
             }) {
                 let block_path = self.path.join(format!("block_{block_idx}.bin"));
                 let block_buffer = std::fs::read(block_path).unwrap();
@@ -165,8 +165,12 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
                     writer(&elem_idx, elem);
 
                     for (elem_idx, range) in elem_idx.iter_mut().zip(&sub_range) {
-                        *elem_idx = (*elem_idx + 1) % range.end;
-                        if *elem_idx != 0 {
+                        *elem_idx += 1;
+                        if *elem_idx == range.end {
+                            *elem_idx = range.start;
+                        }
+
+                        if *elem_idx != range.start {
                             break;
                         }
                     }
@@ -180,5 +184,50 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::path::PathBuf;
+
+    use crate::{decoder::VolumeWaveletDecoder, filter::AverageFilter, volume::VolumeBlock};
+
+    const TRANSFORM_ERROR: f32 = 0.001;
+
+    #[test]
+    fn decode() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test/decode/output.bin");
+
+        let decoder = VolumeWaveletDecoder::<f32, AverageFilter>::new(res_path);
+
+        let dims = [256, 256, 256];
+        let num_elements = dims.iter().product();
+        let mut block_1 = VolumeBlock::new(&dims).unwrap();
+        let mut block_2 = VolumeBlock::new(&dims).unwrap();
+        let writer = |idx: &[usize], elem: f32| {
+            let block_idx = idx[3];
+            let idx = &idx[..3];
+
+            if block_idx == 0 {
+                block_1[idx] = elem
+            } else if block_idx == 1 {
+                block_2[idx] = elem
+            }
+        };
+
+        let volume_dims = [256usize, 256usize, 256usize, 2usize];
+        let roi = volume_dims.map(|dim| 0..dim);
+        let steps = volume_dims.map(|dim| dim.ilog2());
+        decoder.decode(writer, &roi, &steps);
+
+        let expected_block_1 =
+            VolumeBlock::new_with_data(&dims, vec![1.0f32; num_elements]).unwrap();
+        let expected_block_2 =
+            VolumeBlock::new_with_data(&dims, vec![2.0f32; num_elements]).unwrap();
+
+        assert!(block_1.is_equal(&expected_block_1, TRANSFORM_ERROR));
+        assert!(block_2.is_equal(&expected_block_2, TRANSFORM_ERROR));
     }
 }

@@ -26,7 +26,7 @@ impl<T: Num + Copy> VolumeBlock<T> {
     /// use wavelet_rs::volume::VolumeBlock;
     ///
     /// let dims = [2, 2];
-    /// let block = VolumeBlock::new(&dims).unwrap();
+    /// let block = VolumeBlock::<f32>::new(&dims).unwrap();
     ///
     /// assert_eq!(block[[0usize, 0usize].as_ref()], 0.0);
     /// assert_eq!(block[[1usize, 0usize].as_ref()], 0.0);

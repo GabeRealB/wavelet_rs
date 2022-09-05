@@ -413,7 +413,7 @@ impl Deserializable for AnyMap {
         for _ in 0..map_len {
             let key = Deserializable::deserialize(stream);
             let value = Deserializable::deserialize(stream);
-            map.insert(key, value).unwrap();
+            map.insert(key, value);
         }
 
         Self { map }
