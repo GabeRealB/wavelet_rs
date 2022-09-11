@@ -1,3 +1,4 @@
+#![feature(generic_associated_types)]
 #![feature(int_log)]
 
 pub mod decoder;

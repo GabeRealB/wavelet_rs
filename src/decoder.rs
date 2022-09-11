@@ -10,7 +10,9 @@ use crate::{
     encoder::OutputHeader,
     filter::Filter,
     stream::{AnyMap, Deserializable, DeserializeStream},
-    transformations::{Chain, Lerp, Resample, Transformation, WaveletTransform},
+    transformations::{
+        Chain, Lerp, Resample, ResampleCfg, ReversibleTransform, WaveletRecompCfg, WaveletTransform,
+    },
     volume::VolumeBlock,
 };
 
@@ -23,8 +25,6 @@ pub struct VolumeWaveletDecoder<
     dims: Vec<usize>,
     block_size: Vec<usize>,
     block_counts: Vec<usize>,
-    block_resample_dims: Vec<usize>,
-    resample_dims: Vec<usize>,
     input_block_dims: Vec<usize>,
     wavelet: F,
     input_block: VolumeBlock<T>,
@@ -49,7 +49,6 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
 
         assert_eq!(header.dims.len(), header.block_size.len());
         assert_eq!(header.block_counts.len(), header.block_size.len());
-        assert_eq!(header.resample_dims.len(), header.block_size.len());
         assert_eq!(header.input_block_dims.len(), header.block_size.len());
 
         Self {
@@ -58,8 +57,6 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
             dims: header.dims,
             block_size: header.block_size,
             block_counts: header.block_counts,
-            block_resample_dims: header.block_resample_dims,
-            resample_dims: header.resample_dims,
             input_block_dims: header.input_block_dims,
             wavelet: header.wavelet,
             input_block,
@@ -89,30 +86,43 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
             .zip(&self.dims)
             .all(|(region, volume_size)| !region.contains(volume_size)));
 
-        let input_steps: Vec<_> = self
+        let input_forwards_steps: Vec<_> = self
+            .input_block_dims
+            .iter()
+            .map(|&dim| dim.ilog2())
+            .collect();
+        let block_forwards_steps: Vec<_> = input_forwards_steps
+            .iter()
+            .zip(&self.dims)
+            .map(|(&input_step, &dim)| dim.ilog2() - input_step)
+            .collect();
+
+        let input_backwards_steps: Vec<_> = self
             .input_block_dims
             .iter()
             .zip(levels)
             .map(|(&dim, &level)| dim.ilog2().min(level))
             .collect();
-        let block_steps: Vec<_> = input_steps
+        let block_backwards_steps: Vec<_> = input_backwards_steps
             .iter()
             .zip(levels)
             .map(|(&input_step, &level)| level - input_step)
             .collect();
 
-        let resample = Resample::new(&self.block_counts, &self.resample_dims);
-        let input_transform = Chain::from((
-            resample,
-            WaveletTransform::new(self.wavelet.clone(), &input_steps),
+        let input_transform_cfg = Chain::from((
+            ResampleCfg::new(&self.block_counts),
+            WaveletRecompCfg::new(&input_forwards_steps, &input_backwards_steps),
         ));
-        let first_pass = input_transform.backwards(self.input_block.clone());
+        let input_transform =
+            Chain::from((Resample, WaveletTransform::new(self.wavelet.clone(), false)));
+        let first_pass = input_transform.backwards(self.input_block.clone(), input_transform_cfg);
 
-        let resample = Resample::new(&self.block_size, &self.block_resample_dims);
-        let block_transform = Chain::from((
-            resample,
-            WaveletTransform::new(self.wavelet.clone(), &block_steps),
+        let block_transform_cfg = Chain::from((
+            ResampleCfg::new(&self.block_size),
+            WaveletRecompCfg::new(&block_forwards_steps, &block_backwards_steps),
         ));
+        let block_transform =
+            Chain::from((Resample, WaveletTransform::new(self.wavelet.clone(), false)));
 
         let num_blocks = self.block_counts.iter().product();
         let mut block_iter_idx = vec![0; self.block_size.len()];
@@ -142,7 +152,7 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
                     *elem = Deserializable::deserialize(&mut stream);
                 }
 
-                let block_pass = block_transform.backwards(block);
+                let block_pass = block_transform.backwards(block, block_transform_cfg);
 
                 let sub_range: Vec<_> = roi
                     .iter()

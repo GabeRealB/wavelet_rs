@@ -5,7 +5,9 @@ use num_traits::Num;
 use crate::{
     filter::Filter,
     stream::{AnyMap, Deserializable, Serializable, SerializeStream},
-    transformations::{Chain, Lerp, Resample, Transformation, WaveletTransform},
+    transformations::{
+        Chain, Lerp, Resample, ResampleCfg, ReversibleTransform, WaveletDecompCfg, WaveletTransform,
+    },
     utilities::{flatten_idx, flatten_idx_unchecked},
     volume::VolumeBlock,
 };
@@ -23,8 +25,6 @@ pub(crate) struct OutputHeader<T> {
     pub dims: Vec<usize>,
     pub block_size: Vec<usize>,
     pub block_counts: Vec<usize>,
-    pub block_resample_dims: Vec<usize>,
-    pub resample_dims: Vec<usize>,
     pub input_block_dims: Vec<usize>,
     pub wavelet: T,
 }
@@ -38,8 +38,6 @@ impl<T: Serializable> Serializable for OutputHeader<T> {
         self.dims.serialize(stream);
         self.block_size.serialize(stream);
         self.block_counts.serialize(stream);
-        self.block_resample_dims.serialize(stream);
-        self.resample_dims.serialize(stream);
         self.input_block_dims.serialize(stream);
         self.wavelet.serialize(stream);
     }
@@ -55,8 +53,6 @@ impl<T: Deserializable> Deserializable for OutputHeader<T> {
         let dims = Deserializable::deserialize(stream);
         let block_size = Deserializable::deserialize(stream);
         let block_counts = Deserializable::deserialize(stream);
-        let block_resample_dims = Deserializable::deserialize(stream);
-        let resample_dims = Deserializable::deserialize(stream);
         let input_block_dims = Deserializable::deserialize(stream);
         let wavelet = Deserializable::deserialize(stream);
 
@@ -66,8 +62,6 @@ impl<T: Deserializable> Deserializable for OutputHeader<T> {
             dims,
             block_size,
             block_counts,
-            block_resample_dims,
-            resample_dims,
             input_block_dims,
             wavelet,
         }
@@ -153,9 +147,12 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
             .iter()
             .map(|size| size.ilog2())
             .collect();
-        let resample = Resample::new(block_size, &block_resample_dims);
+        let block_transform_cfg = Chain::from((
+            ResampleCfg::new(&block_resample_dims),
+            WaveletDecompCfg::new(&steps),
+        ));
         let block_transform =
-            Chain::from((resample, WaveletTransform::new(wavelet.clone(), &steps)));
+            Chain::from((Resample, WaveletTransform::new(wavelet.clone(), false)));
 
         let block_counts: Vec<_> = block_size
             .iter()
@@ -195,7 +192,7 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
             }
 
             let mut stream = SerializeStream::new();
-            let transformed = block_transform.forwards(block);
+            let transformed = block_transform.forwards(block, block_transform_cfg);
             superblock[i] = transformed.flatten()[0];
             for elem in transformed.flatten().iter().skip(1) {
                 elem.serialize(&mut stream);
@@ -218,25 +215,27 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
             .map(|size| size.next_power_of_two())
             .collect();
         let steps: Vec<_> = resample_dims.iter().map(|size| size.ilog2()).collect();
-        let resample = Resample::new(&block_counts, &resample_dims);
-        let superblock_transform =
-            Chain::from((resample, WaveletTransform::new(wavelet.clone(), &steps)));
-        let transformed = superblock_transform.forwards(superblock);
+
+        let output_transform_cfg = Chain::from((
+            ResampleCfg::new(&resample_dims),
+            WaveletDecompCfg::new(&steps),
+        ));
+        let output_transform =
+            Chain::from((Resample, WaveletTransform::new(wavelet.clone(), false)));
+        let transformed = output_transform.forwards(superblock, output_transform_cfg);
 
         let mut stream = SerializeStream::new();
 
-        let superblock_header = OutputHeader {
+        let output_header = OutputHeader {
             metadata: self.metadata.clone(),
             num_type: T::name().into(),
             dims: self.dims.clone(),
             block_size: block_size.into(),
             block_counts,
-            block_resample_dims,
-            resample_dims,
             input_block_dims: transformed.dims().into(),
             wavelet,
         };
-        superblock_header.serialize(&mut stream);
+        output_header.serialize(&mut stream);
         for elem in transformed.flatten() {
             elem.serialize(&mut stream);
         }

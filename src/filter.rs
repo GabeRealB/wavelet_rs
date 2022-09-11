@@ -137,3 +137,20 @@ pub fn backwards_window<T: Num + Copy>(
         wavelet.backwards(&low, &high, &mut output)
     }
 }
+
+/// Scales up the data of the low pass by duplicating each element.
+pub fn upscale_window<T: Num + Copy>(
+    dim: usize,
+    output: &mut VolumeWindowMut<'_, T>,
+    low: &VolumeWindow<'_, T>,
+) {
+    let output_rows = output.rows_mut(dim);
+    let low_rows = low.rows(dim);
+
+    for (mut output, low) in output_rows.zip(low_rows) {
+        for (i, elem) in low.iter().enumerate() {
+            output[2 * i] = *elem;
+            output[(2 * i) + 1] = *elem;
+        }
+    }
+}

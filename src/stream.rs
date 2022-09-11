@@ -119,6 +119,21 @@ impl_ser! {
     f64, 8
 }
 
+impl Serializable for bool {
+    #[inline]
+    fn serialize(self, stream: &mut SerializeStream) {
+        (self as u8).serialize(stream)
+    }
+}
+
+impl Deserializable for bool {
+    #[inline]
+    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+        let val: u8 = Deserializable::deserialize(stream);
+        val == 1
+    }
+}
+
 impl Serializable for &str {
     #[inline]
     fn serialize(self, stream: &mut SerializeStream) {
