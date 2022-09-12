@@ -60,81 +60,6 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ForwardsOperation {
-    dim: usize,
-}
-
-impl ForwardsOperation {
-    fn new(steps: &[u32]) -> Vec<Self> {
-        let mut ops = Vec::new();
-        let mut step = vec![0; steps.len()];
-
-        let mut stop = false;
-        while !stop {
-            stop = true;
-
-            for (i, (step, max)) in step.iter_mut().zip(steps).enumerate() {
-                if *step < *max {
-                    *step += 1;
-                    stop = false;
-                    ops.push(Self { dim: i });
-                }
-            }
-        }
-
-        ops
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum BackwardsOperation {
-    Backwards { dim: usize },
-    Upscale { dim: usize },
-}
-
-impl BackwardsOperation {
-    fn new(forwards: &[u32], backwards: &[u32]) -> Vec<Self> {
-        assert_eq!(backwards.len(), forwards.len());
-
-        let mut ops = Vec::new();
-        let mut step = vec![0; backwards.len()];
-        let mut countdown: Vec<_> = backwards
-            .iter()
-            .zip(forwards)
-            .map(|(&s, &f)| f - s)
-            .collect();
-
-        let mut stop = false;
-        while !stop {
-            stop = true;
-
-            for (i, (step, max)) in step.iter_mut().zip(forwards).enumerate() {
-                if *step < *max {
-                    *step += 1;
-                    stop = false;
-
-                    if countdown[i] != 0 {
-                        countdown[i] -= 1;
-                        ops.push(BackwardsOperation::Upscale { dim: i });
-                    } else {
-                        ops.push(BackwardsOperation::Backwards { dim: i });
-                    }
-                }
-            }
-        }
-
-        ops
-    }
-
-    fn dim(&self) -> usize {
-        match self {
-            BackwardsOperation::Backwards { dim } => *dim,
-            BackwardsOperation::Upscale { dim } => *dim,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -152,7 +77,7 @@ mod tests {
 
     use super::{
         resample::{Resample, ResampleCfg},
-        wavelet_transform::WaveletRecompCfg,
+        wavelet_transform::{RefinementInfo, WaveletRecompCfg},
         Chain, ReversibleTransform,
     };
 
@@ -311,6 +236,7 @@ mod tests {
             img_backwards_path,
         );
     }
+
     #[test]
     fn image_haar_custom_steps() {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -403,6 +329,114 @@ mod tests {
         );
     }
 
+    #[test]
+    fn image_haar_refinements() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test");
+
+        let img_path = res_path.join("img_1.jpg");
+        let f_cfg = WaveletDecompCfg::new(&[2, 2]);
+        let transform = WaveletTransform::new(HaarWavelet, false);
+        build_img_refinement(
+            false,
+            transform,
+            f_cfg,
+            img_path,
+            "img_1_decom_haar",
+            &[
+                [0, 0],
+                [1, 0],
+                [2, 0],
+                [0, 1],
+                [0, 2],
+                [1, 1],
+                [1, 2],
+                [2, 2],
+            ],
+        );
+    }
+
+    #[test]
+    fn image_average_filter_refinements() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test");
+
+        let img_path = res_path.join("img_1.jpg");
+        let f_cfg = WaveletDecompCfg::new(&[2, 2]);
+        let transform = WaveletTransform::new(AverageFilter, false);
+        build_img_refinement(
+            false,
+            transform,
+            f_cfg,
+            img_path,
+            "img_1_decom_average_filter",
+            &[
+                [0, 0],
+                [1, 0],
+                [2, 0],
+                [0, 1],
+                [0, 2],
+                [1, 1],
+                [1, 2],
+                [2, 2],
+            ],
+        );
+    }
+
+    #[test]
+    fn image_2_haar_refinements() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test");
+
+        let img_path = res_path.join("img_2.jpg");
+        let f_cfg = WaveletDecompCfg::new(&[2, 2]);
+        let transform = WaveletTransform::new(HaarWavelet, false);
+        build_img_refinement(
+            true,
+            transform,
+            f_cfg,
+            img_path,
+            "img_2_decom_haar",
+            &[
+                [0, 0],
+                [1, 0],
+                [2, 0],
+                [0, 1],
+                [0, 2],
+                [1, 1],
+                [1, 2],
+                [2, 2],
+            ],
+        );
+    }
+
+    #[test]
+    fn image_2_average_filter_refinements() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test");
+
+        let img_path = res_path.join("img_2.jpg");
+        let f_cfg = WaveletDecompCfg::new(&[2, 2]);
+        let transform = WaveletTransform::new(AverageFilter, false);
+        build_img_refinement(
+            true,
+            transform,
+            f_cfg,
+            img_path,
+            "img_2_decom_average_filter",
+            &[
+                [0, 0],
+                [1, 0],
+                [2, 0],
+                [0, 1],
+                [0, 2],
+                [1, 1],
+                [1, 2],
+                [2, 2],
+            ],
+        );
+    }
+
     fn build_img<T: Filter<Vector<f32, 3>>>(
         resample: bool,
         transform: WaveletTransform<Vector<f32, 3>, T>,
@@ -452,5 +486,57 @@ mod tests {
         }
         let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
         img.save(img_backwards_path).unwrap();
+    }
+
+    fn build_img_refinement<T: Filter<Vector<f32, 3>>>(
+        resample: bool,
+        transform: WaveletTransform<Vector<f32, 3>, T>,
+        f_cfg: WaveletDecompCfg<'_>,
+        img_path: impl AsRef<Path>,
+        img_name: &str,
+        refinements: &[[u32; 2]],
+    ) {
+        let f = File::open(&img_path).unwrap();
+        let reader = BufReader::new(f);
+        let img = image::load(reader, image::ImageFormat::Jpeg)
+            .unwrap()
+            .to_rgb32f();
+
+        let (width, height) = (img.width() as usize, img.height() as usize);
+        let (r_width, r_height) = if resample {
+            (width.next_power_of_two(), height.next_power_of_two())
+        } else {
+            (width, height)
+        };
+
+        let dims = [width, height];
+        let r_dims = [r_width, r_height];
+        let data: Vec<_> = img.pixels().map(|p| Vector::new(p.0)).collect();
+
+        let steps = f_cfg.steps();
+        let f_cfg = Chain::combine(ResampleCfg::new(&r_dims), f_cfg);
+        let transform = Chain::from((Resample, transform));
+
+        let volume_dims = [width, height];
+        let volume = VolumeBlock::new_with_data(&volume_dims, data).unwrap();
+        let volume = transform.forwards(volume, f_cfg);
+
+        for &[x, y] in refinements {
+            let info = RefinementInfo::new(&r_dims, steps, &[x, y]);
+            let mut block = volume.clone();
+            WaveletTransform::<Vector<f32, 3>, T>::adapt_for_refinement(&mut block, &info);
+
+            let p = img_path
+                .as_ref()
+                .parent()
+                .unwrap()
+                .join(format!("{img_name}_x_{x}_y_{y}.png"));
+            let mut img = image::Rgb32FImage::new(block.dims()[0] as u32, block.dims()[1] as u32);
+            for (p, rgb) in img.pixels_mut().zip(block.flatten()) {
+                p.0 = *rgb.as_ref();
+            }
+            let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
+            img.save(p).unwrap();
+        }
     }
 }

@@ -361,6 +361,23 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
         (left, right)
     }
 
+    pub fn custom_range(&self, range: &[usize]) -> VolumeWindow<'_, T> {
+        assert_eq!(self.dims.len(), range.len());
+        assert!(range
+            .iter()
+            .zip(&self.dim_offsets)
+            .zip(&self.dims)
+            .all(|((&r, &o), &d)| r + o <= d));
+
+        let dim_offsets = self.dim_offsets.clone();
+        Self {
+            dims: range.into(),
+            dim_offsets,
+            block: self.block,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Returns the dimensions of the window.
     pub fn dims(&self) -> &[usize] {
         &self.dims
@@ -724,6 +741,40 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
         };
 
         (left, right)
+    }
+
+    pub fn custom_range(&self, range: &[usize]) -> VolumeWindow<'_, T> {
+        assert_eq!(self.dims.len(), range.len());
+        assert!(range
+            .iter()
+            .zip(&self.dim_offsets)
+            .zip(&self.dims)
+            .all(|((&r, &o), &d)| r + o <= d));
+
+        let dim_offsets = self.dim_offsets.clone();
+        VolumeWindow {
+            dims: range.into(),
+            dim_offsets,
+            block: self.block,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn custom_range_mut(&mut self, range: &[usize]) -> VolumeWindowMut<'_, T> {
+        assert_eq!(self.dims.len(), range.len());
+        assert!(range
+            .iter()
+            .zip(&self.dim_offsets)
+            .zip(&self.dims)
+            .all(|((&r, &o), &d)| r + o <= d));
+
+        let dim_offsets = self.dim_offsets.clone();
+        Self {
+            dims: range.into(),
+            dim_offsets,
+            block: self.block,
+            _phantom: PhantomData,
+        }
     }
 
     /// Returns the dimensions of the window.

@@ -72,6 +72,35 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
         self.metadata.get(key)
     }
 
+    pub fn refine(
+        &self,
+        mut reader: impl FnMut(&[usize]) -> T,
+        mut writer: impl FnMut(&[usize], T),
+        roi: &[Range<usize>],
+        curr_levels: &[u32],
+        refinements: &[u32],
+    ) {
+        assert_eq!(roi.len(), self.dims.len());
+        assert_eq!(curr_levels.len(), self.dims.len());
+        assert_eq!(refinements.len(), self.dims.len());
+
+        assert!(roi.iter().zip(&self.dims).zip(&self.block_size).all(
+            |((region, volume_size), &block)| (!region.contains(volume_size))
+                && (region.start % block == 0)
+                && (region.end & block == 0)
+        ));
+
+        if curr_levels.iter().all(|&lvl| lvl == 0) {
+            return self.decode(writer, roi, refinements);
+        }
+
+        let levels: Vec<_> = curr_levels
+            .iter()
+            .zip(refinements)
+            .map(|(&lvl, &r)| lvl + r)
+            .collect();
+    }
+
     pub fn decode(
         &self,
         mut writer: impl FnMut(&[usize], T),
