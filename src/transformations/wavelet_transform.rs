@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, marker::PhantomData, sync::atomic::AtomicUsize};
+use std::{collections::VecDeque, marker::PhantomData};
 
 use num_traits::Num;
 
@@ -32,8 +32,6 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
         input: VolumeWindowMut<'_, N>,
         output: VolumeWindowMut<'_, N>,
         ops: &[ForwardsOperation],
-        threads: &AtomicUsize,
-        max_threads: usize,
     ) {
         if ops.is_empty() {
             return;
@@ -49,27 +47,13 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
         low.copy_to(&mut input_low);
         high.copy_to(&mut input_high);
 
-        if threads.load(std::sync::atomic::Ordering::Relaxed) < max_threads
-            && threads.fetch_add(1, std::sync::atomic::Ordering::AcqRel) < max_threads
-        {
-            std::thread::scope(|scope| {
-                let t = scope.spawn(move || {
-                    self.forw_(input_low, low, &ops[1..], threads, max_threads);
-                });
-
-                if has_high_pass {
-                    self.forw_high(input_high, high, &ops[1..], dim, (threads, max_threads));
-                }
-                t.join().unwrap();
-            });
-            threads.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-        } else {
-            self.forw_(input_low, low, &ops[1..], threads, max_threads);
+        rayon::scope(|s| {
+            s.spawn(|_| self.forw_(input_low, low, &ops[1..]));
 
             if has_high_pass {
-                self.forw_high(input_high, high, &ops[1..], dim, (threads, max_threads));
+                s.spawn(|_| self.forw_high(input_high, high, &ops[1..], dim));
             }
-        }
+        });
     }
 
     fn forw_high(
@@ -78,7 +62,6 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
         output: VolumeWindowMut<'_, N>,
         ops: &[ForwardsOperation],
         last_dim: usize,
-        threads: (&AtomicUsize, usize),
     ) {
         if ops.is_empty() || ops[0].dim < last_dim {
             return;
@@ -92,22 +75,10 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
         low.copy_to(&mut input_low);
         high.copy_to(&mut input_high);
 
-        if threads.0.load(std::sync::atomic::Ordering::Relaxed) < threads.1
-            && threads.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel) < threads.1
-        {
-            std::thread::scope(|scope| {
-                let t = scope.spawn(move || {
-                    self.forw_high(input_low, low, &ops[1..], dim, threads);
-                });
-
-                self.forw_high(input_high, high, &ops[1..], dim, threads);
-                t.join().unwrap();
-            });
-            threads.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-        } else {
-            self.forw_high(input_low, low, &ops[1..], dim, threads);
-            self.forw_high(input_high, high, &ops[1..], dim, threads);
-        }
+        rayon::scope(|s| {
+            s.spawn(|_| self.forw_high(input_low, low, &ops[1..], dim));
+            s.spawn(|_| self.forw_high(input_high, high, &ops[1..], dim));
+        });
     }
 
     fn back_(
@@ -115,8 +86,6 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
         mut input: VolumeWindowMut<'_, N>,
         mut output: VolumeWindowMut<'_, N>,
         ops: &[BackwardsOperation],
-        threads: &AtomicUsize,
-        max_threads: usize,
     ) {
         if ops.is_empty() {
             return;
@@ -130,33 +99,13 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
                 let (low, high) = input.split_mut(dim);
                 let (output_low, output_high) = output.split_mut(dim);
 
-                if threads.load(std::sync::atomic::Ordering::Relaxed) < max_threads
-                    && threads.fetch_add(1, std::sync::atomic::Ordering::AcqRel) < max_threads
-                {
-                    std::thread::scope(|scope| {
-                        let t = scope.spawn(move || {
-                            self.back_(low, output_low, &ops[1..], threads, max_threads);
-                        });
-
-                        if has_high_pass {
-                            self.back_high(
-                                high,
-                                output_high,
-                                &ops[1..],
-                                dim,
-                                (threads, max_threads),
-                            );
-                        }
-                        t.join().unwrap();
-                    });
-                    threads.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                } else {
-                    self.back_(low, output_low, &ops[1..], threads, max_threads);
+                rayon::scope(|s| {
+                    s.spawn(|_| self.back_(low, output_low, &ops[1..]));
 
                     if has_high_pass {
-                        self.back_high(high, output_high, &ops[1..], dim, (threads, max_threads));
+                        s.spawn(|_| self.back_high(high, output_high, &ops[1..], dim));
                     }
-                }
+                });
 
                 let (mut low, mut high) = input.split_into(dim);
                 backwards_window(
@@ -178,33 +127,13 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
                 let (low, high) = input.split_mut(dim);
                 let (output_low, output_high) = output.split_mut(dim);
 
-                if threads.load(std::sync::atomic::Ordering::Relaxed) < max_threads
-                    && threads.fetch_add(1, std::sync::atomic::Ordering::AcqRel) < max_threads
-                {
-                    std::thread::scope(|scope| {
-                        let t = scope.spawn(move || {
-                            self.back_(low, output_low, &ops[1..], threads, max_threads);
-                        });
-
-                        if has_high_pass {
-                            self.back_high(
-                                high,
-                                output_high,
-                                &ops[1..],
-                                dim,
-                                (threads, max_threads),
-                            );
-                        }
-                        t.join().unwrap();
-                    });
-                    threads.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                } else {
-                    self.back_(low, output_low, &ops[1..], threads, max_threads);
+                rayon::scope(|s| {
+                    s.spawn(|_| self.back_(low, output_low, &ops[1..]));
 
                     if has_high_pass {
-                        self.back_high(high, output_high, &ops[1..], dim, (threads, max_threads));
+                        s.spawn(|_| self.back_high(high, output_high, &ops[1..], dim));
                     }
-                }
+                });
 
                 let (mut low, mut high) = input.split_into(dim);
                 upscale_window(dim, &mut output, &low.window());
@@ -222,7 +151,6 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
         mut output: VolumeWindowMut<'_, N>,
         ops: &[BackwardsOperation],
         last_dim: usize,
-        threads: (&AtomicUsize, usize),
     ) {
         if ops.is_empty() {
             return;
@@ -237,22 +165,10 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
                 let (low, high) = input.split_mut(dim);
                 let (output_low, output_high) = output.split_mut(dim);
 
-                if threads.0.load(std::sync::atomic::Ordering::Relaxed) < threads.1
-                    && threads.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel) < threads.1
-                {
-                    std::thread::scope(|scope| {
-                        let t = scope.spawn(move || {
-                            self.back_high(low, output_low, &ops[1..], dim, threads);
-                        });
-
-                        self.back_high(high, output_high, &ops[1..], dim, threads);
-                        t.join().unwrap();
-                    });
-                    threads.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                } else {
-                    self.back_high(low, output_low, &ops[1..], dim, threads);
-                    self.back_high(high, output_high, &ops[1..], dim, threads);
-                }
+                rayon::scope(|s| {
+                    s.spawn(|_| self.back_high(low, output_low, &ops[1..], dim));
+                    s.spawn(|_| self.back_high(high, output_high, &ops[1..], dim));
+                });
 
                 let (mut low, mut high) = input.split_into(dim);
                 backwards_window(
@@ -275,22 +191,10 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
                 let (low, high) = input.split_mut(dim);
                 let (output_low, output_high) = output.split_mut(dim);
 
-                if threads.0.load(std::sync::atomic::Ordering::Relaxed) < threads.1
-                    && threads.0.fetch_add(1, std::sync::atomic::Ordering::AcqRel) < threads.1
-                {
-                    std::thread::scope(|scope| {
-                        let t = scope.spawn(move || {
-                            self.back_high(low, output_low, &ops[1..], dim, threads);
-                        });
-
-                        self.back_high(high, output_high, &ops[1..], dim, threads);
-                        t.join().unwrap();
-                    });
-                    threads.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                } else {
-                    self.back_high(low, output_low, &ops[1..], dim, threads);
-                    self.back_high(high, output_high, &ops[1..], dim, threads);
-                }
+                rayon::scope(|s| {
+                    s.spawn(|_| self.back_high(low, output_low, &ops[1..], dim));
+                    s.spawn(|_| self.back_high(high, output_high, &ops[1..], dim));
+                });
 
                 let (mut low, mut high) = input.split_into(dim);
                 upscale_window(dim, &mut output, &low.window());
@@ -350,12 +254,7 @@ impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Forwards, N> for Wavele
         let input_window = input.window_mut();
         let output_window = output.window_mut();
 
-        let max_threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-        let threads = AtomicUsize::new(1);
-
-        self.forw_(input_window, output_window, &ops, &threads, max_threads);
+        self.forw_(input_window, output_window, &ops);
 
         output
     }
@@ -386,12 +285,7 @@ impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Backwards, N> for Wavel
         let input_window = input.window_mut();
         let output_window = output.window_mut();
 
-        let max_threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-        let threads = AtomicUsize::new(1);
-
-        self.back_(input_window, output_window, &ops, &threads, max_threads);
+        self.back_(input_window, output_window, &ops);
 
         output
     }

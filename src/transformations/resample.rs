@@ -26,6 +26,10 @@ impl<N: Num + Lerp + Copy> OneWayTransform<Forwards, N> for Resample {
         let mut output_window = resampled.window_mut();
 
         for i in 0..input.dims().len() {
+            if input.dims()[i] == cfg.to[i] {
+                continue;
+            }
+
             let num_steps = cfg.to[i];
             let step_size = (input.dims()[i] as f32) / (cfg.to[i] as f32);
 
