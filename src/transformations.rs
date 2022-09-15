@@ -4,10 +4,10 @@ use num_traits::Num;
 
 mod basic;
 mod resample;
-mod wavelet_transform;
+pub(crate) mod wavelet_transform;
 
 pub use basic::{Chain, Identity, Reverse};
-pub use resample::{Lerp, Resample, ResampleCfg, ResampleCfgOwned};
+pub use resample::{Lerp, ResampleCfg, ResampleCfgOwned, ResampleExtend, ResampleLinear};
 pub use wavelet_transform::{
     WaveletDecompCfg, WaveletDecompCfgOwned, WaveletRecompCfg, WaveletRecompCfgOwned,
     WaveletTransform,
@@ -76,7 +76,7 @@ mod tests {
     };
 
     use super::{
-        resample::{Resample, ResampleCfg},
+        resample::{ResampleCfg, ResampleExtend},
         wavelet_transform::{RefinementInfo, WaveletRecompCfg},
         Chain, ReversibleTransform,
     };
@@ -465,7 +465,7 @@ mod tests {
 
         let f_cfg = Chain::combine(ResampleCfg::new(&r_dims), f_cfg);
         let b_cfg = Chain::combine(ResampleCfg::new(&dims), b_cfg);
-        let transform = Chain::from((Resample, transform));
+        let transform = Chain::from((ResampleExtend, transform));
 
         let volume_dims = [width, height];
         let volume = VolumeBlock::new_with_data(&volume_dims, data).unwrap();
@@ -488,7 +488,7 @@ mod tests {
         img.save(img_backwards_path).unwrap();
     }
 
-    fn build_img_refinement<T: Filter<Vector<f32, 3>>>(
+    fn build_img_refinement<T: Filter<Vector<f32, 3>> + Clone>(
         resample: bool,
         transform: WaveletTransform<Vector<f32, 3>, T>,
         f_cfg: WaveletDecompCfg<'_>,
@@ -514,12 +514,15 @@ mod tests {
         let data: Vec<_> = img.pixels().map(|p| Vector::new(p.0)).collect();
 
         let steps = f_cfg.steps();
+        let b_cfg = Chain::combine(ResampleCfg::new(&dims), f_cfg.into());
         let f_cfg = Chain::combine(ResampleCfg::new(&r_dims), f_cfg);
-        let transform = Chain::from((Resample, transform));
+        let f_trans = Chain::from((ResampleExtend, transform.clone()));
 
         let volume_dims = [width, height];
         let volume = VolumeBlock::new_with_data(&volume_dims, data).unwrap();
-        let volume = transform.forwards(volume, f_cfg);
+        let volume = f_trans.forwards(volume, f_cfg);
+
+        let volume_backwards = f_trans.backwards(volume.clone(), b_cfg);
 
         for &[x, y] in refinements {
             let info = RefinementInfo::new(&r_dims, steps, &[x, y]);
@@ -534,6 +537,53 @@ mod tests {
             let mut img = image::Rgb32FImage::new(block.dims()[0] as u32, block.dims()[1] as u32);
             for (p, rgb) in img.pixels_mut().zip(block.flatten()) {
                 p.0 = *rgb.as_ref();
+            }
+            let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
+            img.save(p).unwrap();
+
+            let b = [x, y];
+            let b_cfg = WaveletRecompCfg::new(steps, &b);
+            let vol_b = transform.backwards(volume.clone(), b_cfg);
+
+            let step_x = 2usize.pow(steps[0] - x);
+            let step_y = 2usize.pow(steps[1] - y);
+            for x in (0..r_width).step_by(step_x) {
+                for y in (0..r_height).step_by(step_y) {
+                    block[[x / step_x, y / step_y].as_ref()] = vol_b[[x, y].as_ref()];
+                }
+            }
+
+            let remaining_steps = [steps[0] - x, steps[1] - y];
+            let b_cfg = Chain::combine(
+                ResampleCfg::new(&dims),
+                WaveletRecompCfg::new(&remaining_steps, &remaining_steps),
+            );
+            let block = f_trans.backwards(block, b_cfg);
+
+            let p = img_path
+                .as_ref()
+                .parent()
+                .unwrap()
+                .join(format!("{img_name}_backwards_x_{x}_y_{y}.png"));
+            let mut img = image::Rgb32FImage::new(block.dims()[0] as u32, block.dims()[1] as u32);
+            for (p, rgb) in img.pixels_mut().zip(block.flatten()) {
+                p.0 = *rgb.as_ref();
+            }
+            let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
+            img.save(p).unwrap();
+
+            let p = img_path
+                .as_ref()
+                .parent()
+                .unwrap()
+                .join(format!("{img_name}_backwards_diff_x_{x}_y_{y}.png"));
+            let mut img = image::Rgb32FImage::new(block.dims()[0] as u32, block.dims()[1] as u32);
+            for ((p, &rgb), &rgb_orig) in img
+                .pixels_mut()
+                .zip(block.flatten())
+                .zip(volume_backwards.flatten())
+            {
+                p.0 = *(rgb_orig - rgb).as_ref();
             }
             let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
             img.save(p).unwrap();

@@ -38,7 +38,7 @@ impl Serializable for Identity {
 }
 
 impl Deserializable for Identity {
-    fn deserialize(_stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+    fn deserialize(_stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         Self
     }
 }
@@ -101,7 +101,7 @@ impl<T: Serializable> Serializable for Reverse<T> {
 }
 
 impl<T: Deserializable> Deserializable for Reverse<T> {
-    fn deserialize(stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let t_ty: String = Deserializable::deserialize(stream);
         assert_eq!(t_ty, T::name());
 
@@ -190,7 +190,7 @@ impl<T: Serializable, U: Serializable> Serializable for Chain<T, U> {
 }
 
 impl<T: Deserializable, U: Deserializable> Deserializable for Chain<T, U> {
-    fn deserialize(stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let t_ty: String = Deserializable::deserialize(stream);
         let u_ty: String = Deserializable::deserialize(stream);
         assert_eq!(t_ty, T::name());

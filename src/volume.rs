@@ -15,6 +15,7 @@ use crate::utilities::{flatten_idx, flatten_idx_with_offset, flatten_idx_with_of
 pub struct VolumeBlock<T: Num + Copy> {
     data: Vec<T>,
     dims: Vec<usize>,
+    strides: Vec<usize>,
 }
 
 impl<T: Num + Copy> VolumeBlock<T> {
@@ -68,9 +69,18 @@ impl<T: Num + Copy> VolumeBlock<T> {
                 required: num_elements,
             })
         } else {
+            let strides = std::iter::once(1)
+                .chain(dims.iter().scan(1usize, |s, &d| {
+                    *s *= d;
+                    Some(*s)
+                }))
+                .take(dims.len())
+                .collect();
+
             Ok(Self {
                 data,
                 dims: dims.into(),
+                strides,
             })
         }
     }
@@ -187,12 +197,12 @@ impl<T: Num + Copy> VolumeBlock<T> {
     }
 
     fn index_offset(&self, index: &[usize], offset: &[usize]) -> &T {
-        let idx = flatten_idx_with_offset(&self.dims, index, offset);
+        let idx = flatten_idx_with_offset(&self.dims, &self.strides, index, offset);
         &self.data[idx]
     }
 
     fn index_offset_mut(&mut self, index: &[usize], offset: &[usize]) -> &mut T {
-        let idx = flatten_idx_with_offset(&self.dims, index, offset);
+        let idx = flatten_idx_with_offset(&self.dims, &self.strides, index, offset);
         &mut self.data[idx]
     }
 
@@ -223,14 +233,14 @@ impl<T: Num + Copy> Index<&[usize]> for VolumeBlock<T> {
     type Output = T;
 
     fn index(&self, index: &[usize]) -> &Self::Output {
-        let idx = flatten_idx(&self.dims, index);
+        let idx = flatten_idx(&self.dims, &self.strides, index);
         &self[idx]
     }
 }
 
 impl<T: Num + Copy> IndexMut<&[usize]> for VolumeBlock<T> {
     fn index_mut(&mut self, index: &[usize]) -> &mut Self::Output {
-        let idx = flatten_idx(&self.dims, index);
+        let idx = flatten_idx(&self.dims, &self.strides, index);
         &mut self[idx]
     }
 }
@@ -435,7 +445,13 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
     /// assert!(rows_z.next().is_none());
     /// ```
     pub fn rows(&self, dim: usize) -> Rows<'_, 'a, T> {
-        let start_idx = unsafe { flatten_idx(&(*self.block).dims, &self.dim_offsets) };
+        let start_idx = unsafe {
+            flatten_idx(
+                &(*self.block).dims,
+                &(*self.block).strides,
+                &self.dim_offsets,
+            )
+        };
 
         let (divisor, stride, row_strides) = with_alloca_zeroed(
             self.dims.len() * 2 * std::mem::size_of::<usize>(),
@@ -456,7 +472,7 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
                 tmp_idx[dim] = 1;
                 let stride = unsafe {
                     flatten_idx_with_offset_unchecked(
-                        &(*self.block).dims,
+                        &(*self.block).strides,
                         tmp_idx,
                         &self.dim_offsets,
                     ) - start_idx
@@ -471,7 +487,7 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
                         tmp_idx[i] = 1;
                         let row_end = unsafe {
                             flatten_idx_with_offset_unchecked(
-                                &(*self.block).dims,
+                                &(*self.block).strides,
                                 tmp_idx,
                                 &self.dim_offsets,
                             )
@@ -481,7 +497,7 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
                         row_starts[i] = d - 1;
                         let next_row_start_idx = unsafe {
                             flatten_idx_with_offset_unchecked(
-                                &(*self.block).dims,
+                                &(*self.block).strides,
                                 row_starts,
                                 &self.dim_offsets,
                             )
@@ -834,7 +850,13 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     /// assert!(rows_z.next().is_none());
     /// ```
     pub fn rows(&self, dim: usize) -> Rows<'_, 'a, T> {
-        let start_idx = unsafe { flatten_idx(&(*self.block).dims, &self.dim_offsets) };
+        let start_idx = unsafe {
+            flatten_idx(
+                &(*self.block).dims,
+                &(*self.block).strides,
+                &self.dim_offsets,
+            )
+        };
 
         let (divisor, stride, row_strides) = with_alloca_zeroed(
             self.dims.len() * 2 * std::mem::size_of::<usize>(),
@@ -855,7 +877,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
                 tmp_idx[dim] = 1;
                 let stride = unsafe {
                     flatten_idx_with_offset_unchecked(
-                        &(*self.block).dims,
+                        &(*self.block).strides,
                         tmp_idx,
                         &self.dim_offsets,
                     ) - start_idx
@@ -870,7 +892,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
                         tmp_idx[i] = 1;
                         let row_end = unsafe {
                             flatten_idx_with_offset_unchecked(
-                                &(*self.block).dims,
+                                &(*self.block).strides,
                                 tmp_idx,
                                 &self.dim_offsets,
                             )
@@ -880,7 +902,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
                         row_starts[i] = d - 1;
                         let next_row_start_idx = unsafe {
                             flatten_idx_with_offset_unchecked(
-                                &(*self.block).dims,
+                                &(*self.block).strides,
                                 row_starts,
                                 &self.dim_offsets,
                             )
@@ -963,7 +985,13 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     /// assert!(rows_z.next().is_none());
     /// ```
     pub fn rows_mut(&mut self, dim: usize) -> RowsMut<'_, 'a, T> {
-        let start_idx = unsafe { flatten_idx(&(*self.block).dims, &self.dim_offsets) };
+        let start_idx = unsafe {
+            flatten_idx(
+                &(*self.block).dims,
+                &(*self.block).strides,
+                &self.dim_offsets,
+            )
+        };
 
         let (divisor, stride, row_strides) = with_alloca_zeroed(
             self.dims.len() * 2 * std::mem::size_of::<usize>(),
@@ -984,7 +1012,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
                 tmp_idx[dim] = 1;
                 let stride = unsafe {
                     flatten_idx_with_offset_unchecked(
-                        &(*self.block).dims,
+                        &(*self.block).strides,
                         tmp_idx,
                         &self.dim_offsets,
                     ) - start_idx
@@ -999,7 +1027,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
                         tmp_idx[i] = 1;
                         let row_end = unsafe {
                             flatten_idx_with_offset_unchecked(
-                                &(*self.block).dims,
+                                &(*self.block).strides,
                                 tmp_idx,
                                 &self.dim_offsets,
                             )
@@ -1009,7 +1037,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
                         row_starts[i] = d - 1;
                         let next_row_start_idx = unsafe {
                             flatten_idx_with_offset_unchecked(
-                                &(*self.block).dims,
+                                &(*self.block).strides,
                                 row_starts,
                                 &self.dim_offsets,
                             )
@@ -1202,6 +1230,16 @@ impl<'a, T: Num + Copy> Row<'a, T> {
         }
     }
 
+    /// Fetches a reference to an element without any bounds checks.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `index < self.len()`.
+    pub unsafe fn get_unchecked(&self, index: usize) -> &T {
+        let flat_idx = self.row_start + (index * self.stride);
+        (*self.block).get_unchecked(flat_idx)
+    }
+
     pub fn iter(&self) -> RowIter<'_, 'a, T> {
         self.into_iter()
     }
@@ -1212,8 +1250,7 @@ impl<'a, T: Num + Copy> Index<usize> for Row<'a, T> {
 
     fn index(&self, index: usize) -> &Self::Output {
         assert!(index < self.row_len);
-        let flat_idx = self.row_start + (index * self.stride);
-        unsafe { &(*self.block)[flat_idx] }
+        unsafe { self.get_unchecked(index) }
     }
 }
 
@@ -1282,6 +1319,26 @@ impl<'a, T: Num + Copy> RowMut<'a, T> {
         }
     }
 
+    /// Fetches a reference to an element without any bounds checks.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `index < self.len()`.
+    pub unsafe fn get_unchecked(&self, index: usize) -> &T {
+        let flat_idx = self.row_start + (index * self.stride);
+        (*self.block).get_unchecked(flat_idx)
+    }
+
+    /// Fetches a mutable reference to an element without any bounds checks.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `index < self.len()`.
+    pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
+        let flat_idx = self.row_start + (index * self.stride);
+        (*self.block).get_unchecked_mut(flat_idx)
+    }
+
     pub fn iter(&mut self) -> RowIterMut<'_, 'a, T> {
         self.into_iter()
     }
@@ -1292,16 +1349,14 @@ impl<'a, T: Num + Copy> Index<usize> for RowMut<'a, T> {
 
     fn index(&self, index: usize) -> &Self::Output {
         assert!(index < self.row_len);
-        let flat_idx = self.row_start + (index * self.stride);
-        unsafe { &(*self.block)[flat_idx] }
+        unsafe { self.get_unchecked(index) }
     }
 }
 
 impl<'a, T: Num + Copy> IndexMut<usize> for RowMut<'a, T> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         assert!(index < self.row_len);
-        let flat_idx = self.row_start + (index * self.stride);
-        unsafe { &mut (*self.block)[flat_idx] }
+        unsafe { self.get_unchecked_mut(index) }
     }
 }
 

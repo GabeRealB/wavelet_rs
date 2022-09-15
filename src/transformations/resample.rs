@@ -5,9 +5,66 @@ use crate::stream::{Deserializable, Serializable};
 use super::{Backwards, Forwards, OneWayTransform};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Resample;
+pub struct ResampleExtend;
 
-impl<N: Num + Lerp + Copy> OneWayTransform<Forwards, N> for Resample {
+impl<N: Num + Copy> OneWayTransform<Forwards, N> for ResampleExtend {
+    type Cfg<'a> = ResampleCfg<'a>;
+
+    #[inline]
+    fn apply(
+        &self,
+        input: crate::volume::VolumeBlock<N>,
+        cfg: Self::Cfg<'_>,
+    ) -> crate::volume::VolumeBlock<N> {
+        assert!(input.dims().len() == cfg.to.len());
+        assert!(input.dims().iter().zip(cfg.to).all(|(&s, &d)| s <= d));
+
+        if input.dims() == cfg.to {
+            return input;
+        }
+
+        let mut resampled = crate::volume::VolumeBlock::new(cfg.to).unwrap();
+        let input_window = input.window();
+
+        let mut output_window = resampled.window_mut();
+        let mut output_window = output_window.custom_range_mut(input.dims());
+
+        input_window.copy_to(&mut output_window);
+        resampled
+    }
+}
+
+impl<N: Num + Copy> OneWayTransform<Backwards, N> for ResampleExtend {
+    type Cfg<'a> = ResampleCfg<'a>;
+
+    #[inline]
+    fn apply(
+        &self,
+        input: crate::volume::VolumeBlock<N>,
+        cfg: Self::Cfg<'_>,
+    ) -> crate::volume::VolumeBlock<N> {
+        assert!(input.dims().len() == cfg.to.len());
+        assert!(input.dims().iter().zip(cfg.to).all(|(&s, &d)| s >= d));
+
+        if input.dims() == cfg.to {
+            return input;
+        }
+
+        let mut resampled = crate::volume::VolumeBlock::new(cfg.to).unwrap();
+        let input_window = input.window();
+        let input_window = input_window.custom_range(cfg.to);
+
+        let mut output_window = resampled.window_mut();
+
+        input_window.copy_to(&mut output_window);
+        resampled
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ResampleLinear;
+
+impl<N: Num + Lerp + Copy> OneWayTransform<Forwards, N> for ResampleLinear {
     type Cfg<'a> = ResampleCfg<'a>;
 
     #[inline]
@@ -56,7 +113,7 @@ impl<N: Num + Lerp + Copy> OneWayTransform<Forwards, N> for Resample {
     }
 }
 
-impl<N: Num + Lerp + Copy> OneWayTransform<Backwards, N> for Resample {
+impl<N: Num + Lerp + Copy> OneWayTransform<Backwards, N> for ResampleLinear {
     type Cfg<'a> = ResampleCfg<'a>;
 
     #[inline]
@@ -118,7 +175,7 @@ impl Serializable for ResampleCfgOwned {
 }
 
 impl Deserializable for ResampleCfgOwned {
-    fn deserialize(stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let to = Deserializable::deserialize(stream);
         Self { to }
     }

@@ -33,7 +33,7 @@ pub trait Serializable: Named {
 }
 
 pub trait Deserializable: Named {
-    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self;
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self;
 }
 
 #[derive(Debug, Default)]
@@ -46,8 +46,8 @@ impl SerializeStream {
         Self { bytes: Vec::new() }
     }
 
-    pub fn write(&self, x: &mut impl Write) -> std::io::Result<()> {
-        x.write_all(&self.bytes)
+    pub fn write_encode(&self, x: impl Write) -> std::io::Result<()> {
+        zstd::stream::copy_encode(&*self.bytes, x, 0)
     }
 }
 
@@ -62,18 +62,39 @@ impl Write for SerializeStream {
 }
 
 #[derive(Debug, Default)]
-pub struct DeserializeStream<'a> {
+pub struct DeserializeStream {
+    bytes: Vec<u8>,
+}
+
+impl DeserializeStream {
+    pub fn new() -> Self {
+        Self { bytes: Vec::new() }
+    }
+
+    pub fn new_decode(x: impl Read) -> std::io::Result<Self> {
+        let mut bytes = Vec::new();
+        zstd::stream::copy_decode(x, &mut bytes)?;
+        Ok(Self { bytes })
+    }
+
+    pub fn stream(&self) -> DeserializeStreamRef<'_> {
+        DeserializeStreamRef::new(&self.bytes)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct DeserializeStreamRef<'a> {
     idx: usize,
     bytes: &'a [u8],
 }
 
-impl<'a> DeserializeStream<'a> {
+impl<'a> DeserializeStreamRef<'a> {
     pub fn new(buf: &'a [u8]) -> Self {
         Self { idx: 0, bytes: buf }
     }
 }
 
-impl<'a> Read for DeserializeStream<'a> {
+impl<'a> Read for DeserializeStreamRef<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let read = Read::read(&mut &self.bytes[self.idx..], buf)?;
         self.idx += read;
@@ -94,7 +115,7 @@ macro_rules! impl_ser {
 
             impl Deserializable for $T {
                 #[inline]
-                fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+                fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
                     let mut bytes = [0; $S];
                     stream.read_exact(&mut bytes).unwrap();
                     <$T>::from_le_bytes(bytes)
@@ -128,7 +149,7 @@ impl Serializable for bool {
 
 impl Deserializable for bool {
     #[inline]
-    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
         let val: u8 = Deserializable::deserialize(stream);
         val == 1
     }
@@ -178,7 +199,7 @@ impl Serializable for String {
 
 impl Deserializable for String {
     #[inline]
-    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
         let len: usize = Deserializable::deserialize(stream);
         let mut str = String::with_capacity(len);
         for _ in 0..len {
@@ -205,7 +226,7 @@ impl<T: Serializable, const N: usize> Serializable for Vector<T, N> {
 
 impl<T: Deserializable, const N: usize> Deserializable for Vector<T, N> {
     #[inline]
-    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
         let x = [(); N].map(|_| Deserializable::deserialize(stream));
         Vector::new(x)
     }
@@ -223,7 +244,7 @@ impl<T: Serializable> Serializable for Vec<T> {
 
 impl<T: Deserializable> Deserializable for Vec<T> {
     #[inline]
-    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
         let len: usize = Deserializable::deserialize(stream);
         let mut vec = Vec::with_capacity(len);
         for _ in 0..len {
@@ -244,7 +265,7 @@ impl<T: Serializable> Serializable for Range<T> {
 
 impl<T: Deserializable> Deserializable for Range<T> {
     #[inline]
-    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
         let start = Deserializable::deserialize(stream);
         let end = Deserializable::deserialize(stream);
 
@@ -261,7 +282,7 @@ impl<T: Serializable> Serializable for RangeFrom<T> {
 
 impl<T: Deserializable> Deserializable for RangeFrom<T> {
     #[inline]
-    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
         let start = Deserializable::deserialize(stream);
 
         Self { start }
@@ -275,7 +296,7 @@ impl Serializable for RangeFull {
 
 impl Deserializable for RangeFull {
     #[inline]
-    fn deserialize(_stream: &mut DeserializeStream<'_>) -> Self {
+    fn deserialize(_stream: &mut DeserializeStreamRef<'_>) -> Self {
         Self
     }
 }
@@ -292,7 +313,7 @@ impl<T: Serializable> Serializable for RangeInclusive<T> {
 
 impl<T: Deserializable> Deserializable for RangeInclusive<T> {
     #[inline]
-    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
         let start = Deserializable::deserialize(stream);
         let end = Deserializable::deserialize(stream);
 
@@ -309,7 +330,7 @@ impl<T: Serializable> Serializable for RangeTo<T> {
 
 impl<T: Deserializable> Deserializable for RangeTo<T> {
     #[inline]
-    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
         let end = Deserializable::deserialize(stream);
 
         Self { end }
@@ -325,7 +346,7 @@ impl<T: Serializable> Serializable for RangeToInclusive<T> {
 
 impl<T: Deserializable> Deserializable for RangeToInclusive<T> {
     #[inline]
-    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
         let end = Deserializable::deserialize(stream);
 
         Self { end }
@@ -347,7 +368,7 @@ impl Serializable for AnyMapItem {
 }
 
 impl Deserializable for AnyMapItem {
-    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
         let r#type: String = Deserializable::deserialize(stream);
         let data_len: usize = Deserializable::deserialize(stream);
         let mut data = vec![0u8; data_len].into_boxed_slice();
@@ -388,7 +409,7 @@ impl AnyMap {
         if val.r#type != T::name() {
             None
         } else {
-            let mut stream = DeserializeStream::new(&val.data);
+            let mut stream = DeserializeStreamRef::new(&val.data);
             Some(T::deserialize(&mut stream))
         }
     }
@@ -422,7 +443,7 @@ impl Serializable for AnyMap {
 }
 
 impl Deserializable for AnyMap {
-    fn deserialize(stream: &mut DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
         let map_len: usize = Deserializable::deserialize(stream);
         let mut map = BTreeMap::new();
         for _ in 0..map_len {

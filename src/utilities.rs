@@ -1,5 +1,11 @@
-pub fn flatten_idx(dims: &[usize], index: &[usize]) -> usize {
-    assert!(index.len() == dims.len());
+use std::{
+    iter::Sum,
+    ops::{Add, Mul},
+};
+
+pub fn flatten_idx(dims: &[usize], strides: &[usize], index: &[usize]) -> usize {
+    assert_eq!(index.len(), dims.len());
+    assert_eq!(strides.len(), dims.len());
 
     if index
         .iter()
@@ -9,21 +15,23 @@ pub fn flatten_idx(dims: &[usize], index: &[usize]) -> usize {
         panic!("out of bounds");
     }
 
-    unsafe { flatten_idx_unchecked(dims, index) }
+    unsafe { flatten_idx_unchecked(strides, index) }
 }
 
-pub unsafe fn flatten_idx_unchecked(dims: &[usize], index: &[usize]) -> usize {
-    let mut idx = *index.get_unchecked(0);
-    let mut offset_multiplier = 1;
-    for (i, &dim_idx) in index.iter().enumerate().skip(1) {
-        offset_multiplier *= dims.get_unchecked(i - 1);
-        idx += offset_multiplier * dim_idx;
-    }
-
-    idx
+pub unsafe fn flatten_idx_unchecked(strides: &[usize], index: &[usize]) -> usize {
+    flatten_idx_impl(
+        strides.iter().copied(),
+        index.iter().copied(),
+        std::iter::repeat(0),
+    )
 }
 
-pub fn flatten_idx_with_offset(dims: &[usize], index: &[usize], offset: &[usize]) -> usize {
+pub fn flatten_idx_with_offset(
+    dims: &[usize],
+    strides: &[usize],
+    index: &[usize],
+    offset: &[usize],
+) -> usize {
     assert!(offset.len() == dims.len());
     assert!(index.len() == dims.len());
 
@@ -36,20 +44,30 @@ pub fn flatten_idx_with_offset(dims: &[usize], index: &[usize], offset: &[usize]
         panic!("out of bounds");
     }
 
-    unsafe { flatten_idx_with_offset_unchecked(dims, index, offset) }
+    unsafe { flatten_idx_with_offset_unchecked(strides, index, offset) }
 }
 
 pub unsafe fn flatten_idx_with_offset_unchecked(
-    dims: &[usize],
+    strides: &[usize],
     index: &[usize],
     offset: &[usize],
 ) -> usize {
-    let mut idx = index.get_unchecked(0) + offset.get_unchecked(0);
-    let mut offset_multiplier = 1;
-    for (i, (&dim_idx, &offset)) in index.iter().zip(offset.iter()).enumerate().skip(1) {
-        offset_multiplier *= dims.get_unchecked(i - 1);
-        idx += offset_multiplier * (dim_idx + offset);
-    }
+    flatten_idx_impl(
+        strides.iter().copied(),
+        index.iter().copied(),
+        offset.iter().copied(),
+    )
+}
 
-    idx
+fn flatten_idx_impl<T, U, V>(
+    s: impl Iterator<Item = T>,
+    i: impl Iterator<Item = U>,
+    o: impl Iterator<Item = V>,
+) -> T::Output
+where
+    T::Output: Sum,
+    T: Mul<U::Output>,
+    U: Add<V>,
+{
+    s.zip(i).zip(o).map(|((s, i), o)| s * (i + o)).sum()
 }

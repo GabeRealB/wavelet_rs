@@ -9,9 +9,11 @@ use num_traits::Num;
 use crate::{
     encoder::OutputHeader,
     filter::Filter,
+    range::{for_each_range, for_each_range_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream},
     transformations::{
-        Chain, Lerp, Resample, ResampleCfg, ReversibleTransform, WaveletRecompCfg, WaveletTransform,
+        wavelet_transform::RefinementInfo, Chain, Lerp, ResampleCfg, ResampleExtend,
+        ReversibleTransform, WaveletRecompCfg, WaveletTransform,
     },
     volume::VolumeBlock,
 };
@@ -37,8 +39,9 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
         let p = p.as_ref();
         let input_path = p.parent().unwrap().to_path_buf();
 
-        let input = std::fs::read(p).unwrap();
-        let mut stream = DeserializeStream::new(&input);
+        let f = std::fs::File::open(p).unwrap();
+        let stream = DeserializeStream::new_decode(f).unwrap();
+        let mut stream = stream.stream();
         let header: OutputHeader<_> = Deserializable::deserialize(&mut stream);
         let num_elements = header.input_block_dims.iter().product();
         let mut elements = Vec::with_capacity(num_elements);
@@ -76,29 +79,201 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
         &self,
         mut reader: impl FnMut(&[usize]) -> T,
         mut writer: impl FnMut(&[usize], T),
-        roi: &[Range<usize>],
+        input_range: &[Range<usize>],
+        output_range: &[Range<usize>],
         curr_levels: &[u32],
         refinements: &[u32],
     ) {
-        assert_eq!(roi.len(), self.dims.len());
+        assert_eq!(input_range.len(), self.dims.len());
+        assert_eq!(output_range.len(), self.dims.len());
         assert_eq!(curr_levels.len(), self.dims.len());
         assert_eq!(refinements.len(), self.dims.len());
 
-        assert!(roi.iter().zip(&self.dims).zip(&self.block_size).all(
-            |((region, volume_size), &block)| (!region.contains(volume_size))
-                && (region.start % block == 0)
-                && (region.end & block == 0)
-        ));
+        // Input must be able to populate all the necessary blocks.
+        assert!(input_range
+            .iter()
+            .zip(&self.dims)
+            .zip(&self.block_size)
+            .all(
+                |((region, &volume_size), &block)| (region.end <= volume_size)
+                    && (region.start % block == 0)
+                    && (region.end % block == 0)
+            ));
 
-        if curr_levels.iter().all(|&lvl| lvl == 0) {
-            return self.decode(writer, roi, refinements);
-        }
+        // Output range must be contained inside the received input range.
+        assert!(input_range
+            .iter()
+            .zip(output_range)
+            .all(|(i_range, o_range)| (i_range.start <= o_range.start)
+                && (o_range.end <= i_range.end)));
 
-        let levels: Vec<_> = curr_levels
+        let input_levels: Vec<_> = curr_levels
+            .iter()
+            .zip(&self.input_block_dims)
+            .map(|(&lvl, &i_dim)| lvl.min(i_dim.ilog2()))
+            .collect();
+        let block_levels: Vec<_> = curr_levels
+            .iter()
+            .zip(&input_levels)
+            .map(|(&lvl, &i_lvl)| lvl - i_lvl)
+            .collect();
+
+        let input_refinements: Vec<_> = input_levels
             .iter()
             .zip(refinements)
-            .map(|(&lvl, &r)| lvl + r)
+            .zip(&self.input_block_dims)
+            .map(|((&i_lvl, &re), &i_dim)| (i_lvl + re).min(i_dim.ilog2()) - i_lvl)
             .collect();
+        let block_refinements: Vec<_> = input_refinements
+            .iter()
+            .zip(refinements)
+            .map(|(&i_re, &re)| re - i_re)
+            .collect();
+
+        let requires_input_pass = input_refinements.iter().any(|&r| r != 0);
+        if requires_input_pass {
+            let new_levels: Vec<_> = curr_levels
+                .iter()
+                .zip(refinements)
+                .map(|(&c, &r)| c + r)
+                .collect();
+            return self.decode(writer, output_range, &new_levels);
+        }
+
+        let resample_dim: Vec<_> = self
+            .block_size
+            .iter()
+            .map(|&b| b.next_power_of_two())
+            .collect();
+        let block_decompositions: Vec<_> = resample_dim.iter().map(|&b| b.ilog2()).collect();
+        let remaining_decompositions: Vec<_> = block_decompositions
+            .iter()
+            .zip(&block_levels)
+            .map(|(&d, &l)| d - l)
+            .collect();
+
+        let block_input_dims: Vec<_> = block_levels.iter().map(|&re| 2usize.pow(re)).collect();
+        let block_downsample_stepping: Vec<_> = resample_dim
+            .iter()
+            .zip(&block_input_dims)
+            .map(|(&s, &d)| s / d)
+            .collect();
+
+        let resample_cfg = ResampleCfg::new(&resample_dim);
+        let resample_pass = ResampleExtend;
+
+        let refinement_cfg = Chain::from((
+            ResampleCfg::new(&self.block_size),
+            WaveletRecompCfg::new(&remaining_decompositions, &block_refinements),
+        ));
+        let refinement_pass = Chain::from((
+            ResampleExtend,
+            WaveletTransform::new(self.wavelet.clone(), false),
+        ));
+
+        let block_refinement_info =
+            RefinementInfo::new(&resample_dim, &block_decompositions, &block_levels);
+
+        let num_blocks = self.block_counts.iter().product();
+        let mut block_iter_idx = vec![0; self.block_size.len()];
+
+        let num_elements = self.block_size.iter().product();
+        let num_elements_downs = block_input_dims.iter().product();
+
+        for block_idx in 0..num_blocks {
+            let block_offset: Vec<_> = block_iter_idx
+                .iter()
+                .zip(&self.block_size)
+                .map(|(&idx, &size)| idx * size)
+                .collect();
+            let block_range: Vec<_> = block_offset
+                .iter()
+                .zip(&self.block_size)
+                .map(|(&start, &size)| start..start + size)
+                .collect();
+
+            if input_range
+                .iter()
+                .zip(block_range)
+                .all(|(i_r, b_r)| (i_r.start <= b_r.start) && (i_r.end >= b_r.end))
+            {
+                let mut block_input = VolumeBlock::new(&self.block_size).unwrap();
+                let mut elem_idx = vec![0; self.block_size.len()];
+                for _ in 0..num_elements {
+                    let idx: Vec<_> = block_offset
+                        .iter()
+                        .zip(&elem_idx)
+                        .map(|(&offset, &idx)| offset + idx)
+                        .collect();
+                    block_input[&*elem_idx] = reader(&idx);
+
+                    for (idx, &size) in elem_idx.iter_mut().zip(&self.block_size) {
+                        *idx = (*idx + 1) % size;
+                        if *idx != 0 {
+                            break;
+                        }
+                    }
+                }
+
+                let block_input = resample_pass.forwards(block_input, resample_cfg);
+                let block_path = self.path.join(format!("block_{block_idx}.bin"));
+
+                let f = std::fs::File::open(block_path).unwrap();
+                let stream = DeserializeStream::new_decode(f).unwrap();
+                let mut stream = stream.stream();
+
+                let mut block = VolumeBlock::new(&self.block_size).unwrap();
+                for elem in block.flatten_mut().iter_mut().skip(1) {
+                    *elem = Deserializable::deserialize(&mut stream);
+                }
+                WaveletTransform::<T, F>::adapt_for_refinement(&mut block, &block_refinement_info);
+
+                let mut block_window = block.window_mut();
+                let mut block_window = block_window.custom_range_mut(&block_input_dims);
+
+                let mut elem_idx = vec![0; self.block_size.len()];
+                for _ in 0..num_elements_downs {
+                    let idx: Vec<_> = block_downsample_stepping
+                        .iter()
+                        .zip(&elem_idx)
+                        .map(|(&step, &idx)| step * idx)
+                        .collect();
+                    block_window[&*elem_idx] = block_input[&*idx];
+
+                    for (idx, &size) in elem_idx.iter_mut().zip(&block_input_dims) {
+                        *idx = (*idx + 1) % size;
+                        if *idx != 0 {
+                            break;
+                        }
+                    }
+                }
+
+                let block = refinement_pass.backwards(block, refinement_cfg);
+                let mut elem_idx = vec![0; self.block_size.len()];
+                for _ in 0..num_elements {
+                    let idx: Vec<_> = block_offset
+                        .iter()
+                        .zip(&elem_idx)
+                        .map(|(&offset, &idx)| offset + idx)
+                        .collect();
+                    writer(&idx, block[&*elem_idx]);
+
+                    for (idx, &size) in elem_idx.iter_mut().zip(&self.block_size) {
+                        *idx = (*idx + 1) % size;
+                        if *idx != 0 {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            for (block_idx, &count) in block_iter_idx.iter_mut().zip(&self.block_counts) {
+                *block_idx = (*block_idx + 1) % count;
+                if *block_idx != 0 {
+                    break;
+                }
+            }
+        }
     }
 
     pub fn decode(
@@ -142,21 +317,23 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
             ResampleCfg::new(&self.block_counts),
             WaveletRecompCfg::new(&input_forwards_steps, &input_backwards_steps),
         ));
-        let input_transform =
-            Chain::from((Resample, WaveletTransform::new(self.wavelet.clone(), false)));
+        let input_transform = Chain::from((
+            ResampleExtend,
+            WaveletTransform::new(self.wavelet.clone(), false),
+        ));
         let first_pass = input_transform.backwards(self.input_block.clone(), input_transform_cfg);
 
         let block_transform_cfg = Chain::from((
             ResampleCfg::new(&self.block_size),
             WaveletRecompCfg::new(&block_forwards_steps, &block_backwards_steps),
         ));
-        let block_transform =
-            Chain::from((Resample, WaveletTransform::new(self.wavelet.clone(), false)));
+        let block_transform = Chain::from((
+            ResampleExtend,
+            WaveletTransform::new(self.wavelet.clone(), false),
+        ));
 
-        let num_blocks = self.block_counts.iter().product();
-        let mut block_iter_idx = vec![0; self.block_size.len()];
-
-        for block_idx in 0..num_blocks {
+        let block_range: Vec<_> = self.block_counts.iter().map(|&c| 0..c).collect();
+        for_each_range_enumerate(block_range.iter().cloned(), |block_idx, block_iter_idx| {
             let block_offset: Vec<_> = block_iter_idx
                 .iter()
                 .zip(&self.block_size)
@@ -172,11 +349,13 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
                 required.contains(&range.start) || required.contains(&range.end)
             }) {
                 let block_path = self.path.join(format!("block_{block_idx}.bin"));
-                let block_buffer = std::fs::read(block_path).unwrap();
-                let mut stream = DeserializeStream::new(&block_buffer);
+
+                let f = std::fs::File::open(block_path).unwrap();
+                let stream = DeserializeStream::new_decode(f).unwrap();
+                let mut stream = stream.stream();
 
                 let mut block = VolumeBlock::new(&self.block_size).unwrap();
-                block.flatten_mut()[0] = first_pass.flatten()[0];
+                block[0] = first_pass[block_idx];
                 for elem in block.flatten_mut().iter_mut().skip(1) {
                     *elem = Deserializable::deserialize(&mut stream);
                 }
@@ -190,39 +369,18 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
                         required.start.max(range.start)..required.end.min(range.end)
                     })
                     .collect();
-                let num_range_elems = sub_range.iter().map(|r| r.end - r.start).product();
-                let mut elem_idx: Vec<_> = sub_range.iter().map(|range| range.start).collect();
-
-                for _ in 0..num_range_elems {
-                    let local_idx: Vec<_> = elem_idx
+                for_each_range(sub_range.iter().cloned(), |idx| {
+                    let local_idx: Vec<_> = idx
                         .iter()
                         .zip(&block_offset)
                         .map(|(&global, &offset)| global - offset)
                         .collect();
 
                     let elem = block_pass[&*local_idx];
-                    writer(&elem_idx, elem);
-
-                    for (elem_idx, range) in elem_idx.iter_mut().zip(&sub_range) {
-                        *elem_idx += 1;
-                        if *elem_idx == range.end {
-                            *elem_idx = range.start;
-                        }
-
-                        if *elem_idx != range.start {
-                            break;
-                        }
-                    }
-                }
+                    writer(idx, elem);
+                });
             }
-
-            for (block_idx, &count) in block_iter_idx.iter_mut().zip(&self.block_counts) {
-                *block_idx = (*block_idx + 1) % count;
-                if *block_idx != 0 {
-                    break;
-                }
-            }
-        }
+        });
     }
 }
 
@@ -230,7 +388,9 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
 mod test {
     use std::path::PathBuf;
 
-    use crate::{decoder::VolumeWaveletDecoder, filter::AverageFilter, volume::VolumeBlock};
+    use crate::{
+        decoder::VolumeWaveletDecoder, filter::AverageFilter, vector::Vector, volume::VolumeBlock,
+    };
 
     const TRANSFORM_ERROR: f32 = 0.001;
 
@@ -268,5 +428,86 @@ mod test {
 
         assert!(block_1.is_equal(&expected_block_1, TRANSFORM_ERROR));
         assert!(block_2.is_equal(&expected_block_2, TRANSFORM_ERROR));
+    }
+
+    #[test]
+    fn decode_img_1() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test/decode_img_1/");
+
+        let data_path = res_path.join("output.bin");
+
+        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>, AverageFilter>::new(data_path);
+
+        let dims = [2048, 2048, 1];
+        let range = dims.map(|d| 0..d);
+        let steps = 2048usize.ilog2();
+        let mut data = VolumeBlock::new(&dims).unwrap();
+
+        for x in 0..steps + 1 {
+            let writer = |idx: &[usize], elem| {
+                data[idx] = elem;
+            };
+
+            decoder.decode(writer, &range, &[x, steps, 0]);
+            let mut img = image::Rgb32FImage::new(data.dims()[0] as u32, data.dims()[1] as u32);
+            for (p, rgb) in img.pixels_mut().zip(data.flatten()) {
+                p.0 = *rgb.as_ref();
+            }
+            let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
+            img.save(res_path.join(format!("img_1_x_{x}.png"))).unwrap();
+        }
+    }
+
+    #[test]
+    fn decode_img_1_refine() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test/decode_img_1/");
+
+        let data_path = res_path.join("output.bin");
+
+        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>, AverageFilter>::new(data_path);
+
+        let dims = [2048, 2048, 1];
+        let range = dims.map(|d| 0..d);
+        let steps = 2048usize.ilog2();
+        let mut data = VolumeBlock::new(&dims).unwrap();
+        let writer = |idx: &[usize], elem| {
+            data[idx] = elem;
+        };
+
+        decoder.decode(writer, &range, &[0, steps, 0]);
+        let mut img = image::Rgb32FImage::new(data.dims()[0] as u32, data.dims()[1] as u32);
+        for (p, rgb) in img.pixels_mut().zip(data.flatten()) {
+            p.0 = *rgb.as_ref();
+        }
+        let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
+        img.save(res_path.join("img_1_ref_x_0.png")).unwrap();
+
+        for x in 1..steps + 1 {
+            let mut next = VolumeBlock::new(&dims).unwrap();
+            let reader = |idx: &[usize]| data[idx];
+            let writer = |idx: &[usize], elem| {
+                next[idx] = elem;
+            };
+
+            decoder.refine(
+                reader,
+                writer,
+                &range,
+                &range,
+                &[x - 1, steps, 0],
+                &[1, 0, 0],
+            );
+            data = next;
+
+            let mut img = image::Rgb32FImage::new(data.dims()[0] as u32, data.dims()[1] as u32);
+            for (p, rgb) in img.pixels_mut().zip(data.flatten()) {
+                p.0 = *rgb.as_ref();
+            }
+            let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
+            img.save(res_path.join(format!("img_1_ref_x_{x}.png")))
+                .unwrap();
+        }
     }
 }

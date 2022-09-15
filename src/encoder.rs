@@ -4,9 +4,11 @@ use num_traits::Num;
 
 use crate::{
     filter::Filter,
+    range::for_each_range_enumerate,
     stream::{AnyMap, Deserializable, Serializable, SerializeStream},
     transformations::{
-        Chain, Lerp, Resample, ResampleCfg, ReversibleTransform, WaveletDecompCfg, WaveletTransform,
+        Chain, Lerp, ResampleCfg, ResampleExtend, ReversibleTransform, WaveletDecompCfg,
+        WaveletTransform,
     },
     utilities::{flatten_idx, flatten_idx_unchecked},
     volume::VolumeBlock,
@@ -15,6 +17,7 @@ use crate::{
 pub struct VolumeWaveletEncoder<'a, T: Num + Copy> {
     metadata: AnyMap,
     dims: Vec<usize>,
+    strides: Vec<usize>,
     num_base_dims: usize,
     fetchers: Vec<Option<VolumeFetcher<'a, T>>>,
 }
@@ -44,7 +47,7 @@ impl<T: Serializable> Serializable for OutputHeader<T> {
 }
 
 impl<T: Deserializable> Deserializable for OutputHeader<T> {
-    fn deserialize(stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let t_name: String = Deserializable::deserialize(stream);
         assert_eq!(t_name, T::name());
 
@@ -79,7 +82,7 @@ impl Serializable for BlockHeader {
 }
 
 impl Deserializable for BlockHeader {
-    fn deserialize(stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let region = Deserializable::deserialize(stream);
 
         Self { region }
@@ -90,23 +93,32 @@ type VolumeFetcher<'a, T> = Box<dyn FnMut(&[usize]) -> T + 'a>;
 
 impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T> {
     pub fn new(dims: &[usize], num_base_dims: usize) -> Self {
-        assert!(dims.len() >= num_base_dims);
+        assert!(dims.len() > num_base_dims);
         let num_fetchers = dims[num_base_dims..].iter().product();
         let mut fetchers = Vec::with_capacity(num_fetchers);
         for _ in 0..num_fetchers {
             fetchers.push(None);
         }
 
+        let strides = std::iter::once(1)
+            .chain(dims[num_base_dims..].iter().scan(1usize, |s, &d| {
+                *s *= d;
+                Some(*s)
+            }))
+            .take(dims.len() - num_base_dims)
+            .collect();
+
         Self {
             metadata: AnyMap::new(),
             dims: dims.into(),
+            strides,
             num_base_dims,
             fetchers,
         }
     }
 
     pub fn add_fetcher(&mut self, index: &[usize], f: impl FnMut(&[usize]) -> T + 'a) {
-        let idx = flatten_idx(&self.dims[self.num_base_dims..], index);
+        let idx = flatten_idx(&self.dims[self.num_base_dims..], &self.strides, index);
         assert!(self.fetchers[idx].is_none());
         self.fetchers[idx] = Some(Box::new(f));
     }
@@ -137,7 +149,7 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
         assert!(block_size
             .iter()
             .zip(&self.dims)
-            .all(|(&block, &dim)| dim % block == 0));
+            .all(|(&block, &dim)| dim % block == 0 && block <= dim));
 
         let block_resample_dims: Vec<_> = block_size
             .iter()
@@ -151,20 +163,21 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
             ResampleCfg::new(&block_resample_dims),
             WaveletDecompCfg::new(&steps),
         ));
-        let block_transform =
-            Chain::from((Resample, WaveletTransform::new(wavelet.clone(), false)));
+        let block_transform = Chain::from((
+            ResampleExtend,
+            WaveletTransform::new(wavelet.clone(), false),
+        ));
 
         let block_counts: Vec<_> = block_size
             .iter()
             .zip(&self.dims)
             .map(|(&block, &dim)| dim / block)
             .collect();
-        let mut block_idx = vec![0; block_size.len()];
+        let block_counts_range: Vec<_> = block_counts.iter().map(|&c| 0..c).collect();
+        let block_range: Vec<_> = block_size.iter().map(|&b| 0..b).collect();
 
-        let num_elements = block_size.iter().product();
-        let num_blocks = block_counts.iter().product();
         let mut superblock = VolumeBlock::new(&block_counts).unwrap();
-        for i in 0..num_blocks {
+        for_each_range_enumerate(block_counts_range.iter().cloned(), |i, block_idx| {
             let block_offset: Vec<_> = block_idx
                 .iter()
                 .zip(block_size)
@@ -172,43 +185,29 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
                 .collect();
 
             let mut block = VolumeBlock::new(block_size).unwrap();
-            let mut inner_idx = vec![0; block_size.len()];
-            for i in 0..num_elements {
+
+            for_each_range_enumerate(block_range.iter().cloned(), |i, inner_idx| {
                 let idx: Vec<_> = block_offset
                     .iter()
-                    .zip(&inner_idx)
+                    .zip(inner_idx)
                     .map(|(&offset, &idx)| offset + idx)
                     .collect();
                 let fetcher_idx = unsafe { self.flatten_idx_full_unchecked(&idx) };
                 let fetcher = self.fetchers[fetcher_idx].as_mut().unwrap();
                 block[i] = fetcher(&idx[0..self.num_base_dims]);
-
-                for (idx, &size) in inner_idx.iter_mut().zip(block_size) {
-                    *idx = (*idx + 1) % size;
-                    if *idx != 0 {
-                        break;
-                    }
-                }
-            }
+            });
 
             let mut stream = SerializeStream::new();
             let transformed = block_transform.forwards(block, block_transform_cfg);
-            superblock[i] = transformed.flatten()[0];
+            superblock[i] = transformed[0];
             for elem in transformed.flatten().iter().skip(1) {
                 elem.serialize(&mut stream);
             }
 
             let block_path = output.as_ref().join(format!("block_{i}.bin"));
-            let mut block_file = File::create(block_path).unwrap();
-            stream.write(&mut block_file).unwrap();
-
-            for (block_idx, &count) in block_idx.iter_mut().zip(&block_counts) {
-                *block_idx = (*block_idx + 1) % count;
-                if *block_idx != 0 {
-                    break;
-                }
-            }
-        }
+            let block_file = File::create(block_path).unwrap();
+            stream.write_encode(block_file).unwrap();
+        });
 
         let resample_dims: Vec<_> = block_counts
             .iter()
@@ -220,8 +219,10 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
             ResampleCfg::new(&resample_dims),
             WaveletDecompCfg::new(&steps),
         ));
-        let output_transform =
-            Chain::from((Resample, WaveletTransform::new(wavelet.clone(), false)));
+        let output_transform = Chain::from((
+            ResampleExtend,
+            WaveletTransform::new(wavelet.clone(), false),
+        ));
         let transformed = output_transform.forwards(superblock, output_transform_cfg);
 
         let mut stream = SerializeStream::new();
@@ -240,23 +241,23 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
             elem.serialize(&mut stream);
         }
         let output_path = output.as_ref().join("output.bin");
-        let mut output_file = File::create(output_path).unwrap();
-        stream.write(&mut output_file).unwrap();
+        let output_file = File::create(output_path).unwrap();
+        stream.write_encode(output_file).unwrap();
     }
 
     unsafe fn flatten_idx_full_unchecked(&self, index: &[usize]) -> usize {
-        flatten_idx_unchecked(
-            &self.dims[self.num_base_dims..],
-            &index[self.num_base_dims..],
-        )
+        flatten_idx_unchecked(&self.strides, &index[self.num_base_dims..])
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::path::PathBuf;
+    use std::{fs::File, io::BufReader, path::PathBuf};
 
-    use crate::{filter::AverageFilter, volume::VolumeBlock};
+    use crate::{
+        filter::AverageFilter, utilities::flatten_idx_unchecked, vector::Vector,
+        volume::VolumeBlock,
+    };
 
     use super::VolumeWaveletEncoder;
 
@@ -281,6 +282,60 @@ mod test {
         encoder.insert_metadata::<String>("Test".into(), "Example metadata string".into());
 
         let block_size = [32, 32, 32, 2];
+        encoder.encode(res_path, &block_size, AverageFilter)
+    }
+
+    #[test]
+    fn encode_img_1() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let img_path = res_path.join("resources/test/img_1.jpg");
+        res_path.push("resources/test/encode_img_1");
+
+        let f = File::open(img_path).unwrap();
+        let reader = BufReader::new(f);
+        let img = image::load(reader, image::ImageFormat::Jpeg)
+            .unwrap()
+            .to_rgb32f();
+
+        let (width, height) = (img.width() as usize, img.height() as usize);
+        let data: Vec<_> = img.pixels().map(|p| Vector::new(p.0)).collect();
+        let fetcher = move |idx: &[usize]| {
+            let idx = unsafe { flatten_idx_unchecked(&[1, width], idx) };
+            data[idx]
+        };
+
+        let dims = [width, height, 1];
+        let mut encoder = VolumeWaveletEncoder::new(&dims, 2);
+        encoder.add_fetcher(&[0], fetcher);
+
+        let block_size = [256, 256, 1];
+        encoder.encode(res_path, &block_size, AverageFilter)
+    }
+
+    #[test]
+    fn encode_img_2() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let img_path = res_path.join("resources/test/img_2.jpg");
+        res_path.push("resources/test/encode_img_2");
+
+        let f = File::open(img_path).unwrap();
+        let reader = BufReader::new(f);
+        let img = image::load(reader, image::ImageFormat::Jpeg)
+            .unwrap()
+            .to_rgb32f();
+
+        let (width, height) = (img.width() as usize, img.height() as usize);
+        let data: Vec<_> = img.pixels().map(|p| Vector::new(p.0)).collect();
+        let fetcher = move |idx: &[usize]| {
+            let idx = unsafe { flatten_idx_unchecked(&[1, width], idx) };
+            data[idx]
+        };
+
+        let dims = [width, height, 1];
+        let mut encoder = VolumeWaveletEncoder::new(&dims, 2);
+        encoder.add_fetcher(&[0], fetcher);
+
+        let block_size = [252, 252, 1];
         encoder.encode(res_path, &block_size, AverageFilter)
     }
 }

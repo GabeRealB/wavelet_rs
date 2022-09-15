@@ -267,16 +267,17 @@ impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Backwards, N> for Wavel
         let dims = input.dims();
 
         assert!(dims.len() == cfg.backwards.len());
-        for (dim, step) in dims.iter().zip(cfg.backwards.iter()) {
-            let required_size = 2usize.pow(*step);
-            assert!(required_size <= *dim);
+        for ((&dim, &f), &b) in dims.iter().zip(cfg.forwards).zip(cfg.backwards) {
+            let required_size = 2usize.pow(b);
+            assert!(b <= f);
+            assert!(required_size <= dim);
         }
 
         if dims.iter().cloned().product::<usize>() == 0 {
             panic!("invalid number of steps");
         }
 
-        if dims.iter().cloned().product::<usize>() == 1 {
+        if dims.iter().cloned().product::<usize>() == 1 || cfg.forwards.iter().all(|&f| f == 0) {
             return input;
         }
 
@@ -303,7 +304,7 @@ impl<N: Num + Copy + Send, T: Filter<N> + Serializable> Serializable for Wavelet
 impl<N: Num + Copy + Send, T: Filter<N> + Deserializable> Deserializable
     for WaveletTransform<N, T>
 {
-    fn deserialize(stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let n_type: String = Deserializable::deserialize(stream);
         let t_type: String = Deserializable::deserialize(stream);
         assert_eq!(n_type, N::name());
@@ -411,7 +412,7 @@ impl Serializable for WaveletDecompCfgOwned {
 }
 
 impl Deserializable for WaveletDecompCfgOwned {
-    fn deserialize(stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let steps = Deserializable::deserialize(stream);
         Self { steps }
     }
@@ -447,7 +448,7 @@ impl Serializable for WaveletRecompCfgOwned {
 }
 
 impl Deserializable for WaveletRecompCfgOwned {
-    fn deserialize(stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let forwards = Deserializable::deserialize(stream);
         let backwards = Deserializable::deserialize(stream);
         Self {
@@ -560,7 +561,7 @@ impl RefinementInfo {
                         .map(|(j, (&s, &d))| match j.cmp(&i) {
                             std::cmp::Ordering::Less => (steps[i] - 1).min(d),
                             std::cmp::Ordering::Equal => s,
-                            std::cmp::Ordering::Greater => steps[i].max(s),
+                            std::cmp::Ordering::Greater => steps[i].max(s).min(d),
                         });
 
                 let roi = dims

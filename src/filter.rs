@@ -52,7 +52,7 @@ impl Serializable for HaarWavelet {
 }
 
 impl Deserializable for HaarWavelet {
-    fn deserialize(_stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+    fn deserialize(_stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         Self
     }
 }
@@ -97,7 +97,7 @@ impl Serializable for AverageFilter {
 }
 
 impl Deserializable for AverageFilter {
-    fn deserialize(_stream: &mut crate::stream::DeserializeStream<'_>) -> Self {
+    fn deserialize(_stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         Self
     }
 }
