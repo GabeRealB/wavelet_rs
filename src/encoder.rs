@@ -197,16 +197,43 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
                 block[i] = fetcher(&idx[0..self.num_base_dims]);
             });
 
-            let mut stream = SerializeStream::new();
-            let transformed = block_transform.forwards(block, block_transform_cfg);
-            superblock[i] = transformed[0];
-            for elem in transformed.flatten().iter().skip(1) {
-                elem.serialize(&mut stream);
-            }
+            let block_decomp = block_transform.forwards(block, block_transform_cfg);
+            superblock[i] = block_decomp[0];
 
-            let block_path = output.as_ref().join(format!("block_{i}.bin"));
-            let block_file = File::create(block_path).unwrap();
-            stream.write_encode(block_file).unwrap();
+            let block_dir = output.as_ref().join(format!("block_{i}"));
+            if block_dir.exists() {
+                std::fs::remove_dir_all(&block_dir).unwrap();
+            }
+            std::fs::create_dir(&block_dir).unwrap();
+
+            let mut counter = 0;
+            let mut block_decomp_window = block_decomp.window();
+            while block_decomp_window.dims().iter().any(|&d| d != 1) {
+                let num_dims = block_decomp_window.dims().len();
+
+                for dim in 0..num_dims {
+                    if block_decomp_window.dims()[dim] == 1 {
+                        continue;
+                    }
+
+                    let (low, high) = block_decomp_window.split_into(dim);
+                    block_decomp_window = low;
+
+                    let rows = high.rows(0);
+                    let mut stream = SerializeStream::new();
+                    for row in rows {
+                        for elem in row.as_slice().unwrap() {
+                            elem.serialize(&mut stream);
+                        }
+                    }
+
+                    let out_path = block_dir.join(format!("block_part_{counter}.bin"));
+                    let out_file = File::create(out_path).unwrap();
+                    stream.write_encode(out_file).unwrap();
+
+                    counter += 1;
+                }
+            }
         });
 
         let resample_dims: Vec<_> = block_counts
