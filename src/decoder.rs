@@ -18,6 +18,7 @@ use crate::{
     volume::VolumeBlock,
 };
 
+#[derive(Debug)]
 pub struct VolumeWaveletDecoder<
     T: Deserializable + Num + Lerp + Send + Copy,
     F: Filter<T> + Deserializable + Clone,

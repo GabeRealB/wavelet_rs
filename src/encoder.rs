@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, fs::File, ops::Range, path::Path};
+use std::{borrow::Borrow, fmt::Debug, fs::File, ops::Range, path::Path};
 
 use num_traits::Num;
 
@@ -274,6 +274,17 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
 
     unsafe fn flatten_idx_full_unchecked(&self, index: &[usize]) -> usize {
         flatten_idx_unchecked(&self.strides, &index[self.num_base_dims..])
+    }
+}
+
+impl<'a, T: Num + Copy> Debug for VolumeWaveletEncoder<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VolumeWaveletEncoder")
+            .field("metadata", &self.metadata)
+            .field("dims", &self.dims)
+            .field("strides", &self.strides)
+            .field("num_base_dims", &self.num_base_dims)
+            .finish_non_exhaustive()
     }
 }
 

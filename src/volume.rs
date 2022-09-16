@@ -109,9 +109,11 @@ impl<T: Num + Copy> VolumeBlock<T> {
     /// ```
     pub fn window(&self) -> VolumeWindow<'_, T> {
         VolumeWindow {
-            block: self,
             dims: self.dims.clone(),
             dim_offsets: vec![0; self.dims.len()],
+            block_data: &*self.data,
+            block_dims: &self.dims,
+            block_strides: &self.strides,
             _phantom: PhantomData,
         }
     }
@@ -135,9 +137,11 @@ impl<T: Num + Copy> VolumeBlock<T> {
     /// ```
     pub fn window_mut(&mut self) -> VolumeWindowMut<'_, T> {
         VolumeWindowMut {
-            block: self,
             dims: self.dims.clone(),
             dim_offsets: vec![0; self.dims.len()],
+            block_data: &mut *self.data,
+            block_dims: &self.dims,
+            block_strides: &self.strides,
             _phantom: PhantomData,
         }
     }
@@ -195,24 +199,6 @@ impl<T: Num + Copy> VolumeBlock<T> {
     pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
         self.data.get_unchecked_mut(index)
     }
-
-    fn index_offset(&self, index: &[usize], offset: &[usize]) -> &T {
-        let idx = flatten_idx_with_offset(&self.dims, &self.strides, index, offset);
-        &self.data[idx]
-    }
-
-    fn index_offset_mut(&mut self, index: &[usize], offset: &[usize]) -> &mut T {
-        let idx = flatten_idx_with_offset(&self.dims, &self.strides, index, offset);
-        &mut self.data[idx]
-    }
-
-    unsafe fn sub_slice_unchecked(&self, start: usize, len: usize) -> &[T] {
-        self.data.get_unchecked(start..start + len)
-    }
-
-    unsafe fn sub_slice_unchecked_mut(&mut self, start: usize, len: usize) -> &mut [T] {
-        self.data.get_unchecked_mut(start..start + len)
-    }
 }
 
 impl<T: Num + Copy> Index<usize> for VolumeBlock<T> {
@@ -259,8 +245,10 @@ pub enum VolumeError {
 pub struct VolumeWindow<'a, T: Num + Copy> {
     dims: Vec<usize>,
     dim_offsets: Vec<usize>,
-    block: *const VolumeBlock<T>,
-    _phantom: PhantomData<&'a VolumeBlock<T>>,
+    block_data: *const [T],
+    block_dims: &'a [usize],
+    block_strides: &'a [usize],
+    _phantom: PhantomData<&'a [T]>,
 }
 
 impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
@@ -301,16 +289,20 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
         offsets_right[dim] += dims[dim];
 
         let left = Self {
-            block: self.block,
             dims: dims.clone(),
             dim_offsets: offsets_left,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         };
 
         let right = Self {
-            block: self.block,
             dims,
             dim_offsets: offsets_right,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         };
 
@@ -355,16 +347,20 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
         offsets_right[dim] += dims[dim];
 
         let left = Self {
-            block: self.block,
             dims: dims.clone(),
             dim_offsets: offsets_left,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         };
 
         let right = Self {
-            block: self.block,
             dims,
             dim_offsets: offsets_right,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         };
 
@@ -383,7 +379,9 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
         Self {
             dims: range.into(),
             dim_offsets,
-            block: self.block,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         }
     }
@@ -444,14 +442,8 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
     /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 6.0]);
     /// assert!(rows_z.next().is_none());
     /// ```
-    pub fn rows(&self, dim: usize) -> Rows<'_, 'a, T> {
-        let start_idx = unsafe {
-            flatten_idx(
-                &(*self.block).dims,
-                &(*self.block).strides,
-                &self.dim_offsets,
-            )
-        };
+    pub fn rows(&self, dim: usize) -> Rows<'_, T> {
+        let start_idx = flatten_idx(self.block_dims, self.block_strides, &self.dim_offsets);
 
         let (divisor, stride, row_strides) = with_alloca_zeroed(
             self.dims.len() * 2 * std::mem::size_of::<usize>(),
@@ -472,7 +464,7 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
                 tmp_idx[dim] = 1;
                 let stride = unsafe {
                     flatten_idx_with_offset_unchecked(
-                        &(*self.block).strides,
+                        self.block_strides,
                         tmp_idx,
                         &self.dim_offsets,
                     ) - start_idx
@@ -487,7 +479,7 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
                         tmp_idx[i] = 1;
                         let row_end = unsafe {
                             flatten_idx_with_offset_unchecked(
-                                &(*self.block).strides,
+                                self.block_strides,
                                 tmp_idx,
                                 &self.dim_offsets,
                             )
@@ -497,7 +489,7 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
                         row_starts[i] = d - 1;
                         let next_row_start_idx = unsafe {
                             flatten_idx_with_offset_unchecked(
-                                &(*self.block).strides,
+                                self.block_strides,
                                 row_starts,
                                 &self.dim_offsets,
                             )
@@ -523,7 +515,7 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
             row_strides,
             row_idx: start_idx,
             row_len: self.dims[dim],
-            block: self.block,
+            data: self.block_data,
             _phantom: PhantomData,
         }
     }
@@ -569,14 +561,20 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
     }
 }
 
-unsafe impl<'a, T: Num + Copy> Send for VolumeWindow<'a, T> where &'a VolumeBlock<T>: Send {}
-unsafe impl<'a, T: Num + Copy> Sync for VolumeWindow<'a, T> where &'a VolumeBlock<T>: Sync {}
+unsafe impl<'a, T: Num + Copy> Send for VolumeWindow<'a, T> where &'a [T]: Send {}
+unsafe impl<'a, T: Num + Copy> Sync for VolumeWindow<'a, T> where &'a [T]: Sync {}
 
 impl<'a, T: Num + Copy> Index<&[usize]> for VolumeWindow<'a, T> {
     type Output = T;
 
     fn index(&self, index: &[usize]) -> &Self::Output {
-        unsafe { (*self.block).index_offset(index, &self.dim_offsets) }
+        let idx = flatten_idx_with_offset(
+            self.block_dims,
+            self.block_strides,
+            index,
+            &self.dim_offsets,
+        );
+        unsafe { &*self.block_data.get_unchecked(idx) }
     }
 }
 
@@ -584,17 +582,21 @@ impl<'a, T: Num + Copy> Index<&[usize]> for VolumeWindow<'a, T> {
 pub struct VolumeWindowMut<'a, T: Num + Copy> {
     dims: Vec<usize>,
     dim_offsets: Vec<usize>,
-    block: *mut VolumeBlock<T>,
-    _phantom: PhantomData<&'a mut VolumeBlock<T>>,
+    block_data: *mut [T],
+    block_dims: &'a [usize],
+    block_strides: &'a [usize],
+    _phantom: PhantomData<&'a mut [T]>,
 }
 
 impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     /// Constructs a shared window from the mutable window.
-    pub fn window(&self) -> VolumeWindow<T> {
+    pub fn window(&self) -> VolumeWindow<'_, T> {
         VolumeWindow {
-            block: self.block,
             dims: self.dims.clone(),
             dim_offsets: self.dim_offsets.clone(),
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         }
     }
@@ -636,16 +638,20 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
         offsets_right[dim] += dims[dim];
 
         let left = VolumeWindow {
-            block: self.block,
             dims: dims.clone(),
             dim_offsets: offsets_left,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         };
 
         let right = VolumeWindow {
-            block: self.block,
             dims,
             dim_offsets: offsets_right,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         };
 
@@ -689,16 +695,20 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
         offsets_right[dim] += dims[dim];
 
         let left = Self {
-            block: self.block,
             dims: dims.clone(),
             dim_offsets: offsets_left,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         };
 
         let right = Self {
-            block: self.block,
             dims,
             dim_offsets: offsets_right,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         };
 
@@ -743,16 +753,20 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
         offsets_right[dim] += dims[dim];
 
         let left = Self {
-            block: self.block,
             dims: dims.clone(),
             dim_offsets: offsets_left,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         };
 
         let right = Self {
-            block: self.block,
             dims,
             dim_offsets: offsets_right,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         };
 
@@ -771,7 +785,9 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
         VolumeWindow {
             dims: range.into(),
             dim_offsets,
-            block: self.block,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         }
     }
@@ -788,7 +804,9 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
         Self {
             dims: range.into(),
             dim_offsets,
-            block: self.block,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
             _phantom: PhantomData,
         }
     }
@@ -849,14 +867,8 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 6.0]);
     /// assert!(rows_z.next().is_none());
     /// ```
-    pub fn rows(&self, dim: usize) -> Rows<'_, 'a, T> {
-        let start_idx = unsafe {
-            flatten_idx(
-                &(*self.block).dims,
-                &(*self.block).strides,
-                &self.dim_offsets,
-            )
-        };
+    pub fn rows(&self, dim: usize) -> Rows<'_, T> {
+        let start_idx = flatten_idx(self.block_dims, self.block_strides, &self.dim_offsets);
 
         let (divisor, stride, row_strides) = with_alloca_zeroed(
             self.dims.len() * 2 * std::mem::size_of::<usize>(),
@@ -877,7 +889,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
                 tmp_idx[dim] = 1;
                 let stride = unsafe {
                     flatten_idx_with_offset_unchecked(
-                        &(*self.block).strides,
+                        self.block_strides,
                         tmp_idx,
                         &self.dim_offsets,
                     ) - start_idx
@@ -892,7 +904,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
                         tmp_idx[i] = 1;
                         let row_end = unsafe {
                             flatten_idx_with_offset_unchecked(
-                                &(*self.block).strides,
+                                self.block_strides,
                                 tmp_idx,
                                 &self.dim_offsets,
                             )
@@ -902,7 +914,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
                         row_starts[i] = d - 1;
                         let next_row_start_idx = unsafe {
                             flatten_idx_with_offset_unchecked(
-                                &(*self.block).strides,
+                                self.block_strides,
                                 row_starts,
                                 &self.dim_offsets,
                             )
@@ -928,7 +940,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
             row_strides,
             row_idx: start_idx,
             row_len: self.dims[dim],
-            block: self.block,
+            data: self.block_data,
             _phantom: PhantomData,
         }
     }
@@ -984,14 +996,8 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     /// assert_eq!(rows_z.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [2.0, 6.0]);
     /// assert!(rows_z.next().is_none());
     /// ```
-    pub fn rows_mut(&mut self, dim: usize) -> RowsMut<'_, 'a, T> {
-        let start_idx = unsafe {
-            flatten_idx(
-                &(*self.block).dims,
-                &(*self.block).strides,
-                &self.dim_offsets,
-            )
-        };
+    pub fn rows_mut(&mut self, dim: usize) -> RowsMut<'_, T> {
+        let start_idx = flatten_idx(self.block_dims, self.block_strides, &self.dim_offsets);
 
         let (divisor, stride, row_strides) = with_alloca_zeroed(
             self.dims.len() * 2 * std::mem::size_of::<usize>(),
@@ -1012,7 +1018,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
                 tmp_idx[dim] = 1;
                 let stride = unsafe {
                     flatten_idx_with_offset_unchecked(
-                        &(*self.block).strides,
+                        self.block_strides,
                         tmp_idx,
                         &self.dim_offsets,
                     ) - start_idx
@@ -1027,7 +1033,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
                         tmp_idx[i] = 1;
                         let row_end = unsafe {
                             flatten_idx_with_offset_unchecked(
-                                &(*self.block).strides,
+                                self.block_strides,
                                 tmp_idx,
                                 &self.dim_offsets,
                             )
@@ -1037,7 +1043,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
                         row_starts[i] = d - 1;
                         let next_row_start_idx = unsafe {
                             flatten_idx_with_offset_unchecked(
-                                &(*self.block).strides,
+                                self.block_strides,
                                 row_starts,
                                 &self.dim_offsets,
                             )
@@ -1063,7 +1069,7 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
             row_strides,
             row_idx: start_idx,
             row_len: self.dims[dim],
-            block: self.block,
+            data: self.block_data,
             _phantom: PhantomData,
         }
     }
@@ -1108,35 +1114,48 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     }
 }
 
-unsafe impl<'a, T: Num + Copy> Send for VolumeWindowMut<'a, T> where &'a mut VolumeBlock<T>: Send {}
-unsafe impl<'a, T: Num + Copy> Sync for VolumeWindowMut<'a, T> where &'a mut VolumeBlock<T>: Sync {}
+unsafe impl<'a, T: Num + Copy> Send for VolumeWindowMut<'a, T> where &'a mut [T]: Send {}
+unsafe impl<'a, T: Num + Copy> Sync for VolumeWindowMut<'a, T> where &'a mut [T]: Sync {}
 
 impl<'a, T: Num + Copy> Index<&[usize]> for VolumeWindowMut<'a, T> {
     type Output = T;
 
     fn index(&self, index: &[usize]) -> &Self::Output {
-        unsafe { (*self.block).index_offset(index, &self.dim_offsets) }
+        let idx = flatten_idx_with_offset(
+            self.block_dims,
+            self.block_strides,
+            index,
+            &self.dim_offsets,
+        );
+        unsafe { &*self.block_data.get_unchecked_mut(idx) }
     }
 }
 
 impl<'a, T: Num + Copy> IndexMut<&[usize]> for VolumeWindowMut<'a, T> {
     fn index_mut(&mut self, index: &[usize]) -> &mut Self::Output {
-        unsafe { (*self.block).index_offset_mut(index, &self.dim_offsets) }
+        let idx = flatten_idx_with_offset(
+            self.block_dims,
+            self.block_strides,
+            index,
+            &self.dim_offsets,
+        );
+        unsafe { &mut *self.block_data.get_unchecked_mut(idx) }
     }
 }
 
-pub struct Rows<'a, 'b, T: Num + Copy> {
+#[derive(Debug)]
+pub struct Rows<'a, T: Num + Copy> {
     idx: usize,
     stride: usize,
     row_len: usize,
     row_idx: usize,
     num_rows: usize,
     row_strides: Vec<(usize, usize)>,
-    block: *const VolumeBlock<T>,
-    _phantom: PhantomData<&'a VolumeWindowMut<'b, T>>,
+    data: *const [T],
+    _phantom: PhantomData<&'a [T]>,
 }
 
-impl<'a, 'b, T: Num + Copy + 'a> Iterator for Rows<'a, 'b, T> {
+impl<'a, T: Num + Copy + 'a> Iterator for Rows<'a, T> {
     type Item = Row<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1156,7 +1175,7 @@ impl<'a, 'b, T: Num + Copy + 'a> Iterator for Rows<'a, 'b, T> {
                 stride: self.stride,
                 row_len: self.row_len,
                 row_start,
-                block: self.block,
+                data: self.data,
                 _phantom: PhantomData,
             })
         } else {
@@ -1165,18 +1184,22 @@ impl<'a, 'b, T: Num + Copy + 'a> Iterator for Rows<'a, 'b, T> {
     }
 }
 
-pub struct RowsMut<'a, 'b, T: Num + Copy> {
+unsafe impl<'a, T: Num + Copy> Send for Rows<'a, T> where &'a [T]: Send {}
+unsafe impl<'a, T: Num + Copy> Sync for Rows<'a, T> where &'a [T]: Sync {}
+
+#[derive(Debug)]
+pub struct RowsMut<'a, T: Num + Copy> {
     idx: usize,
     stride: usize,
     row_len: usize,
     row_idx: usize,
     num_rows: usize,
     row_strides: Vec<(usize, usize)>,
-    block: *mut VolumeBlock<T>,
-    _phantom: PhantomData<&'a mut VolumeWindowMut<'b, T>>,
+    data: *mut [T],
+    _phantom: PhantomData<&'a mut [T]>,
 }
 
-impl<'a, 'b, T: Num + Copy + 'a> Iterator for RowsMut<'a, 'b, T> {
+impl<'a, T: Num + Copy + 'a> Iterator for RowsMut<'a, T> {
     type Item = RowMut<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1196,7 +1219,7 @@ impl<'a, 'b, T: Num + Copy + 'a> Iterator for RowsMut<'a, 'b, T> {
                 stride: self.stride,
                 row_len: self.row_len,
                 row_start,
-                block: self.block,
+                data: self.data,
                 _phantom: PhantomData,
             })
         } else {
@@ -1205,12 +1228,16 @@ impl<'a, 'b, T: Num + Copy + 'a> Iterator for RowsMut<'a, 'b, T> {
     }
 }
 
+unsafe impl<'a, T: Num + Copy> Send for RowsMut<'a, T> where &'a mut [T]: Send {}
+unsafe impl<'a, T: Num + Copy> Sync for RowsMut<'a, T> where &'a mut [T]: Sync {}
+
+#[derive(Debug)]
 pub struct Row<'a, T: Num + Copy> {
     stride: usize,
     row_len: usize,
     row_start: usize,
-    block: *const VolumeBlock<T>,
-    _phantom: PhantomData<&'a VolumeBlock<T>>,
+    data: *const [T],
+    _phantom: PhantomData<&'a [T]>,
 }
 
 impl<'a, T: Num + Copy> Row<'a, T> {
@@ -1224,7 +1251,12 @@ impl<'a, T: Num + Copy> Row<'a, T> {
 
     pub fn as_slice(&self) -> Option<&[T]> {
         if self.stride == 1 {
-            unsafe { Some((*self.block).sub_slice_unchecked(self.row_start, self.row_len)) }
+            unsafe {
+                let slice = self
+                    .data
+                    .get_unchecked(self.row_start..self.row_start + self.row_len);
+                Some(&*slice)
+            }
         } else {
             None
         }
@@ -1237,7 +1269,7 @@ impl<'a, T: Num + Copy> Row<'a, T> {
     /// The caller must ensure that `index < self.len()`.
     pub unsafe fn get_unchecked(&self, index: usize) -> &T {
         let flat_idx = self.row_start + (index * self.stride);
-        (*self.block).get_unchecked(flat_idx)
+        &*self.data.get_unchecked(flat_idx)
     }
 
     pub fn iter(&self) -> RowIter<'_, 'a, T> {
@@ -1264,6 +1296,10 @@ impl<'a, 'b, T: Num + Copy> IntoIterator for &'a Row<'b, T> {
     }
 }
 
+unsafe impl<'a, T: Num + Copy> Send for Row<'a, T> where &'a [T]: Send {}
+unsafe impl<'a, T: Num + Copy> Sync for Row<'a, T> where &'a [T]: Sync {}
+
+#[derive(Debug)]
 pub struct RowIter<'a, 'b, T: Num + Copy> {
     idx: usize,
     row: &'a Row<'b, T>,
@@ -1277,8 +1313,7 @@ impl<'a, 'b, T: Num + Copy> Iterator for RowIter<'a, 'b, T> {
             let idx = self.idx;
             self.idx += 1;
 
-            let flat_idx = self.row.row_start + (idx * self.row.stride);
-            let val = unsafe { (*self.row.block).get_unchecked(flat_idx) };
+            let val = unsafe { self.row.get_unchecked(idx) };
             Some(val)
         } else {
             None
@@ -1286,12 +1321,13 @@ impl<'a, 'b, T: Num + Copy> Iterator for RowIter<'a, 'b, T> {
     }
 }
 
+#[derive(Debug)]
 pub struct RowMut<'a, T: Num + Copy> {
     stride: usize,
     row_len: usize,
     row_start: usize,
-    block: *mut VolumeBlock<T>,
-    _phantom: PhantomData<&'a mut VolumeBlock<T>>,
+    data: *mut [T],
+    _phantom: PhantomData<&'a mut [T]>,
 }
 
 impl<'a, T: Num + Copy> RowMut<'a, T> {
@@ -1305,7 +1341,11 @@ impl<'a, T: Num + Copy> RowMut<'a, T> {
 
     pub fn as_slice(&self) -> Option<&[T]> {
         if self.stride == 1 {
-            unsafe { Some((*self.block).sub_slice_unchecked(self.row_start, self.row_len)) }
+            unsafe {
+                let data = self.data as *const [T];
+                let slice = data.get_unchecked(self.row_start..self.row_start + self.row_len);
+                Some(&*slice)
+            }
         } else {
             None
         }
@@ -1313,7 +1353,12 @@ impl<'a, T: Num + Copy> RowMut<'a, T> {
 
     pub fn as_slice_mut(&mut self) -> Option<&mut [T]> {
         if self.stride == 1 {
-            unsafe { Some((*self.block).sub_slice_unchecked_mut(self.row_start, self.row_len)) }
+            unsafe {
+                let slice = self
+                    .data
+                    .get_unchecked_mut(self.row_start..self.row_start + self.row_len);
+                Some(&mut *slice)
+            }
         } else {
             None
         }
@@ -1326,7 +1371,8 @@ impl<'a, T: Num + Copy> RowMut<'a, T> {
     /// The caller must ensure that `index < self.len()`.
     pub unsafe fn get_unchecked(&self, index: usize) -> &T {
         let flat_idx = self.row_start + (index * self.stride);
-        (*self.block).get_unchecked(flat_idx)
+        let data = self.data as *const [T];
+        &*data.get_unchecked(flat_idx)
     }
 
     /// Fetches a mutable reference to an element without any bounds checks.
@@ -1335,8 +1381,12 @@ impl<'a, T: Num + Copy> RowMut<'a, T> {
     ///
     /// The caller must ensure that `index < self.len()`.
     pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
+        &mut *self.get_unchecked_mut_ptr(index)
+    }
+
+    unsafe fn get_unchecked_mut_ptr(&mut self, index: usize) -> *mut T {
         let flat_idx = self.row_start + (index * self.stride);
-        (*self.block).get_unchecked_mut(flat_idx)
+        self.data.get_unchecked_mut(flat_idx)
     }
 
     pub fn iter(&mut self) -> RowIterMut<'_, 'a, T> {
@@ -1370,6 +1420,10 @@ impl<'a, 'b, T: Num + Copy> IntoIterator for &'a mut RowMut<'b, T> {
     }
 }
 
+unsafe impl<'a, T: Num + Copy> Send for RowMut<'a, T> where &'a mut [T]: Send {}
+unsafe impl<'a, T: Num + Copy> Sync for RowMut<'a, T> where &'a mut [T]: Sync {}
+
+#[derive(Debug)]
 pub struct RowIterMut<'a, 'b, T: Num + Copy> {
     idx: usize,
     row: &'a mut RowMut<'b, T>,
@@ -1383,8 +1437,7 @@ impl<'a, 'b, T: Num + Copy> Iterator for RowIterMut<'a, 'b, T> {
             let idx = self.idx;
             self.idx += 1;
 
-            let flat_idx = self.row.row_start + (idx * self.row.stride);
-            let val = unsafe { (*self.row.block).get_unchecked_mut(flat_idx) };
+            let val = unsafe { &mut *self.row.get_unchecked_mut_ptr(idx) };
             Some(val)
         } else {
             None

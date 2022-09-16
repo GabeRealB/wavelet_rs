@@ -13,7 +13,10 @@ pub use wavelet_transform::{
     WaveletTransform,
 };
 
+#[derive(Debug)]
 pub struct Forwards;
+
+#[derive(Debug)]
 pub struct Backwards;
 
 pub trait OneWayTransform<T, N: Num + Copy> {
