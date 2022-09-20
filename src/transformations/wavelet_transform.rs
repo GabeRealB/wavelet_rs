@@ -281,7 +281,7 @@ impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Backwards, N> for Wavel
             return input;
         }
 
-        let ops = BackwardsOperation::new(cfg.forwards, cfg.backwards);
+        let ops = BackwardsOperation::new(cfg.forwards, cfg.backwards, cfg.start_dim);
         let mut output = VolumeBlock::new(dims).unwrap();
         let input_window = input.window_mut();
         let output_window = output.window_mut();
@@ -353,14 +353,21 @@ impl Serializable for WaveletDecompCfg<'_> {
 pub struct WaveletRecompCfg<'a> {
     forwards: &'a [u32],
     backwards: &'a [u32],
+    start_dim: usize,
 }
 
 impl<'a> WaveletRecompCfg<'a> {
     /// Constructs a new `WaveletRecompCfg`.
     pub fn new(forwards: &'a [u32], backwards: &'a [u32]) -> Self {
+        Self::new_with_start_dim(forwards, backwards, 0)
+    }
+
+    /// Constructs a new `WaveletRecompCfg` with a custom starting direction.
+    pub fn new_with_start_dim(forwards: &'a [u32], backwards: &'a [u32], start_dim: usize) -> Self {
         Self {
             forwards,
             backwards,
+            start_dim,
         }
     }
 }
@@ -376,6 +383,7 @@ impl<'a> From<&'a WaveletRecompCfgOwned> for WaveletRecompCfg<'a> {
         Self {
             forwards: &x.forwards,
             backwards: &x.backwards,
+            start_dim: x.start_dim,
         }
     }
 }
@@ -422,14 +430,21 @@ impl Deserializable for WaveletDecompCfgOwned {
 pub struct WaveletRecompCfgOwned {
     forwards: Vec<u32>,
     backwards: Vec<u32>,
+    start_dim: usize,
 }
 
 impl WaveletRecompCfgOwned {
     /// Constructs a new `WaveletRecompCfgOwned`.
     pub fn new(forwards: Vec<u32>, backwards: Vec<u32>) -> Self {
+        Self::new_with_start_dim(forwards, backwards, 0)
+    }
+
+    /// Constructs a new `WaveletRecompCfgOwned` with a custom starting direction.
+    pub fn new_with_start_dim(forwards: Vec<u32>, backwards: Vec<u32>, start_dim: usize) -> Self {
         Self {
             forwards,
             backwards,
+            start_dim,
         }
     }
 }
@@ -443,7 +458,8 @@ impl From<WaveletRecompCfg<'_>> for WaveletRecompCfgOwned {
 impl Serializable for WaveletRecompCfgOwned {
     fn serialize(self, stream: &mut crate::stream::SerializeStream) {
         self.forwards.serialize(stream);
-        self.backwards.serialize(stream)
+        self.backwards.serialize(stream);
+        self.start_dim.serialize(stream);
     }
 }
 
@@ -451,9 +467,11 @@ impl Deserializable for WaveletRecompCfgOwned {
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let forwards = Deserializable::deserialize(stream);
         let backwards = Deserializable::deserialize(stream);
+        let start_dim = Deserializable::deserialize(stream);
         Self {
             forwards,
             backwards,
+            start_dim,
         }
     }
 }
@@ -492,7 +510,7 @@ enum BackwardsOperation {
 }
 
 impl BackwardsOperation {
-    fn new(forwards: &[u32], backwards: &[u32]) -> Vec<Self> {
+    fn new(forwards: &[u32], backwards: &[u32], start_dim: usize) -> Vec<Self> {
         assert_eq!(backwards.len(), forwards.len());
 
         let mut ops = Vec::new();
@@ -507,7 +525,29 @@ impl BackwardsOperation {
         while !stop {
             stop = true;
 
-            for (i, (step, max)) in step.iter_mut().zip(forwards).enumerate() {
+            for (i, (step, max)) in step[start_dim..]
+                .iter_mut()
+                .zip(&forwards[start_dim..])
+                .enumerate()
+            {
+                if *step < *max {
+                    *step += 1;
+                    stop = false;
+
+                    if countdown[start_dim + i] != 0 {
+                        countdown[start_dim + i] -= 1;
+                        ops.push(BackwardsOperation::Upscale { dim: start_dim + i });
+                    } else {
+                        ops.push(BackwardsOperation::Backwards { dim: start_dim + i });
+                    }
+                }
+            }
+
+            for (i, (step, max)) in step[..start_dim]
+                .iter_mut()
+                .zip(&forwards[..start_dim])
+                .enumerate()
+            {
                 if *step < *max {
                     *step += 1;
                     stop = false;

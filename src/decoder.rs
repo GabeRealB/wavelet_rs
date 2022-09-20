@@ -12,15 +12,15 @@ use crate::{
     range::{for_each_range, for_each_range_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream},
     transformations::{
-        wavelet_transform::RefinementInfo, Chain, Lerp, ResampleCfg, ResampleExtend,
-        ReversibleTransform, WaveletRecompCfg, WaveletTransform,
+        wavelet_transform::RefinementInfo, Chain, ResampleCfg, ResampleExtend, ResampleIScale,
+        Reverse, ReversibleTransform, WaveletRecompCfg, WaveletTransform,
     },
     volume::VolumeBlock,
 };
 
 #[derive(Debug)]
 pub struct VolumeWaveletDecoder<
-    T: Deserializable + Num + Lerp + Send + Copy,
+    T: Deserializable + Num + Send + Copy,
     F: Filter<T> + Deserializable + Clone,
 > {
     path: PathBuf,
@@ -34,7 +34,7 @@ pub struct VolumeWaveletDecoder<
     filter: F,
 }
 
-impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable + Clone>
+impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clone>
     VolumeWaveletDecoder<T, F>
 {
     pub fn new(p: impl AsRef<Path>) -> Self {
@@ -165,14 +165,16 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
         let resample_cfg = ResampleCfg::new(&resample_dim);
         let resample_pass = ResampleExtend;
 
-        let refinement_cfg = Chain::from((
+        let refinement_cfg = Chain::combine(
             ResampleCfg::new(&self.block_size),
-            WaveletRecompCfg::new(&remaining_decompositions, &block_refinements),
+            ResampleCfg::new(&self.block_size),
+        )
+        .chain(WaveletRecompCfg::new(
+            &remaining_decompositions,
+            &block_refinements,
         ));
-        let refinement_pass = Chain::from((
-            ResampleExtend,
-            WaveletTransform::new(self.filter.clone(), false),
-        ));
+        let refinement_pass = Chain::combine(ResampleExtend, Reverse::new(ResampleIScale))
+            .chain(WaveletTransform::new(self.filter.clone(), false));
 
         let block_refinement_info =
             RefinementInfo::new(&resample_dim, &block_decompositions, &block_levels);
@@ -223,7 +225,7 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
                 let block_path = self.path.join(format!("block_{block_idx}"));
                 let mut block = self
                     .block_blueprints
-                    .reconstruct_all(block_path, &block_decompositions);
+                    .reconstruct_full(block_path, &block_decompositions);
                 WaveletTransform::<T, F>::adapt_for_refinement(&mut block, &block_refinement_info);
 
                 let mut block_window = block.window_mut();
@@ -288,17 +290,6 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
             .zip(&self.dims)
             .all(|(region, volume_size)| !region.contains(volume_size)));
 
-        let input_forwards_steps: Vec<_> = self
-            .input_block_dims
-            .iter()
-            .map(|&dim| dim.ilog2())
-            .collect();
-        let block_forwards_steps: Vec<_> = input_forwards_steps
-            .iter()
-            .zip(&self.dims)
-            .map(|(&input_step, &dim)| dim.ilog2() - input_step)
-            .collect();
-
         let input_backwards_steps: Vec<_> = self
             .input_block_dims
             .iter()
@@ -311,24 +302,44 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
             .map(|(&input_step, &level)| level - input_step)
             .collect();
 
-        let input_transform_cfg = Chain::from((
+        let input_forwards_steps: Vec<_> = self
+            .input_block_dims
+            .iter()
+            .map(|&dim| dim.ilog2())
+            .collect();
+        /* let block_forwards_steps: Vec<_> = input_forwards_steps
+        .iter()
+        .zip(&self.dims)
+        .map(|(&input_step, &dim)| dim.ilog2() - input_step)
+        .collect(); */
+        let block_forwards_steps: Vec<_> = self
+            .block_blueprints
+            .block_size_full(&block_backwards_steps)
+            .into_iter()
+            .map(|s| s.ilog2())
+            .collect();
+
+        let input_transform_cfg = Chain::combine(
             ResampleCfg::new(&self.block_counts),
             WaveletRecompCfg::new(&input_forwards_steps, &input_backwards_steps),
-        ));
-        let input_transform = Chain::from((
+        );
+        let input_transform = Chain::combine(
             ResampleExtend,
             WaveletTransform::new(self.filter.clone(), false),
-        ));
+        );
         let first_pass = input_transform.backwards(self.input_block.clone(), input_transform_cfg);
 
-        let block_transform_cfg = Chain::from((
+        let block_transform_cfg = Chain::combine(
             ResampleCfg::new(&self.block_size),
-            WaveletRecompCfg::new(&block_forwards_steps, &block_backwards_steps),
+            ResampleCfg::new(&self.block_size),
+        )
+        .chain(WaveletRecompCfg::new_with_start_dim(
+            &block_forwards_steps,
+            &block_backwards_steps,
+            self.block_blueprints.start_dim_full(&block_backwards_steps),
         ));
-        let block_transform = Chain::from((
-            ResampleExtend,
-            WaveletTransform::new(self.filter.clone(), false),
-        ));
+        let block_transform = Chain::combine(ResampleExtend, Reverse::new(ResampleIScale))
+            .chain(WaveletTransform::new(self.filter.clone(), false));
 
         let block_range: Vec<_> = self.block_counts.iter().map(|&c| 0..c).collect();
         for_each_range_enumerate(block_range.iter().cloned(), |block_idx, block_iter_idx| {
@@ -349,7 +360,7 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
                 let block_path = self.path.join(format!("block_{block_idx}"));
                 let mut block = self
                     .block_blueprints
-                    .reconstruct_all(block_path, &block_forwards_steps);
+                    .reconstruct_full(block_path, &block_backwards_steps);
                 block[0] = first_pass[block_idx];
 
                 let block_pass = block_transform.backwards(block, block_transform_cfg);

@@ -5,6 +5,92 @@ use crate::stream::{Deserializable, Serializable};
 use super::{Backwards, Forwards, OneWayTransform};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ResampleIScale;
+
+impl<N: Num + Copy> OneWayTransform<Forwards, N> for ResampleIScale {
+    type Cfg<'a> = ResampleCfg<'a>;
+
+    fn apply(
+        &self,
+        input: crate::volume::VolumeBlock<N>,
+        cfg: Self::Cfg<'_>,
+    ) -> crate::volume::VolumeBlock<N> {
+        assert!(input.dims().len() == cfg.to.len());
+        assert!(input
+            .dims()
+            .iter()
+            .zip(cfg.to)
+            .all(|(&s, &d)| s <= d && (d % s == 0)));
+
+        if input.dims() == cfg.to {
+            return input;
+        }
+
+        let mut scaled = crate::volume::VolumeBlock::new(cfg.to).unwrap();
+        let mut scaled_window = scaled.window_mut();
+        let input_window = input.window();
+        input_window.copy_to(&mut scaled_window.custom_range_mut(input_window.dims()));
+
+        for (dim, (&src, &dst)) in input.dims().iter().zip(cfg.to).enumerate() {
+            let scale_factor = dst / src;
+
+            for mut row in scaled_window.rows_mut(dim) {
+                let len = row.len() / scale_factor;
+                for (src, dst) in (0..len).zip((0..row.len()).step_by(scale_factor)).rev() {
+                    for i in 0..scale_factor {
+                        unsafe { *row.get_unchecked_mut(dst + i) = *row.get_unchecked_mut(src) };
+                    }
+                }
+            }
+        }
+
+        scaled
+    }
+}
+
+impl<N: Num + Copy> OneWayTransform<Backwards, N> for ResampleIScale {
+    type Cfg<'a> = ResampleCfg<'a>;
+
+    fn apply(
+        &self,
+        mut input: crate::volume::VolumeBlock<N>,
+        cfg: Self::Cfg<'_>,
+    ) -> crate::volume::VolumeBlock<N> {
+        assert!(input.dims().len() == cfg.to.len());
+        assert!(input
+            .dims()
+            .iter()
+            .zip(cfg.to)
+            .all(|(&s, &d)| s >= d && (s % d == 0)));
+
+        if input.dims() == cfg.to {
+            return input;
+        }
+
+        let dims: Vec<_> = input.dims().into();
+        let mut window = input.window_mut();
+
+        for (dim, (&src, &dst)) in dims.iter().zip(cfg.to).enumerate() {
+            let scale_factor = src / dst;
+
+            for mut row in window.rows_mut(dim) {
+                let len = row.len() / scale_factor;
+                for (src, dst) in (0..row.len()).step_by(scale_factor).zip(0..len) {
+                    unsafe { *row.get_unchecked_mut(dst) = *row.get_unchecked_mut(src) };
+                }
+            }
+        }
+
+        let window = window.custom_range(cfg.to);
+
+        let mut output = crate::volume::VolumeBlock::new(cfg.to).unwrap();
+        window.copy_to(&mut output.window_mut());
+
+        output
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleExtend;
 
 impl<N: Num + Copy> OneWayTransform<Forwards, N> for ResampleExtend {

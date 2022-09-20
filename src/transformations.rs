@@ -7,7 +7,9 @@ mod resample;
 pub(crate) mod wavelet_transform;
 
 pub use basic::{Chain, Identity, Reverse};
-pub use resample::{Lerp, ResampleCfg, ResampleCfgOwned, ResampleExtend, ResampleLinear};
+pub use resample::{
+    Lerp, ResampleCfg, ResampleCfgOwned, ResampleExtend, ResampleIScale, ResampleLinear,
+};
 pub use wavelet_transform::{
     WaveletDecompCfg, WaveletDecompCfgOwned, WaveletRecompCfg, WaveletRecompCfgOwned,
     WaveletTransform,

@@ -298,7 +298,7 @@ impl<T> BlockBlueprints<T> {
         }
     }
 
-    pub fn reconstruct_all(&self, block_path: impl AsRef<Path>, steps: &[u32]) -> VolumeBlock<T>
+    pub fn reconstruct_full(&self, block_path: impl AsRef<Path>, steps: &[u32]) -> VolumeBlock<T>
     where
         T: Deserializable + Num + Copy,
     {
@@ -328,6 +328,39 @@ impl<T> BlockBlueprints<T> {
 
         let blueprint = self.blueprints.get(steps).unwrap();
         blueprint.reconstruct(block_path, refinements)
+    }
+
+    pub fn block_size_full(&self, steps: &[u32]) -> Vec<usize> {
+        assert_eq!(self.dims, steps.len());
+
+        for (k, b) in &self.blueprints {
+            if k.iter().all(|&s| s == 0) {
+                return b.block_size(steps);
+            }
+        }
+
+        unreachable!()
+    }
+
+    #[allow(unused)]
+    pub fn block_size(&self, steps: &[u32], refinements: &[u32]) -> Vec<usize> {
+        assert_eq!(self.dims, steps.len());
+        assert_eq!(self.dims, refinements.len());
+
+        let blueprint = self.blueprints.get(steps).unwrap();
+        blueprint.block_size(refinements)
+    }
+
+    pub fn start_dim_full(&self, steps: &[u32]) -> usize {
+        assert_eq!(self.dims, steps.len());
+
+        for (k, b) in &self.blueprints {
+            if k.iter().all(|&s| s == 0) {
+                return b.start_dim(steps);
+            }
+        }
+
+        unreachable!()
     }
 }
 
@@ -391,6 +424,45 @@ impl<T> BlockBlueprint<T> {
         }
     }
 
+    fn block_size(&self, steps: &[u32]) -> Vec<usize> {
+        if steps.iter().all(|&s| s == 0) {
+            self.base_size.clone()
+        } else {
+            let mut curr = vec![0; steps.len()];
+
+            for part in self.parts.iter().rev() {
+                curr[part.dim] += 1;
+
+                if steps.iter().zip(&curr).all(|(&s, &c)| c >= s) {
+                    break;
+                }
+            }
+
+            curr.iter()
+                .zip(&self.base_size)
+                .map(|(&st, &si)| (si << st))
+                .collect()
+        }
+    }
+
+    fn start_dim(&self, steps: &[u32]) -> usize {
+        if steps.iter().all(|&s| s == 0) {
+            0
+        } else {
+            let mut curr = vec![0; steps.len()];
+
+            for part in self.parts.iter().rev() {
+                curr[part.dim] += 1;
+
+                if steps.iter().zip(&curr).all(|(&s, &c)| c >= s) {
+                    return part.dim;
+                }
+            }
+
+            0
+        }
+    }
+
     fn reconstruct(&self, block_path: impl AsRef<Path>, steps: &[u32]) -> VolumeBlock<T>
     where
         T: Deserializable + Num + Copy,
@@ -398,11 +470,7 @@ impl<T> BlockBlueprint<T> {
         assert_eq!(steps.len(), self.base_size.len());
 
         let block_path = block_path.as_ref();
-        let block_size: Vec<_> = steps
-            .iter()
-            .zip(&self.base_size)
-            .map(|(&st, &si)| (si << st))
-            .collect();
+        let block_size = self.block_size(steps);
         let mut block = VolumeBlock::new(&block_size).unwrap();
 
         if steps.iter().all(|&s| s == 0) {
@@ -413,7 +481,7 @@ impl<T> BlockBlueprint<T> {
 
         let mut block_window = block.window_mut();
 
-        for part in &self.parts {
+        for part in self.parts.iter().rev() {
             if curr[part.dim] < steps[part.dim] {
                 curr[part.dim] += 1;
 
