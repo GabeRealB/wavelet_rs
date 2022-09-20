@@ -1,14 +1,15 @@
-use std::{borrow::Borrow, fmt::Debug, fs::File, ops::Range, path::Path};
+use std::{
+    borrow::Borrow, collections::BTreeMap, fmt::Debug, fs::File, marker::PhantomData, path::Path,
+};
 
 use num_traits::Num;
 
 use crate::{
     filter::Filter,
-    range::for_each_range_enumerate,
-    stream::{AnyMap, Deserializable, Serializable, SerializeStream},
+    range::{for_each_range_enumerate, for_each_range_par_enumerate},
+    stream::{AnyMap, Deserializable, DeserializeStream, Serializable, SerializeStream},
     transformations::{
-        Chain, Lerp, ResampleCfg, ResampleExtend, ReversibleTransform, WaveletDecompCfg,
-        WaveletTransform,
+        Chain, ResampleCfg, ResampleExtend, ReversibleTransform, WaveletDecompCfg, WaveletTransform,
     },
     utilities::{flatten_idx, flatten_idx_unchecked},
     volume::VolumeBlock,
@@ -22,19 +23,21 @@ pub struct VolumeWaveletEncoder<'a, T: Num + Copy> {
     fetchers: Vec<Option<VolumeFetcher<'a, T>>>,
 }
 
-pub(crate) struct OutputHeader<T> {
+pub(crate) struct OutputHeader<T, F> {
     pub num_type: String,
     pub metadata: AnyMap,
     pub dims: Vec<usize>,
     pub block_size: Vec<usize>,
     pub block_counts: Vec<usize>,
     pub input_block_dims: Vec<usize>,
-    pub wavelet: T,
+    pub block_blueprints: BlockBlueprints<T>,
+    pub filter: F,
 }
 
-impl<T: Serializable> Serializable for OutputHeader<T> {
+impl<T: Serializable, F: Serializable> Serializable for OutputHeader<T, F> {
     fn serialize(self, stream: &mut SerializeStream) {
         T::name().serialize(stream);
+        F::name().serialize(stream);
 
         self.num_type.serialize(stream);
         self.metadata.serialize(stream);
@@ -42,14 +45,17 @@ impl<T: Serializable> Serializable for OutputHeader<T> {
         self.block_size.serialize(stream);
         self.block_counts.serialize(stream);
         self.input_block_dims.serialize(stream);
-        self.wavelet.serialize(stream);
+        self.block_blueprints.serialize(stream);
+        self.filter.serialize(stream);
     }
 }
 
-impl<T: Deserializable> Deserializable for OutputHeader<T> {
+impl<T: Deserializable, F: Deserializable> Deserializable for OutputHeader<T, F> {
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let t_name: String = Deserializable::deserialize(stream);
         assert_eq!(t_name, T::name());
+        let f_name: String = Deserializable::deserialize(stream);
+        assert_eq!(f_name, F::name());
 
         let num_type = Deserializable::deserialize(stream);
         let metadata = Deserializable::deserialize(stream);
@@ -57,7 +63,8 @@ impl<T: Deserializable> Deserializable for OutputHeader<T> {
         let block_size = Deserializable::deserialize(stream);
         let block_counts = Deserializable::deserialize(stream);
         let input_block_dims = Deserializable::deserialize(stream);
-        let wavelet = Deserializable::deserialize(stream);
+        let block_blueprints = Deserializable::deserialize(stream);
+        let filter = Deserializable::deserialize(stream);
 
         Self {
             num_type,
@@ -66,32 +73,15 @@ impl<T: Deserializable> Deserializable for OutputHeader<T> {
             block_size,
             block_counts,
             input_block_dims,
-            wavelet,
+            block_blueprints,
+            filter,
         }
     }
 }
 
-pub(crate) struct BlockHeader {
-    pub region: Vec<Range<usize>>,
-}
+type VolumeFetcher<'a, T> = Box<dyn Fn(&[usize]) -> T + Sync + Send + 'a>;
 
-impl Serializable for BlockHeader {
-    fn serialize(self, stream: &mut SerializeStream) {
-        self.region.serialize(stream)
-    }
-}
-
-impl Deserializable for BlockHeader {
-    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
-        let region = Deserializable::deserialize(stream);
-
-        Self { region }
-    }
-}
-
-type VolumeFetcher<'a, T> = Box<dyn FnMut(&[usize]) -> T + 'a>;
-
-impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T> {
+impl<'a, T: Serializable + Num + Send + Copy> VolumeWaveletEncoder<'a, T> {
     pub fn new(dims: &[usize], num_base_dims: usize) -> Self {
         assert!(dims.len() > num_base_dims);
         let num_fetchers = dims[num_base_dims..].iter().product();
@@ -117,7 +107,7 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
         }
     }
 
-    pub fn add_fetcher(&mut self, index: &[usize], f: impl FnMut(&[usize]) -> T + 'a) {
+    pub fn add_fetcher(&mut self, index: &[usize], f: impl Fn(&[usize]) -> T + Sync + Send + 'a) {
         let idx = flatten_idx(&self.dims[self.num_base_dims..], &self.strides, index);
         assert!(self.fetchers[idx].is_none());
         self.fetchers[idx] = Some(Box::new(f));
@@ -140,10 +130,10 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
     }
 
     pub fn encode(
-        &mut self,
-        output: impl AsRef<Path>,
+        &self,
+        output: impl AsRef<Path> + Sync,
         block_size: &[usize],
-        wavelet: impl Filter<T> + Serializable + Clone,
+        filter: impl Filter<T> + Serializable + Clone,
     ) {
         assert_eq!(block_size.len(), self.dims.len());
         assert!(block_size
@@ -163,10 +153,8 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
             ResampleCfg::new(&block_resample_dims),
             WaveletDecompCfg::new(&steps),
         ));
-        let block_transform = Chain::from((
-            ResampleExtend,
-            WaveletTransform::new(wavelet.clone(), false),
-        ));
+        let block_transform =
+            Chain::from((ResampleExtend, WaveletTransform::new(filter.clone(), false)));
 
         let block_counts: Vec<_> = block_size
             .iter()
@@ -176,8 +164,8 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
         let block_counts_range: Vec<_> = block_counts.iter().map(|&c| 0..c).collect();
         let block_range: Vec<_> = block_size.iter().map(|&b| 0..b).collect();
 
-        let mut superblock = VolumeBlock::new(&block_counts).unwrap();
-        for_each_range_enumerate(block_counts_range.iter().cloned(), |i, block_idx| {
+        let (sx, rx) = std::sync::mpsc::sync_channel(block_counts.iter().product());
+        for_each_range_par_enumerate(block_counts_range.iter().cloned(), |i, block_idx| {
             let block_offset: Vec<_> = block_idx
                 .iter()
                 .zip(block_size)
@@ -193,12 +181,12 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
                     .map(|(&offset, &idx)| offset + idx)
                     .collect();
                 let fetcher_idx = unsafe { self.flatten_idx_full_unchecked(&idx) };
-                let fetcher = self.fetchers[fetcher_idx].as_mut().unwrap();
+                let fetcher = self.fetchers[fetcher_idx].as_ref().unwrap();
                 block[i] = fetcher(&idx[0..self.num_base_dims]);
             });
 
             let block_decomp = block_transform.forwards(block, block_transform_cfg);
-            superblock[i] = block_decomp[0];
+            sx.send((i, block_decomp[0])).unwrap();
 
             let block_dir = output.as_ref().join(format!("block_{i}"));
             if block_dir.exists() {
@@ -236,6 +224,11 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
             }
         });
 
+        let mut superblock = VolumeBlock::new(&block_counts).unwrap();
+        for (i, elem) in rx.try_iter() {
+            superblock[i] = elem;
+        }
+
         let resample_dims: Vec<_> = block_counts
             .iter()
             .map(|size| size.next_power_of_two())
@@ -246,10 +239,8 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
             ResampleCfg::new(&resample_dims),
             WaveletDecompCfg::new(&steps),
         ));
-        let output_transform = Chain::from((
-            ResampleExtend,
-            WaveletTransform::new(wavelet.clone(), false),
-        ));
+        let output_transform =
+            Chain::from((ResampleExtend, WaveletTransform::new(filter.clone(), false)));
         let transformed = output_transform.forwards(superblock, output_transform_cfg);
 
         let mut stream = SerializeStream::new();
@@ -261,7 +252,8 @@ impl<'a, T: Serializable + Num + Lerp + Send + Copy> VolumeWaveletEncoder<'a, T>
             block_size: block_size.into(),
             block_counts,
             input_block_dims: transformed.dims().into(),
-            wavelet,
+            block_blueprints: BlockBlueprints::<T>::new(&block_resample_dims),
+            filter,
         };
         output_header.serialize(&mut stream);
         for elem in transformed.flatten() {
@@ -285,6 +277,220 @@ impl<'a, T: Num + Copy> Debug for VolumeWaveletEncoder<'a, T> {
             .field("strides", &self.strides)
             .field("num_base_dims", &self.num_base_dims)
             .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct BlockBlueprints<T> {
+    dims: usize,
+    blueprints: BTreeMap<Vec<u32>, BlockBlueprint<T>>,
+}
+
+impl<T> BlockBlueprints<T> {
+    pub fn new(dims: &[usize]) -> Self {
+        let mut blueprints = BTreeMap::new();
+
+        blueprints.insert(vec![0; dims.len()], BlockBlueprint::new(dims));
+
+        Self {
+            dims: dims.len(),
+            blueprints,
+        }
+    }
+
+    pub fn reconstruct_all(&self, block_path: impl AsRef<Path>, steps: &[u32]) -> VolumeBlock<T>
+    where
+        T: Deserializable + Num + Copy,
+    {
+        assert_eq!(self.dims, steps.len());
+
+        for (k, b) in &self.blueprints {
+            if k.iter().all(|&s| s == 0) {
+                return b.reconstruct(block_path, steps);
+            }
+        }
+
+        unreachable!()
+    }
+
+    #[allow(unused)]
+    pub fn reconstruct(
+        &self,
+        block_path: impl AsRef<Path>,
+        steps: &[u32],
+        refinements: &[u32],
+    ) -> VolumeBlock<T>
+    where
+        T: Deserializable + Num + Copy,
+    {
+        assert_eq!(self.dims, steps.len());
+        assert_eq!(self.dims, refinements.len());
+
+        let blueprint = self.blueprints.get(steps).unwrap();
+        blueprint.reconstruct(block_path, refinements)
+    }
+}
+
+impl<T: Serializable> Serializable for BlockBlueprints<T> {
+    fn serialize(self, stream: &mut SerializeStream) {
+        self.dims.serialize(stream);
+        self.blueprints.serialize(stream);
+    }
+}
+
+impl<T: Deserializable> Deserializable for BlockBlueprints<T> {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
+        let dims = Deserializable::deserialize(stream);
+        let blueprints = Deserializable::deserialize(stream);
+
+        Self { dims, blueprints }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct BlockBlueprint<T> {
+    base_size: Vec<usize>,
+    parts: Vec<BlockBlueprintPart>,
+    _phantom: PhantomData<fn() -> T>,
+}
+
+impl<T> BlockBlueprint<T> {
+    fn new(size: &[usize]) -> Self {
+        let base_size = vec![1; size.len()];
+        let mut curr: Vec<_> = size.into();
+
+        let mut id = 0;
+        let mut parts = vec![];
+
+        while curr.iter().any(|&c| c > 1) {
+            for dim in 0..size.len() {
+                if curr[dim] == 1 {
+                    continue;
+                }
+
+                curr[dim] /= 2;
+                let size = curr.clone();
+                let mut offset = vec![0; curr.len()];
+                offset[dim] = size[dim];
+
+                parts.push(BlockBlueprintPart {
+                    id,
+                    dim,
+                    size,
+                    offset,
+                });
+
+                id += 1;
+            }
+        }
+
+        Self {
+            base_size,
+            parts,
+            _phantom: PhantomData,
+        }
+    }
+
+    fn reconstruct(&self, block_path: impl AsRef<Path>, steps: &[u32]) -> VolumeBlock<T>
+    where
+        T: Deserializable + Num + Copy,
+    {
+        assert_eq!(steps.len(), self.base_size.len());
+
+        let block_path = block_path.as_ref();
+        let block_size: Vec<_> = steps
+            .iter()
+            .zip(&self.base_size)
+            .map(|(&st, &si)| (si << st))
+            .collect();
+        let mut block = VolumeBlock::new(&block_size).unwrap();
+
+        if steps.iter().all(|&s| s == 0) {
+            return block;
+        }
+
+        let mut curr = vec![0; steps.len()];
+
+        let mut block_window = block.window_mut();
+
+        for part in &self.parts {
+            if curr[part.dim] < steps[part.dim] {
+                curr[part.dim] += 1;
+
+                let block_path = block_path.join(format!("block_part_{}.bin", part.id));
+
+                let f = std::fs::File::open(block_path).unwrap();
+                let stream = DeserializeStream::new_decode(f).unwrap();
+                let mut stream = stream.stream();
+
+                let mut window = block_window.custom_window_mut(&part.offset, &part.size);
+                let rows = window.rows_mut(0);
+                for mut row in rows {
+                    for elem in row.as_slice_mut().unwrap() {
+                        *elem = Deserializable::deserialize(&mut stream);
+                    }
+                }
+
+                if curr == steps {
+                    break;
+                }
+            }
+        }
+
+        block
+    }
+}
+
+impl<T: Serializable> Serializable for BlockBlueprint<T> {
+    fn serialize(self, stream: &mut SerializeStream) {
+        self.base_size.serialize(stream);
+        self.parts.serialize(stream);
+    }
+}
+
+impl<T: Deserializable> Deserializable for BlockBlueprint<T> {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
+        let base_size = Deserializable::deserialize(stream);
+        let parts = Deserializable::deserialize(stream);
+
+        Self {
+            base_size,
+            parts,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct BlockBlueprintPart {
+    id: usize,
+    dim: usize,
+    size: Vec<usize>,
+    offset: Vec<usize>,
+}
+
+impl Serializable for BlockBlueprintPart {
+    fn serialize(self, stream: &mut SerializeStream) {
+        self.id.serialize(stream);
+        self.dim.serialize(stream);
+        self.size.serialize(stream);
+        self.offset.serialize(stream);
+    }
+}
+
+impl Deserializable for BlockBlueprintPart {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
+        let id = Deserializable::deserialize(stream);
+        let dim = Deserializable::deserialize(stream);
+        let size = Deserializable::deserialize(stream);
+        let offset = Deserializable::deserialize(stream);
+
+        Self {
+            id,
+            dim,
+            size,
+            offset,
+        }
     }
 }
 

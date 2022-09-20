@@ -7,7 +7,7 @@ use std::{
 use num_traits::Num;
 
 use crate::{
-    encoder::OutputHeader,
+    encoder::{BlockBlueprints, OutputHeader},
     filter::Filter,
     range::{for_each_range, for_each_range_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream},
@@ -29,8 +29,9 @@ pub struct VolumeWaveletDecoder<
     block_size: Vec<usize>,
     block_counts: Vec<usize>,
     input_block_dims: Vec<usize>,
-    wavelet: F,
     input_block: VolumeBlock<T>,
+    block_blueprints: BlockBlueprints<T>,
+    filter: F,
 }
 
 impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable + Clone>
@@ -43,7 +44,7 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
         let f = std::fs::File::open(p).unwrap();
         let stream = DeserializeStream::new_decode(f).unwrap();
         let mut stream = stream.stream();
-        let header: OutputHeader<_> = Deserializable::deserialize(&mut stream);
+        let header: OutputHeader<_, _> = Deserializable::deserialize(&mut stream);
         let num_elements = header.input_block_dims.iter().product();
         let mut elements = Vec::with_capacity(num_elements);
         for _ in 0..num_elements {
@@ -62,7 +63,8 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
             block_size: header.block_size,
             block_counts: header.block_counts,
             input_block_dims: header.input_block_dims,
-            wavelet: header.wavelet,
+            block_blueprints: header.block_blueprints,
+            filter: header.filter,
             input_block,
         }
     }
@@ -169,7 +171,7 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
         ));
         let refinement_pass = Chain::from((
             ResampleExtend,
-            WaveletTransform::new(self.wavelet.clone(), false),
+            WaveletTransform::new(self.filter.clone(), false),
         ));
 
         let block_refinement_info =
@@ -217,16 +219,11 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
                 }
 
                 let block_input = resample_pass.forwards(block_input, resample_cfg);
-                let block_path = self.path.join(format!("block_{block_idx}.bin"));
 
-                let f = std::fs::File::open(block_path).unwrap();
-                let stream = DeserializeStream::new_decode(f).unwrap();
-                let mut stream = stream.stream();
-
-                let mut block = VolumeBlock::new(&self.block_size).unwrap();
-                for elem in block.flatten_mut().iter_mut().skip(1) {
-                    *elem = Deserializable::deserialize(&mut stream);
-                }
+                let block_path = self.path.join(format!("block_{block_idx}"));
+                let mut block = self
+                    .block_blueprints
+                    .reconstruct_all(block_path, &block_decompositions);
                 WaveletTransform::<T, F>::adapt_for_refinement(&mut block, &block_refinement_info);
 
                 let mut block_window = block.window_mut();
@@ -320,7 +317,7 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
         ));
         let input_transform = Chain::from((
             ResampleExtend,
-            WaveletTransform::new(self.wavelet.clone(), false),
+            WaveletTransform::new(self.filter.clone(), false),
         ));
         let first_pass = input_transform.backwards(self.input_block.clone(), input_transform_cfg);
 
@@ -330,7 +327,7 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
         ));
         let block_transform = Chain::from((
             ResampleExtend,
-            WaveletTransform::new(self.wavelet.clone(), false),
+            WaveletTransform::new(self.filter.clone(), false),
         ));
 
         let block_range: Vec<_> = self.block_counts.iter().map(|&c| 0..c).collect();
@@ -349,17 +346,11 @@ impl<T: Deserializable + Num + Lerp + Send + Copy, F: Filter<T> + Deserializable
             if roi.iter().zip(&block_range).all(|(required, range)| {
                 required.contains(&range.start) || required.contains(&range.end)
             }) {
-                let block_path = self.path.join(format!("block_{block_idx}.bin"));
-
-                let f = std::fs::File::open(block_path).unwrap();
-                let stream = DeserializeStream::new_decode(f).unwrap();
-                let mut stream = stream.stream();
-
-                let mut block = VolumeBlock::new(&self.block_size).unwrap();
+                let block_path = self.path.join(format!("block_{block_idx}"));
+                let mut block = self
+                    .block_blueprints
+                    .reconstruct_all(block_path, &block_forwards_steps);
                 block[0] = first_pass[block_idx];
-                for elem in block.flatten_mut().iter_mut().skip(1) {
-                    *elem = Deserializable::deserialize(&mut stream);
-                }
 
                 let block_pass = block_transform.backwards(block, block_transform_cfg);
 

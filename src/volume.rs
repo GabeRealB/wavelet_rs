@@ -386,6 +386,31 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
         }
     }
 
+    pub fn custom_window(&self, offset: &[usize], dims: &[usize]) -> VolumeWindow<'_, T> {
+        assert_eq!(self.dims.len(), offset.len());
+        assert_eq!(self.dims.len(), dims.len());
+        assert!(offset
+            .iter()
+            .zip(dims)
+            .zip(&self.dim_offsets)
+            .zip(&self.dims)
+            .all(|(((&n_o, &n_d), &o), &d)| n_o + n_d + o <= d));
+
+        let dim_offsets = offset
+            .iter()
+            .zip(&self.dim_offsets)
+            .map(|(&n_o, &o)| n_o + o)
+            .collect();
+        Self {
+            dims: dims.into(),
+            dim_offsets,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
+            _phantom: PhantomData,
+        }
+    }
+
     /// Returns the dimensions of the window.
     pub fn dims(&self) -> &[usize] {
         &self.dims
@@ -803,6 +828,60 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
         let dim_offsets = self.dim_offsets.clone();
         Self {
             dims: range.into(),
+            dim_offsets,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn custom_window(&self, offset: &[usize], dims: &[usize]) -> VolumeWindow<'_, T> {
+        assert_eq!(self.dims.len(), offset.len());
+        assert_eq!(self.dims.len(), dims.len());
+        assert!(offset
+            .iter()
+            .zip(dims)
+            .zip(&self.dim_offsets)
+            .zip(&self.dims)
+            .all(|(((&n_o, &n_d), &o), &d)| n_o + n_d + o <= d));
+
+        let dim_offsets = offset
+            .iter()
+            .zip(&self.dim_offsets)
+            .map(|(&n_o, &o)| n_o + o)
+            .collect();
+        VolumeWindow {
+            dims: dims.into(),
+            dim_offsets,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn custom_window_mut(
+        &mut self,
+        offset: &[usize],
+        dims: &[usize],
+    ) -> VolumeWindowMut<'_, T> {
+        assert_eq!(self.dims.len(), offset.len());
+        assert_eq!(self.dims.len(), dims.len());
+        assert!(offset
+            .iter()
+            .zip(dims)
+            .zip(&self.dim_offsets)
+            .zip(&self.dims)
+            .all(|(((&n_o, &n_d), &o), &d)| n_o + n_d + o <= d));
+
+        let dim_offsets = offset
+            .iter()
+            .zip(&self.dim_offsets)
+            .map(|(&n_o, &o)| n_o + o)
+            .collect();
+        Self {
+            dims: dims.into(),
             dim_offsets,
             block_data: self.block_data,
             block_dims: self.block_dims,

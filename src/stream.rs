@@ -255,6 +255,31 @@ impl<T: Deserializable> Deserializable for Vec<T> {
     }
 }
 
+impl<K: Serializable, V: Serializable> Serializable for BTreeMap<K, V> {
+    fn serialize(self, stream: &mut SerializeStream) {
+        self.len().serialize(stream);
+        for (k, v) in self {
+            k.serialize(stream);
+            v.serialize(stream);
+        }
+    }
+}
+
+impl<K: Deserializable + Ord, V: Deserializable> Deserializable for BTreeMap<K, V> {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
+        let len: usize = Deserializable::deserialize(stream);
+        let mut map = BTreeMap::new();
+        for _ in 0..len {
+            let k = Deserializable::deserialize(stream);
+            let v = Deserializable::deserialize(stream);
+
+            map.insert(k, v);
+        }
+
+        map
+    }
+}
+
 impl<T: Serializable> Serializable for Range<T> {
     #[inline]
     fn serialize(self, stream: &mut SerializeStream) {
