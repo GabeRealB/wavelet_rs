@@ -1471,6 +1471,16 @@ impl<'a, T: Num + Copy> RowMut<'a, T> {
     pub fn iter(&mut self) -> RowIterMut<'_, 'a, T> {
         self.into_iter()
     }
+
+    pub fn as_row(&self) -> Row<'_, T> {
+        Row {
+            stride: self.stride,
+            row_len: self.row_len,
+            row_start: self.row_start,
+            data: self.data,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<'a, T: Num + Copy> Index<usize> for RowMut<'a, T> {

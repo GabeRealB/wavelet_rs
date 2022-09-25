@@ -779,13 +779,12 @@ impl BlockBlueprintPart {
                     })
                 }
 
-                let mut recomp = VolumeBlock::new(adapted_size).unwrap();
-                let recomp_window = recomp.window_mut();
+                let mut scratch = vec![T::zero(); *decomp_window.dims().iter().max().unwrap()];
                 let trans = WaveletTransform::<T, _>::new(filter.clone(), false);
-                trans.back_(decomp_window, recomp_window, &ops);
+                trans.back_(decomp_window, &mut scratch, &ops);
 
                 let mut window = block.custom_window_mut(&blocks[self.id].offset, adapted_size);
-                recomp.window().copy_to(&mut window);
+                decomp.window().copy_to(&mut window);
             } else {
                 let steps = vec![0; blocks[self.id].size.len()];
                 BlockBlueprintPart::init_cache(

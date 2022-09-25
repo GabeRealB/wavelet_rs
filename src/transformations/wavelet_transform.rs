@@ -29,8 +29,8 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
 
     fn forw_(
         &self,
-        input: VolumeWindowMut<'_, N>,
-        output: VolumeWindowMut<'_, N>,
+        mut input: VolumeWindowMut<'_, N>,
+        mut scratch: Vec<N>,
         ops: &[ForwardsOperation],
     ) {
         if ops.is_empty() {
@@ -40,26 +40,23 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
         let dim = ops[0].dim;
         let has_high_pass = ops.get(1).map(|o| o.dim > dim).unwrap_or(false);
         let has_high_pass = has_high_pass && self.split_high;
-        let (mut low, mut high) = output.split_into(dim);
-        forwards_window(dim, &self.filter, &input.window(), &mut low, &mut high);
 
-        let (mut input_low, mut input_high) = input.split_into(dim);
-        low.copy_to(&mut input_low);
-        high.copy_to(&mut input_high);
+        forwards_window(dim, &self.filter, &mut input, &mut scratch);
 
+        let (input_low, input_high) = input.split_into(dim);
         rayon::scope(|s| {
-            s.spawn(|_| self.forw_(input_low, low, &ops[1..]));
+            s.spawn(|_| self.forw_(input_low, scratch, &ops[1..]));
 
             if has_high_pass {
-                s.spawn(|_| self.forw_high(input_high, high, &ops[1..], dim));
+                s.spawn(|_| self.forw_high(input_high, None, &ops[1..], dim));
             }
         });
     }
 
     fn forw_high(
         &self,
-        input: VolumeWindowMut<'_, N>,
-        output: VolumeWindowMut<'_, N>,
+        mut input: VolumeWindowMut<'_, N>,
+        scratch: Option<Vec<N>>,
         ops: &[ForwardsOperation],
         last_dim: usize,
     ) {
@@ -68,23 +65,21 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
         }
 
         let dim = ops[0].dim;
-        let (mut low, mut high) = output.split_into(dim);
-        forwards_window(dim, &self.filter, &input.window(), &mut low, &mut high);
+        let mut scratch =
+            scratch.unwrap_or_else(|| vec![N::zero(); *input.dims().iter().max().unwrap()]);
+        forwards_window(dim, &self.filter, &mut input, &mut scratch);
 
-        let (mut input_low, mut input_high) = input.split_into(dim);
-        low.copy_to(&mut input_low);
-        high.copy_to(&mut input_high);
-
+        let (input_low, input_high) = input.split_into(dim);
         rayon::scope(|s| {
-            s.spawn(|_| self.forw_high(input_low, low, &ops[1..], dim));
-            s.spawn(|_| self.forw_high(input_high, high, &ops[1..], dim));
+            s.spawn(|_| self.forw_high(input_low, Some(scratch), &ops[1..], dim));
+            s.spawn(|_| self.forw_high(input_high, None, &ops[1..], dim));
         });
     }
 
     pub(crate) fn back_(
         &self,
         mut input: VolumeWindowMut<'_, N>,
-        mut output: VolumeWindowMut<'_, N>,
+        scratch: &mut [N],
         ops: &[BackwardsOperation],
     ) {
         if ops.is_empty() {
@@ -97,50 +92,32 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
                 let has_high_pass = has_high_pass && self.split_high;
 
                 let (low, high) = input.split_mut(dim);
-                let (output_low, output_high) = output.split_mut(dim);
 
                 rayon::scope(|s| {
-                    s.spawn(|_| self.back_(low, output_low, &ops[1..]));
+                    s.spawn(|_| self.back_(low, scratch, &ops[1..]));
 
                     if has_high_pass {
-                        s.spawn(|_| self.back_high(high, output_high, &ops[1..], dim));
+                        s.spawn(|_| self.back_high(high, &ops[1..], dim));
                     }
                 });
 
-                let (mut low, mut high) = input.split_into(dim);
-                backwards_window(
-                    dim,
-                    &self.filter,
-                    &mut output,
-                    &low.window(),
-                    &high.window(),
-                );
-
-                let (output_low, output_high) = output.split_into(dim);
-                output_low.copy_to(&mut low);
-                output_high.copy_to(&mut high);
+                backwards_window(dim, &self.filter, &mut input, scratch);
             }
             BackwardsOperation::Upscale { dim } => {
                 let has_high_pass = ops.get(1).map(|o| o.dim() > dim).unwrap_or(false);
                 let has_high_pass = has_high_pass && self.split_high;
 
                 let (low, high) = input.split_mut(dim);
-                let (output_low, output_high) = output.split_mut(dim);
 
                 rayon::scope(|s| {
-                    s.spawn(|_| self.back_(low, output_low, &ops[1..]));
+                    s.spawn(|_| self.back_(low, scratch, &ops[1..]));
 
                     if has_high_pass {
-                        s.spawn(|_| self.back_high(high, output_high, &ops[1..], dim));
+                        s.spawn(|_| self.back_high(high, &ops[1..], dim));
                     }
                 });
 
-                let (mut low, mut high) = input.split_into(dim);
-                upscale_window(dim, &mut output, &low.window());
-
-                let (output_low, output_high) = output.split_into(dim);
-                output_low.copy_to(&mut low);
-                output_high.copy_to(&mut high);
+                upscale_window(dim, &mut input);
             }
         }
     }
@@ -148,7 +125,6 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
     fn back_high(
         &self,
         mut input: VolumeWindowMut<'_, N>,
-        mut output: VolumeWindowMut<'_, N>,
         ops: &[BackwardsOperation],
         last_dim: usize,
     ) {
@@ -163,25 +139,14 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
                 }
 
                 let (low, high) = input.split_mut(dim);
-                let (output_low, output_high) = output.split_mut(dim);
-
                 rayon::scope(|s| {
-                    s.spawn(|_| self.back_high(low, output_low, &ops[1..], dim));
-                    s.spawn(|_| self.back_high(high, output_high, &ops[1..], dim));
+                    s.spawn(|_| self.back_high(low, &ops[1..], dim));
+                    s.spawn(|_| self.back_high(high, &ops[1..], dim));
                 });
 
-                let (mut low, mut high) = input.split_into(dim);
-                backwards_window(
-                    dim,
-                    &self.filter,
-                    &mut output,
-                    &low.window(),
-                    &high.window(),
-                );
-
-                let (output_low, output_high) = output.split_into(dim);
-                output_low.copy_to(&mut low);
-                output_high.copy_to(&mut high);
+                let mut scratch = vec![N::zero(); input.dims()[dim]];
+                backwards_window(dim, &self.filter, &mut input, &mut scratch);
+                drop(scratch);
             }
             BackwardsOperation::Upscale { dim } => {
                 if dim < last_dim {
@@ -189,19 +154,12 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
                 }
 
                 let (low, high) = input.split_mut(dim);
-                let (output_low, output_high) = output.split_mut(dim);
-
                 rayon::scope(|s| {
-                    s.spawn(|_| self.back_high(low, output_low, &ops[1..], dim));
-                    s.spawn(|_| self.back_high(high, output_high, &ops[1..], dim));
+                    s.spawn(|_| self.back_high(low, &ops[1..], dim));
+                    s.spawn(|_| self.back_high(high, &ops[1..], dim));
                 });
 
-                let (mut low, mut high) = input.split_into(dim);
-                upscale_window(dim, &mut output, &low.window());
-
-                let (output_low, output_high) = output.split_into(dim);
-                output_low.copy_to(&mut low);
-                output_high.copy_to(&mut high);
+                upscale_window(dim, &mut input);
             }
         }
     }
@@ -227,14 +185,13 @@ impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Forwards, N> for Wavele
             return input;
         }
 
+        let scratch = vec![N::zero(); *input.dims().iter().max().unwrap()];
         let ops = ForwardsOperation::new(cfg.steps);
-        let mut output = VolumeBlock::new(dims).unwrap();
         let input_window = input.window_mut();
-        let output_window = output.window_mut();
 
-        self.forw_(input_window, output_window, &ops);
+        self.forw_(input_window, scratch, &ops);
 
-        output
+        input
     }
 }
 
@@ -259,14 +216,13 @@ impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Backwards, N> for Wavel
             return input;
         }
 
+        let mut scratch = vec![N::zero(); *input.dims().iter().max().unwrap()];
         let ops = BackwardsOperation::new(cfg.forwards, cfg.backwards, cfg.start_dim);
-        let mut output = VolumeBlock::new(dims).unwrap();
         let input_window = input.window_mut();
-        let output_window = output.window_mut();
 
-        self.back_(input_window, output_window, &ops);
+        self.back_(input_window, &mut scratch, &ops);
 
-        output
+        input
     }
 }
 
