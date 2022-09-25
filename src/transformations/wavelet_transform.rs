@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, marker::PhantomData};
+use std::marker::PhantomData;
 
 use num_traits::Num;
 
@@ -81,7 +81,7 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
         });
     }
 
-    fn back_(
+    pub(crate) fn back_(
         &self,
         mut input: VolumeWindowMut<'_, N>,
         mut output: VolumeWindowMut<'_, N>,
@@ -202,28 +202,6 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
                 let (output_low, output_high) = output.split_into(dim);
                 output_low.copy_to(&mut low);
                 output_high.copy_to(&mut high);
-            }
-        }
-    }
-
-    pub(crate) fn adapt_for_refinement(block: &mut VolumeBlock<N>, info: &[RefinementInfo]) {
-        let mut window = block.window_mut();
-
-        for x in info {
-            let mut window = window.custom_range_mut(&x.roi);
-            Self::upscale_inplace(&mut window, x.dim)
-        }
-    }
-
-    fn upscale_inplace(window: &mut VolumeWindowMut<'_, N>, dim: usize) {
-        let rows = window.rows_mut(dim);
-        for mut r in rows {
-            let elems = r.len() / 2;
-
-            for (src, dst) in (0..elems).zip((0..r.len()).step_by(2)).rev() {
-                let x = r[src];
-                r[dst] = x;
-                r[dst + 1] = x;
             }
         }
     }
@@ -504,7 +482,7 @@ impl ForwardsOperation {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum BackwardsOperation {
+pub(crate) enum BackwardsOperation {
     Backwards { dim: usize },
     Upscale { dim: usize },
 }
@@ -570,52 +548,5 @@ impl BackwardsOperation {
             BackwardsOperation::Backwards { dim } => *dim,
             BackwardsOperation::Upscale { dim } => *dim,
         }
-    }
-}
-
-pub(crate) struct RefinementInfo {
-    dim: usize,
-    roi: Vec<usize>,
-}
-
-impl RefinementInfo {
-    pub fn new(dims: &[usize], decomposed_steps: &[u32], steps: &[u32]) -> Vec<Self> {
-        assert_eq!(dims.len(), steps.len());
-        assert_eq!(decomposed_steps.len(), steps.len());
-        assert!(dims
-            .iter()
-            .zip(decomposed_steps)
-            .all(|(&d, &s)| d.ilog2() >= s));
-        assert!(steps.iter().zip(decomposed_steps).all(|(&s, &d)| s <= d));
-
-        let mut steps: Vec<_> = steps.into();
-        let mut info = VecDeque::new();
-
-        for i in 0..steps.len() {
-            while steps[i] != 0 {
-                let skipped =
-                    steps
-                        .iter()
-                        .zip(decomposed_steps)
-                        .enumerate()
-                        .map(|(j, (&s, &d))| match j.cmp(&i) {
-                            std::cmp::Ordering::Less => (steps[i] - 1).min(d),
-                            std::cmp::Ordering::Equal => s,
-                            std::cmp::Ordering::Greater => steps[i].max(s).min(d),
-                        });
-
-                let roi = dims
-                    .iter()
-                    .zip(skipped)
-                    .zip(decomposed_steps)
-                    .map(|((&d, sk), &st)| d >> (st - sk))
-                    .collect();
-
-                info.push_front(RefinementInfo { dim: i, roi });
-                steps[i] -= 1;
-            }
-        }
-
-        info.into()
     }
 }

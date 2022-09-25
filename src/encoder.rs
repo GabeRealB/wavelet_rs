@@ -6,13 +6,14 @@ use num_traits::Num;
 
 use crate::{
     filter::Filter,
-    range::{for_each_range_enumerate, for_each_range_par_enumerate},
+    range::{for_each_range, for_each_range_enumerate, for_each_range_par_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream, Serializable, SerializeStream},
     transformations::{
-        Chain, ResampleCfg, ResampleExtend, ReversibleTransform, WaveletDecompCfg, WaveletTransform,
+        wavelet_transform::BackwardsOperation, Chain, ResampleCfg, ResampleExtend,
+        ReversibleTransform, WaveletDecompCfg, WaveletTransform,
     },
     utilities::{flatten_idx, flatten_idx_unchecked},
-    volume::VolumeBlock,
+    volume::{VolumeBlock, VolumeWindowMut},
 };
 
 pub struct VolumeWaveletEncoder<'a, T: Num + Copy> {
@@ -283,30 +284,65 @@ impl<'a, T: Num + Copy> Debug for VolumeWaveletEncoder<'a, T> {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct BlockBlueprints<T> {
     dims: usize,
+    layouts: Vec<BlockLayout>,
     blueprints: BTreeMap<Vec<u32>, BlockBlueprint<T>>,
 }
 
 impl<T> BlockBlueprints<T> {
     pub fn new(dims: &[usize]) -> Self {
-        let mut blueprints = BTreeMap::new();
+        let mut layouts = Vec::new();
+        let mut size: Vec<_> = dims.into();
+        while size.iter().any(|&s| s > 1) {
+            for dim in 0..size.len() {
+                if size[dim] > 1 {
+                    size[dim] /= 2;
 
-        blueprints.insert(vec![0; dims.len()], BlockBlueprint::new(dims));
+                    let mut offset = vec![0; size.len()];
+                    offset[dim] = size[dim];
+
+                    layouts.push(BlockLayout {
+                        dim,
+                        size: size.clone(),
+                        offset,
+                    })
+                }
+            }
+        }
+
+        let mut blueprints = BTreeMap::new();
+        let steps_range = dims.iter().rev().map(|&d| 0..(d.ilog2() + 1) as usize);
+
+        for_each_range(steps_range, |refined| {
+            if refined.iter().all(|&r| r == 0) {
+                blueprints.insert(vec![0; dims.len()], BlockBlueprint::new(dims));
+            } else {
+                let steps: Vec<_> = refined.iter().rev().map(|&r| r as u32).collect();
+                let b = BlockBlueprint::new_refined(&steps, &layouts, &blueprints);
+                blueprints.insert(steps, b);
+            }
+        });
 
         Self {
             dims: dims.len(),
+            layouts,
             blueprints,
         }
     }
 
-    pub fn reconstruct_full(&self, block_path: impl AsRef<Path>, steps: &[u32]) -> VolumeBlock<T>
+    pub fn reconstruct_full(
+        &self,
+        filter: &(impl Filter<T> + Clone),
+        block_path: impl AsRef<Path>,
+        steps: &[u32],
+    ) -> VolumeBlock<T>
     where
-        T: Deserializable + Num + Copy,
+        T: Deserializable + Num + Copy + Send,
     {
         assert_eq!(self.dims, steps.len());
 
         for (k, b) in &self.blueprints {
             if k.iter().all(|&s| s == 0) {
-                return b.reconstruct(block_path, steps);
+                return b.reconstruct(filter, &self.layouts, block_path, steps);
             }
         }
 
@@ -316,18 +352,19 @@ impl<T> BlockBlueprints<T> {
     #[allow(unused)]
     pub fn reconstruct(
         &self,
+        filter: &(impl Filter<T> + Clone),
         block_path: impl AsRef<Path>,
         steps: &[u32],
         refinements: &[u32],
     ) -> VolumeBlock<T>
     where
-        T: Deserializable + Num + Copy,
+        T: Deserializable + Num + Copy + Send,
     {
         assert_eq!(self.dims, steps.len());
         assert_eq!(self.dims, refinements.len());
 
         let blueprint = self.blueprints.get(steps).unwrap();
-        blueprint.reconstruct(block_path, refinements)
+        blueprint.reconstruct(filter, &self.layouts, block_path, refinements)
     }
 
     pub fn block_size_full(&self, steps: &[u32]) -> Vec<usize> {
@@ -335,7 +372,7 @@ impl<T> BlockBlueprints<T> {
 
         for (k, b) in &self.blueprints {
             if k.iter().all(|&s| s == 0) {
-                return b.block_size(steps);
+                return b.block_size(&self.layouts, steps);
             }
         }
 
@@ -348,7 +385,7 @@ impl<T> BlockBlueprints<T> {
         assert_eq!(self.dims, refinements.len());
 
         let blueprint = self.blueprints.get(steps).unwrap();
-        blueprint.block_size(refinements)
+        blueprint.block_size(&self.layouts, refinements)
     }
 
     pub fn start_dim_full(&self, steps: &[u32]) -> usize {
@@ -356,17 +393,26 @@ impl<T> BlockBlueprints<T> {
 
         for (k, b) in &self.blueprints {
             if k.iter().all(|&s| s == 0) {
-                return b.start_dim(steps);
+                return b.start_dim(&self.layouts, steps);
             }
         }
 
         unreachable!()
+    }
+
+    pub fn start_dim(&self, steps: &[u32], refinements: &[u32]) -> usize {
+        assert_eq!(self.dims, steps.len());
+        assert_eq!(self.dims, refinements.len());
+
+        let blueprint = self.blueprints.get(steps).unwrap();
+        blueprint.start_dim(&self.layouts, refinements)
     }
 }
 
 impl<T: Serializable> Serializable for BlockBlueprints<T> {
     fn serialize(self, stream: &mut SerializeStream) {
         self.dims.serialize(stream);
+        self.layouts.serialize(stream);
         self.blueprints.serialize(stream);
     }
 }
@@ -374,9 +420,14 @@ impl<T: Serializable> Serializable for BlockBlueprints<T> {
 impl<T: Deserializable> Deserializable for BlockBlueprints<T> {
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let dims = Deserializable::deserialize(stream);
+        let layouts = Deserializable::deserialize(stream);
         let blueprints = Deserializable::deserialize(stream);
 
-        Self { dims, blueprints }
+        Self {
+            dims,
+            layouts,
+            blueprints,
+        }
     }
 }
 
@@ -396,23 +447,18 @@ impl<T> BlockBlueprint<T> {
         let mut parts = vec![];
 
         while curr.iter().any(|&c| c > 1) {
-            for dim in 0..size.len() {
-                if curr[dim] == 1 {
+            for size in &mut curr {
+                if *size <= 1 {
                     continue;
                 }
 
-                curr[dim] /= 2;
-                let size = curr.clone();
-                let mut offset = vec![0; curr.len()];
-                offset[dim] = size[dim];
-
                 parts.push(BlockBlueprintPart {
                     id,
-                    dim,
-                    size,
-                    offset,
+                    adapted_size: None,
+                    adapt: None,
                 });
 
+                *size /= 2;
                 id += 1;
             }
         }
@@ -424,14 +470,79 @@ impl<T> BlockBlueprint<T> {
         }
     }
 
-    fn block_size(&self, steps: &[u32]) -> Vec<usize> {
+    fn new_refined(
+        steps: &[u32],
+        blocks: &[BlockLayout],
+        blueprints: &BTreeMap<Vec<u32>, Self>,
+    ) -> Self {
+        let mut prev: Vec<_> = steps.into();
+        let mut dim = None;
+        for (i, x) in prev.iter_mut().enumerate() {
+            if *x > 0 {
+                dim = Some(i);
+                *x -= 1;
+                break;
+            }
+        }
+        let dim = dim.unwrap();
+
+        let template = &blueprints[&prev];
+
+        let mut part_idx = None;
+        let mut counter = 0;
+        for (i, part) in template.parts.iter().rev().enumerate() {
+            if blocks[part.id].dim == dim {
+                counter += 1;
+                if counter == steps[dim] - prev[dim] {
+                    part_idx = Some(template.parts.len() - i - 1);
+                    break;
+                }
+            }
+        }
+        let part_idx = part_idx.unwrap();
+        let part_to_remove = &template.parts[part_idx];
+        let part_to_remove_block = &blocks[part_to_remove.id];
+
+        let mut base_size = template.base_size.clone();
+        base_size[dim] *= 2;
+
+        let mut parts = template.parts.clone();
+        parts.remove(part_idx);
+        for part in &mut parts[part_idx..] {
+            let mut adapted_size = part
+                .adapted_size
+                .take()
+                .unwrap_or_else(|| blocks[part.id].size.clone());
+            let mut adapt = part.adapt.take().unwrap_or_default();
+
+            let required_steps = adapted_size
+                .iter()
+                .zip(&part_to_remove_block.size)
+                .map(|(&r, &o)| (o / r).ilog2())
+                .collect();
+
+            adapted_size[part_to_remove_block.dim] *= 2;
+            adapt.push((part_to_remove.id, required_steps));
+
+            part.adapted_size = Some(adapted_size);
+            part.adapt = Some(adapt);
+        }
+
+        Self {
+            base_size,
+            parts,
+            _phantom: PhantomData,
+        }
+    }
+
+    fn block_size(&self, blocks: &[BlockLayout], steps: &[u32]) -> Vec<usize> {
         if steps.iter().all(|&s| s == 0) {
             self.base_size.clone()
         } else {
             let mut curr = vec![0; steps.len()];
 
             for part in self.parts.iter().rev() {
-                curr[part.dim] += 1;
+                curr[blocks[part.id].dim] += 1;
 
                 if steps.iter().zip(&curr).all(|(&s, &c)| c >= s) {
                     break;
@@ -445,17 +556,17 @@ impl<T> BlockBlueprint<T> {
         }
     }
 
-    fn start_dim(&self, steps: &[u32]) -> usize {
+    fn start_dim(&self, blocks: &[BlockLayout], steps: &[u32]) -> usize {
         if steps.iter().all(|&s| s == 0) {
             0
         } else {
             let mut curr = vec![0; steps.len()];
 
             for part in self.parts.iter().rev() {
-                curr[part.dim] += 1;
+                curr[blocks[part.id].dim] += 1;
 
                 if steps.iter().zip(&curr).all(|(&s, &c)| c >= s) {
-                    return part.dim;
+                    return blocks[part.id].dim;
                 }
             }
 
@@ -463,14 +574,19 @@ impl<T> BlockBlueprint<T> {
         }
     }
 
-    fn reconstruct(&self, block_path: impl AsRef<Path>, steps: &[u32]) -> VolumeBlock<T>
+    fn reconstruct(
+        &self,
+        filter: &(impl Filter<T> + Clone),
+        blocks: &[BlockLayout],
+        block_path: impl AsRef<Path>,
+        steps: &[u32],
+    ) -> VolumeBlock<T>
     where
-        T: Deserializable + Num + Copy,
+        T: Deserializable + Num + Copy + Send,
     {
         assert_eq!(steps.len(), self.base_size.len());
 
-        let block_path = block_path.as_ref();
-        let block_size = self.block_size(steps);
+        let block_size = self.block_size(blocks, steps);
         let mut block = VolumeBlock::new(&block_size).unwrap();
 
         if steps.iter().all(|&s| s == 0) {
@@ -481,23 +597,11 @@ impl<T> BlockBlueprint<T> {
 
         let mut block_window = block.window_mut();
 
+        let mut cache = Some(BTreeMap::new());
         for part in self.parts.iter().rev() {
-            if curr[part.dim] < steps[part.dim] {
-                curr[part.dim] += 1;
-
-                let block_path = block_path.join(format!("block_part_{}.bin", part.id));
-
-                let f = std::fs::File::open(block_path).unwrap();
-                let stream = DeserializeStream::new_decode(f).unwrap();
-                let mut stream = stream.stream();
-
-                let mut window = block_window.custom_window_mut(&part.offset, &part.size);
-                let rows = window.rows_mut(0);
-                for mut row in rows {
-                    for elem in row.as_slice_mut().unwrap() {
-                        *elem = Deserializable::deserialize(&mut stream);
-                    }
-                }
+            if curr[blocks[part.id].dim] < steps[blocks[part.id].dim] {
+                curr[blocks[part.id].dim] += 1;
+                part.insert_in_block(filter, &block_path, &mut block_window, blocks, &mut cache);
 
                 if curr == steps {
                     break;
@@ -530,34 +634,233 @@ impl<T: Deserializable> Deserializable for BlockBlueprint<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct BlockBlueprintPart {
-    id: usize,
+struct BlockLayout {
     dim: usize,
     size: Vec<usize>,
     offset: Vec<usize>,
 }
 
-impl Serializable for BlockBlueprintPart {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct BlockBlueprintPart {
+    id: usize,
+    adapted_size: Option<Vec<usize>>,
+    adapt: Option<Vec<(usize, Vec<u32>)>>,
+}
+
+impl BlockBlueprintPart {
+    fn init_cache<T>(
+        filter: &(impl Filter<T> + Clone),
+        block_path: impl AsRef<Path>,
+        size: Vec<usize>,
+        part_id: usize,
+        steps: Vec<u32>,
+        cache: &mut BTreeMap<(usize, Vec<u32>), VolumeBlock<T>>,
+    ) where
+        T: Deserializable + Send + Num + Copy,
+    {
+        let k = (part_id, steps);
+        if cache.contains_key(&k) {
+            return;
+        }
+
+        let steps = k.1;
+        if steps.iter().all(|&s| s == 0) {
+            let block_path = block_path
+                .as_ref()
+                .join(format!("block_part_{}.bin", part_id));
+
+            let f = std::fs::File::open(block_path).unwrap();
+            let stream = DeserializeStream::new_decode(f).unwrap();
+            let mut stream = stream.stream();
+
+            let mut block_part = VolumeBlock::new(&size).unwrap();
+            let mut block_part_window = block_part.window_mut();
+            let rows = block_part_window.rows_mut(0);
+            for mut row in rows {
+                for elem in row.as_slice_mut().unwrap() {
+                    *elem = Deserializable::deserialize(&mut stream);
+                }
+            }
+
+            let entry = cache.entry((part_id, steps));
+            entry.or_insert(block_part);
+        } else {
+            let mut prev_size = size.clone();
+            let mut prev_steps = steps.clone();
+            let mut dim = None;
+            for (i, x) in prev_steps.iter_mut().enumerate() {
+                if *x > 0 {
+                    *x -= 1;
+                    prev_size[i] *= 2;
+                    dim = Some(i);
+                    break;
+                }
+            }
+            let dim = dim.unwrap();
+
+            BlockBlueprintPart::init_cache(
+                filter,
+                block_path,
+                prev_size,
+                part_id,
+                prev_steps.clone(),
+                cache,
+            );
+
+            let prev = &cache[&(part_id, prev_steps)];
+
+            let mut rec_steps = vec![0; size.len()];
+            rec_steps[dim] = 1;
+
+            let cfg = WaveletDecompCfg::new(&rec_steps);
+            let w = WaveletTransform::<T, _>::new(filter.clone(), false);
+            let part = w.forwards(prev.clone(), cfg);
+
+            /* let mut part_offset = vec![0; size.len()];
+            part_offset[dim] = size[dim]; */
+
+            let part_window = part.window();
+            let part_window = part_window.custom_range(&size);
+            //let part_window = part_window.custom_window(&part_offset, &size);
+
+            let mut block_part = VolumeBlock::new(&size).unwrap();
+            part_window.copy_to(&mut block_part.window_mut());
+
+            let entry = cache.entry((part_id, steps));
+            entry.or_insert(block_part);
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn insert_in_block<T>(
+        &self,
+        filter: &(impl Filter<T> + Clone),
+        block_path: impl AsRef<Path>,
+        block: &mut VolumeWindowMut<'_, T>,
+        blocks: &[BlockLayout],
+        cache: &mut Option<BTreeMap<(usize, Vec<u32>), VolumeBlock<T>>>,
+    ) where
+        T: Deserializable + Num + Copy + Send,
+    {
+        if let Some(cache) = cache {
+            if let Some((adapted_size, adapt)) = self.adapted_size.as_ref().zip(self.adapt.as_ref())
+            {
+                let mut decomp = VolumeBlock::new(adapted_size).unwrap();
+                let mut decomp_window = decomp.window_mut();
+
+                let mut ops = Vec::with_capacity(adapt.len());
+
+                for (id, steps) in adapt.iter().rev() {
+                    let part_size: Vec<_> = blocks[*id]
+                        .size
+                        .iter()
+                        .zip(steps)
+                        .map(|(&si, &st)| si >> st)
+                        .collect();
+
+                    BlockBlueprintPart::init_cache(
+                        filter,
+                        &block_path,
+                        part_size.clone(),
+                        *id,
+                        steps.clone(),
+                        cache,
+                    );
+
+                    let block_part = cache.get(&(*id, steps.clone())).unwrap();
+                    let block_part_window = block_part.window();
+
+                    let mut decomp_window =
+                        decomp_window.custom_window_mut(&blocks[*id].offset, &part_size);
+                    block_part_window.copy_to(&mut decomp_window);
+
+                    ops.push(BackwardsOperation::Backwards {
+                        dim: blocks[*id].dim,
+                    })
+                }
+
+                let mut recomp = VolumeBlock::new(adapted_size).unwrap();
+                let recomp_window = recomp.window_mut();
+                let trans = WaveletTransform::<T, _>::new(filter.clone(), false);
+                trans.back_(decomp_window, recomp_window, &ops);
+
+                let mut window = block.custom_window_mut(&blocks[self.id].offset, adapted_size);
+                recomp.window().copy_to(&mut window);
+            } else {
+                let steps = vec![0; blocks[self.id].size.len()];
+                BlockBlueprintPart::init_cache(
+                    filter,
+                    block_path,
+                    blocks[self.id].size.clone(),
+                    self.id,
+                    steps.clone(),
+                    cache,
+                );
+
+                let block_part = cache.get(&(self.id, steps)).unwrap();
+                let block_part_window = block_part.window();
+
+                let mut window =
+                    block.custom_window_mut(&blocks[self.id].offset, &blocks[self.id].size);
+                block_part_window.copy_to(&mut window);
+            }
+        } else {
+            let block_path = block_path
+                .as_ref()
+                .join(format!("block_part_{}.bin", self.id));
+
+            let f = std::fs::File::open(block_path).unwrap();
+            let stream = DeserializeStream::new_decode(f).unwrap();
+            let mut stream = stream.stream();
+
+            let mut window =
+                block.custom_window_mut(&blocks[self.id].offset, &blocks[self.id].size);
+            let rows = window.rows_mut(0);
+            for mut row in rows {
+                for elem in row.as_slice_mut().unwrap() {
+                    *elem = Deserializable::deserialize(&mut stream);
+                }
+            }
+        }
+    }
+}
+
+impl Serializable for BlockLayout {
     fn serialize(self, stream: &mut SerializeStream) {
-        self.id.serialize(stream);
         self.dim.serialize(stream);
         self.size.serialize(stream);
         self.offset.serialize(stream);
     }
 }
 
-impl Deserializable for BlockBlueprintPart {
+impl Deserializable for BlockLayout {
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
-        let id = Deserializable::deserialize(stream);
         let dim = Deserializable::deserialize(stream);
         let size = Deserializable::deserialize(stream);
         let offset = Deserializable::deserialize(stream);
 
+        Self { dim, size, offset }
+    }
+}
+
+impl Serializable for BlockBlueprintPart {
+    fn serialize(self, stream: &mut SerializeStream) {
+        self.id.serialize(stream);
+        self.adapted_size.serialize(stream);
+        self.adapt.serialize(stream);
+    }
+}
+
+impl Deserializable for BlockBlueprintPart {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
+        let id = Deserializable::deserialize(stream);
+        let adapted_size = Deserializable::deserialize(stream);
+        let adapt = Deserializable::deserialize(stream);
+
         Self {
             id,
-            dim,
-            size,
-            offset,
+            adapted_size,
+            adapt,
         }
     }
 }

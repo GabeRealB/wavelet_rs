@@ -125,6 +125,35 @@ macro_rules! impl_ser {
     };
 }
 
+macro_rules! tuple_impls {
+    ($(
+        { $(($idx:tt) -> $T:ident)+ }
+    )+) => {
+        $(
+            impl<$($T: Serializable),+> Serializable for ($($T),+,) {
+                #[inline]
+                fn serialize(self, stream: &mut SerializeStream) {
+                    $(
+                        self.$idx.serialize(stream);
+                    )+
+                }
+            }
+
+            impl<$($T: Deserializable),+> Deserializable for ($($T),+,) {
+                #[inline]
+                fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
+                    $(
+                        #[allow(non_snake_case)]
+                        let $T = Deserializable::deserialize(stream);
+                    )+
+
+                    ($($T),+,)
+                }
+            }
+        )+
+    }
+}
+
 impl_ser! {
     u8, 1;
     u16, 2;
@@ -138,6 +167,177 @@ impl_ser! {
     isize, 8;
     f32, 4;
     f64, 8
+}
+
+tuple_impls! {
+    {
+        (0) -> A
+    }
+    {
+        (0) -> A
+        (1) -> B
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+        (4) -> E
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+        (4) -> E
+        (5) -> F
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+        (4) -> E
+        (5) -> F
+        (6) -> G
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+        (4) -> E
+        (5) -> F
+        (6) -> G
+        (7) -> H
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+        (4) -> E
+        (5) -> F
+        (6) -> G
+        (7) -> H
+        (8) -> I
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+        (4) -> E
+        (5) -> F
+        (6) -> G
+        (7) -> H
+        (8) -> I
+        (9) -> J
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+        (4) -> E
+        (5) -> F
+        (6) -> G
+        (7) -> H
+        (8) -> I
+        (9) -> J
+        (10) -> K
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+        (4) -> E
+        (5) -> F
+        (6) -> G
+        (7) -> H
+        (8) -> I
+        (9) -> J
+        (10) -> K
+        (11) -> L
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+        (4) -> E
+        (5) -> F
+        (6) -> G
+        (7) -> H
+        (8) -> I
+        (9) -> J
+        (10) -> K
+        (11) -> L
+        (12) -> M
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+        (4) -> E
+        (5) -> F
+        (6) -> G
+        (7) -> H
+        (8) -> I
+        (9) -> J
+        (10) -> K
+        (11) -> L
+        (12) -> M
+        (13) -> N
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+        (4) -> E
+        (5) -> F
+        (6) -> G
+        (7) -> H
+        (8) -> I
+        (9) -> J
+        (10) -> K
+        (11) -> L
+        (12) -> M
+        (13) -> N
+        (14) -> O
+    }
+    {
+        (0) -> A
+        (1) -> B
+        (2) -> C
+        (3) -> D
+        (4) -> E
+        (5) -> F
+        (6) -> G
+        (7) -> H
+        (8) -> I
+        (9) -> J
+        (10) -> K
+        (11) -> L
+        (12) -> M
+        (13) -> N
+        (14) -> O
+        (15) -> P
+    }
 }
 
 impl Serializable for bool {
@@ -277,6 +477,27 @@ impl<K: Deserializable + Ord, V: Deserializable> Deserializable for BTreeMap<K, 
         }
 
         map
+    }
+}
+
+impl<T: Serializable> Serializable for Option<T> {
+    fn serialize(self, stream: &mut SerializeStream) {
+        self.is_some().serialize(stream);
+        if let Some(x) = self {
+            x.serialize(stream)
+        }
+    }
+}
+
+impl<T: Deserializable> Deserializable for Option<T> {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
+        let has_value = Deserializable::deserialize(stream);
+        if has_value {
+            let val = Deserializable::deserialize(stream);
+            Some(val)
+        } else {
+            None
+        }
     }
 }
 

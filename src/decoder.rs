@@ -12,8 +12,8 @@ use crate::{
     range::{for_each_range, for_each_range_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream},
     transformations::{
-        wavelet_transform::RefinementInfo, Chain, ResampleCfg, ResampleExtend, ResampleIScale,
-        Reverse, ReversibleTransform, WaveletRecompCfg, WaveletTransform,
+        Chain, ResampleCfg, ResampleExtend, ResampleIScale, Reverse, ReversibleTransform,
+        WaveletRecompCfg, WaveletTransform,
     },
     volume::VolumeBlock,
 };
@@ -155,6 +155,13 @@ impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clon
             .map(|(&d, &l)| d - l)
             .collect();
 
+        /* let block_forwards_steps: Vec<_> = self
+        .block_blueprints
+        .block_size(&block_levels, &block_refinements)
+        .into_iter()
+        .map(|s| s.ilog2())
+        .collect(); */
+
         let block_input_dims: Vec<_> = block_levels.iter().map(|&re| 2usize.pow(re)).collect();
         let block_downsample_stepping: Vec<_> = resample_dim
             .iter()
@@ -167,17 +174,19 @@ impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clon
 
         let refinement_cfg = Chain::combine(
             ResampleCfg::new(&self.block_size),
-            ResampleCfg::new(&self.block_size),
+            ResampleCfg::new(&resample_dim),
         )
-        .chain(WaveletRecompCfg::new(
-            &remaining_decompositions,
+        .chain(WaveletRecompCfg::new_with_start_dim(
             &block_refinements,
+            &block_refinements,
+            self.block_blueprints
+                .start_dim(&remaining_decompositions, &block_refinements),
         ));
         let refinement_pass = Chain::combine(ResampleExtend, Reverse::new(ResampleIScale))
             .chain(WaveletTransform::new(self.filter.clone(), false));
 
-        let block_refinement_info =
-            RefinementInfo::new(&resample_dim, &block_decompositions, &block_levels);
+        /* let block_refinement_info =
+        RefinementInfo::new(&resample_dim, &block_decompositions, &block_levels); */
 
         let num_blocks = self.block_counts.iter().product();
         let mut block_iter_idx = vec![0; self.block_size.len()];
@@ -223,10 +232,12 @@ impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clon
                 let block_input = resample_pass.forwards(block_input, resample_cfg);
 
                 let block_path = self.path.join(format!("block_{block_idx}"));
-                let mut block = self
-                    .block_blueprints
-                    .reconstruct_full(block_path, &block_decompositions);
-                WaveletTransform::<T, F>::adapt_for_refinement(&mut block, &block_refinement_info);
+                let mut block = self.block_blueprints.reconstruct(
+                    &self.filter,
+                    block_path,
+                    &block_levels,
+                    &block_refinements,
+                );
 
                 let mut block_window = block.window_mut();
                 let mut block_window = block_window.custom_range_mut(&block_input_dims);
@@ -307,11 +318,6 @@ impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clon
             .iter()
             .map(|&dim| dim.ilog2())
             .collect();
-        /* let block_forwards_steps: Vec<_> = input_forwards_steps
-        .iter()
-        .zip(&self.dims)
-        .map(|(&input_step, &dim)| dim.ilog2() - input_step)
-        .collect(); */
         let block_forwards_steps: Vec<_> = self
             .block_blueprints
             .block_size_full(&block_backwards_steps)
@@ -358,9 +364,11 @@ impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clon
                 required.contains(&range.start) || required.contains(&range.end)
             }) {
                 let block_path = self.path.join(format!("block_{block_idx}"));
-                let mut block = self
-                    .block_blueprints
-                    .reconstruct_full(block_path, &block_backwards_steps);
+                let mut block = self.block_blueprints.reconstruct_full(
+                    &self.filter,
+                    block_path,
+                    &block_backwards_steps,
+                );
                 block[0] = first_pass[block_idx];
 
                 let block_pass = block_transform.backwards(block, block_transform_cfg);
