@@ -86,38 +86,44 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
             return;
         }
 
-        match ops[0] {
-            BackwardsOperation::Backwards { dim } => {
-                let has_high_pass = ops.get(1).map(|o| o.dim() > dim).unwrap_or(false);
+        match &ops[0] {
+            BackwardsOperation::Backwards { dim, adapt } => {
+                let has_high_pass = ops.get(1).map(|o| o.dim() > *dim).unwrap_or(false);
                 let has_high_pass = has_high_pass && self.split_high;
 
-                let (low, high) = input.split_mut(dim);
+                let (low, high) = input.split_mut(*dim);
+
+                let range = adapt.as_ref().map(|(range, _)| range);
+                let steps = adapt.as_ref().map(|(_, steps)| &**steps);
 
                 rayon::scope(|s| {
                     s.spawn(|_| self.back_(low, scratch, &ops[1..]));
 
                     if has_high_pass {
-                        s.spawn(|_| self.back_high(high, &ops[1..], dim));
+                        s.spawn(|_| self.back_high(high, &ops[1..], steps, *dim));
                     }
                 });
 
-                backwards_window(dim, &self.filter, &mut input, scratch);
+                let mut input = if let Some(range) = range {
+                    input.custom_range_mut(range)
+                } else {
+                    input
+                };
+                backwards_window(*dim, &self.filter, &mut input, scratch);
             }
-            BackwardsOperation::Upscale { dim } => {
-                let has_high_pass = ops.get(1).map(|o| o.dim() > dim).unwrap_or(false);
+            BackwardsOperation::Skip { dim } => {
+                let has_high_pass = ops.get(1).map(|o| o.dim() > *dim).unwrap_or(false);
                 let has_high_pass = has_high_pass && self.split_high;
 
-                let (low, high) = input.split_mut(dim);
+                let (low, high) = input.split_mut(*dim);
 
                 rayon::scope(|s| {
                     s.spawn(|_| self.back_(low, scratch, &ops[1..]));
 
                     if has_high_pass {
-                        s.spawn(|_| self.back_high(high, &ops[1..], dim));
+                        s.spawn(|_| self.back_high(high, &ops[1..], None, *dim));
                     }
                 });
-
-                upscale_window(dim, &mut input);
             }
         }
     }
@@ -126,6 +132,7 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
         &self,
         mut input: VolumeWindowMut<'_, N>,
         ops: &[BackwardsOperation],
+        steps: Option<&[u32]>,
         last_dim: usize,
     ) {
         if ops.is_empty() {
@@ -133,34 +140,40 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
         }
 
         match ops[0] {
-            BackwardsOperation::Backwards { dim } => {
+            BackwardsOperation::Backwards { dim, .. } => {
                 if dim < last_dim {
                     return;
                 }
 
                 let (low, high) = input.split_mut(dim);
                 rayon::scope(|s| {
-                    s.spawn(|_| self.back_high(low, &ops[1..], dim));
-                    s.spawn(|_| self.back_high(high, &ops[1..], dim));
+                    s.spawn(|_| self.back_high(low, &ops[1..], None, dim));
+                    s.spawn(|_| self.back_high(high, &ops[1..], None, dim));
                 });
 
                 let mut scratch = vec![N::zero(); input.dims()[dim]];
                 backwards_window(dim, &self.filter, &mut input, &mut scratch);
                 drop(scratch);
             }
-            BackwardsOperation::Upscale { dim } => {
+            BackwardsOperation::Skip { dim } => {
                 if dim < last_dim {
                     return;
                 }
 
                 let (low, high) = input.split_mut(dim);
                 rayon::scope(|s| {
-                    s.spawn(|_| self.back_high(low, &ops[1..], dim));
-                    s.spawn(|_| self.back_high(high, &ops[1..], dim));
+                    s.spawn(|_| self.back_high(low, &ops[1..], None, dim));
+                    s.spawn(|_| self.back_high(high, &ops[1..], None, dim));
                 });
 
                 upscale_window(dim, &mut input);
             }
+        }
+
+        if let Some(steps) = steps {
+            let ops = ForwardsOperation::new(steps);
+            let scratch = vec![N::zero(); *input.dims().iter().max().unwrap()];
+            self.forw_(input, scratch, &ops);
         }
     }
 }
@@ -217,10 +230,19 @@ impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Backwards, N> for Wavel
         }
 
         let mut scratch = vec![N::zero(); *input.dims().iter().max().unwrap()];
-        let ops = BackwardsOperation::new(cfg.forwards, cfg.backwards, cfg.start_dim);
+        let (ops, output_size) =
+            BackwardsOperation::new(cfg.forwards, cfg.backwards, cfg.start_dim, input.dims());
         let input_window = input.window_mut();
 
         self.back_(input_window, &mut scratch, &ops);
+
+        let mut input_window = input.window_mut();
+        for (dim, &size) in output_size.iter().enumerate() {
+            let upscale_steps = (input_window.dims()[dim] / size).ilog2();
+            for _ in 0..upscale_steps {
+                upscale_window(dim, &mut input_window);
+            }
+        }
 
         input
     }
@@ -437,14 +459,24 @@ impl ForwardsOperation {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) enum BackwardsOperation {
-    Backwards { dim: usize },
-    Upscale { dim: usize },
+    Backwards {
+        dim: usize,
+        adapt: Option<(Vec<usize>, Vec<u32>)>,
+    },
+    Skip {
+        dim: usize,
+    },
 }
 
 impl BackwardsOperation {
-    fn new(forwards: &[u32], backwards: &[u32], start_dim: usize) -> Vec<Self> {
+    fn new(
+        forwards: &[u32],
+        backwards: &[u32],
+        start_dim: usize,
+        dim: &[usize],
+    ) -> (Vec<Self>, Vec<usize>) {
         assert_eq!(backwards.len(), forwards.len());
 
         let mut ops = Vec::new();
@@ -470,9 +502,12 @@ impl BackwardsOperation {
 
                     if countdown[start_dim + i] != 0 {
                         countdown[start_dim + i] -= 1;
-                        ops.push(BackwardsOperation::Upscale { dim: start_dim + i });
+                        ops.push(BackwardsOperation::Skip { dim: start_dim + i });
                     } else {
-                        ops.push(BackwardsOperation::Backwards { dim: start_dim + i });
+                        ops.push(BackwardsOperation::Backwards {
+                            dim: start_dim + i,
+                            adapt: None,
+                        });
                     }
                 }
             }
@@ -488,21 +523,57 @@ impl BackwardsOperation {
 
                     if countdown[i] != 0 {
                         countdown[i] -= 1;
-                        ops.push(BackwardsOperation::Upscale { dim: i });
+                        ops.push(BackwardsOperation::Skip { dim: i });
                     } else {
-                        ops.push(BackwardsOperation::Backwards { dim: i });
+                        ops.push(BackwardsOperation::Backwards {
+                            dim: i,
+                            adapt: None,
+                        });
                     }
                 }
             }
         }
 
-        ops
+        let base_size: Vec<_> = dim
+            .iter()
+            .zip(forwards)
+            .map(|(&dim, &f)| dim >> f)
+            .collect();
+
+        let mut expected_size = base_size.clone();
+        let mut curr_size = base_size;
+
+        for op in ops.iter_mut().rev() {
+            match op {
+                BackwardsOperation::Backwards { dim, adapt } => {
+                    if expected_size != curr_size {
+                        let mut range = curr_size.clone();
+                        range[*dim] *= 2;
+
+                        let steps: Vec<_> = expected_size
+                            .iter()
+                            .zip(&curr_size)
+                            .map(|(&ex, &curr)| (ex / curr).ilog2())
+                            .collect();
+                        *adapt = Some((range, steps));
+                    }
+
+                    expected_size[*dim] *= 2;
+                    curr_size[*dim] *= 2;
+                }
+                BackwardsOperation::Skip { dim } => {
+                    expected_size[*dim] *= 2;
+                }
+            }
+        }
+
+        (ops, curr_size)
     }
 
     fn dim(&self) -> usize {
         match self {
-            BackwardsOperation::Backwards { dim } => *dim,
-            BackwardsOperation::Upscale { dim } => *dim,
+            BackwardsOperation::Backwards { dim, .. } => *dim,
+            BackwardsOperation::Skip { dim } => *dim,
         }
     }
 }

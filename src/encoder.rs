@@ -776,6 +776,7 @@ impl BlockBlueprintPart {
 
                     ops.push(BackwardsOperation::Backwards {
                         dim: blocks[*id].dim,
+                        adapt: None,
                     })
                 }
 
