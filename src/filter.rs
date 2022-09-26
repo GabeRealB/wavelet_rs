@@ -1,13 +1,15 @@
 //! Definition of common wavelets.
 
-use num_traits::{Float, FloatConst, Num};
+use std::ops::{Add, Mul, Sub};
+
+use num_traits::FloatConst;
 
 use crate::{
     stream::{Deserializable, Serializable},
     volume::{Row, RowMut, VolumeWindowMut},
 };
 
-pub trait Filter<T: Num + Copy>: Sync {
+pub trait Filter<T>: Sync {
     fn forwards(&self, input: &Row<'_, T>, low: &mut [T], high: &mut [T]);
     fn backwards(&self, output: &mut RowMut<'_, T>, low: &[T], high: &[T]);
 }
@@ -15,7 +17,10 @@ pub trait Filter<T: Num + Copy>: Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HaarWavelet;
 
-impl<T: Float + FloatConst> Filter<T> for HaarWavelet {
+impl<T> Filter<T> for HaarWavelet
+where
+    T: PartialOrd + Add<Output = T> + Sub<Output = T> + Mul<Output = T> + Clone + FloatConst,
+{
     fn forwards(&self, input: &Row<'_, T>, low: &mut [T], high: &mut [T]) {
         let value = T::FRAC_1_SQRT_2();
 
@@ -23,8 +28,8 @@ impl<T: Float + FloatConst> Filter<T> for HaarWavelet {
             let idx_left = (2 * i).min(input.len() - 1);
             let idx_right = ((2 * i) + 1).min(input.len() - 1);
 
-            let sum = value * (input[idx_right] + input[idx_left]);
-            let diff = value * (input[idx_right] - input[idx_left]);
+            let sum = value.clone() * (input[idx_right].clone() + input[idx_left].clone());
+            let diff = value.clone() * (input[idx_right].clone() - input[idx_left].clone());
 
             *low = sum;
             *high = diff;
@@ -38,8 +43,8 @@ impl<T: Float + FloatConst> Filter<T> for HaarWavelet {
             let idx_left = (2 * i).min(output.len() - 1);
             let idx_right = ((2 * i) + 1).min(output.len() - 1);
 
-            let left = value * (*low - *high);
-            let right = value * (*low + *high);
+            let left = value.clone() * (low.clone() - high.clone());
+            let right = value.clone() * (low.clone() + high.clone());
 
             output[idx_left] = left;
             output[idx_right] = right;
@@ -60,16 +65,17 @@ impl Deserializable for HaarWavelet {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AverageFilter;
 
-impl<T: Float + FloatConst> Filter<T> for AverageFilter {
+impl<T> Filter<T> for AverageFilter
+where
+    T: PartialOrd + Add<Output = T> + Sub<Output = T> + Average<Output = T> + Clone + FloatConst,
+{
     fn forwards(&self, input: &Row<'_, T>, low: &mut [T], high: &mut [T]) {
-        let two = T::from(2.0).unwrap();
-
         for (i, (low, high)) in low.iter_mut().zip(high).enumerate() {
             let idx_left = (2 * i).min(input.len() - 1);
             let idx_right = ((2 * i) + 1).min(input.len() - 1);
 
-            let average = (input[idx_right] + input[idx_left]) / two;
-            let diff = input[idx_left] - average;
+            let average = input[idx_right].clone().avg(input[idx_left].clone());
+            let diff = input[idx_left].clone() - average.clone();
 
             *low = average;
             *high = diff;
@@ -77,14 +83,12 @@ impl<T: Float + FloatConst> Filter<T> for AverageFilter {
     }
 
     fn backwards(&self, output: &mut RowMut<'_, T>, low: &[T], high: &[T]) {
-        let two = T::from(2.0).unwrap();
-
         for (i, (low, high)) in low.iter().zip(high).enumerate() {
             let idx_left = (2 * i).min(output.len() - 1);
             let idx_right = ((2 * i) + 1).min(output.len() - 1);
 
-            let left = *high + *low;
-            let right = (two * *low) - left;
+            let left = low.clone() + high.clone();
+            let right = low.clone() - high.clone();
 
             output[idx_left] = left;
             output[idx_right] = right;
@@ -102,9 +106,54 @@ impl Deserializable for AverageFilter {
     }
 }
 
+pub trait Average<Rhs = Self> {
+    type Output;
+
+    /// Computes the average of two elements.
+    fn avg(self, rhs: Rhs) -> Self::Output;
+}
+
+macro_rules! impl_avg_int {
+    ($($T:ty),*) => {
+        $(
+            impl Average for $T {
+                type Output = Self;
+
+                #[inline(always)]
+                fn avg(self, rhs: Self) -> Self::Output {
+                    (self & rhs) + ((self ^ rhs) >> 1)
+                }
+            }
+        )*
+    };
+}
+
+macro_rules! impl_avg_float {
+    ($($T:ty),*) => {
+        $(
+            impl Average for $T {
+                type Output = Self;
+
+                #[inline(always)]
+                fn avg(self, rhs: Self) -> Self::Output {
+                    (self + rhs) / 2.0
+                }
+            }
+        )*
+    };
+}
+
+impl_avg_int! {
+    u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize
+}
+
+impl_avg_float! {
+    f32, f64
+}
+
 /// Applies the forward procedure on each row of a [`VolumeWindow`]
 /// across the dimension `dim`.
-pub fn forwards_window<T: Num + Copy>(
+pub fn forwards_window<T: Clone>(
     dim: usize,
     wavelet: &impl Filter<T>,
     input: &mut VolumeWindowMut<'_, T>,
@@ -116,14 +165,14 @@ pub fn forwards_window<T: Num + Copy>(
         wavelet.forwards(&input.as_row(), low, high);
 
         for (src, dst) in scratch.iter_mut().zip(input.into_iter()) {
-            *dst = *src;
+            *dst = src.clone();
         }
     }
 }
 
 /// Applies the backwards procedure on each row of the low and high pass [`VolumeWindow`]s
 /// across the dimension `dim`.
-pub fn backwards_window<T: Num + Copy>(
+pub fn backwards_window<T: Clone>(
     dim: usize,
     wavelet: &impl Filter<T>,
     output: &mut VolumeWindowMut<'_, T>,
@@ -132,7 +181,7 @@ pub fn backwards_window<T: Num + Copy>(
     for mut output in output.rows_mut(dim) {
         let scratch = &mut scratch[..output.len()];
         for (src, dst) in output.iter().zip(scratch.iter_mut()) {
-            *dst = *src;
+            *dst = src.clone();
         }
 
         let (low, high) = scratch.split_at_mut(scratch.len() / 2);
@@ -141,13 +190,13 @@ pub fn backwards_window<T: Num + Copy>(
 }
 
 /// Scales up the data of the low pass by duplicating each element.
-pub fn upscale_window<T: Num + Copy>(dim: usize, output: &mut VolumeWindowMut<'_, T>) {
+pub fn upscale_window<T: Clone>(dim: usize, output: &mut VolumeWindowMut<'_, T>) {
     for mut output in output.rows_mut(dim) {
         let len = output.len() / 2;
 
         for i in (0..len).rev() {
-            let elem = output[i];
-            output[2 * i] = elem;
+            let elem = output[i].clone();
+            output[2 * i] = elem.clone();
             output[(2 * i) + 1] = elem;
         }
     }

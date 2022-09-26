@@ -7,7 +7,7 @@ use std::{
 
 use num_traits::{Float, FloatConst, Num, NumCast, One, ToPrimitive, Zero};
 
-use crate::transformations::Lerp;
+use crate::{filter::Average, transformations::Lerp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Vector<T, const N: usize>([T; N]);
@@ -495,6 +495,15 @@ impl<T: Lerp, const N: usize> Lerp for Vector<T, N> {
     #[inline]
     fn lerp(self, other: Self, t: f32) -> Self {
         Vector(zip_array(self.0, other.0).map(|(l, r)| l.lerp(r, t)))
+    }
+}
+
+impl<T: Average<Output = T>, const N: usize> Average for Vector<T, N> {
+    type Output = Self;
+
+    #[inline]
+    fn avg(self, rhs: Self) -> Self::Output {
+        Vector(zip_array(self.0, rhs.0).map(|(l, r)| l.avg(r)))
     }
 }
 
