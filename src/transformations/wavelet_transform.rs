@@ -101,6 +101,10 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
 
                     if has_high_pass {
                         s.spawn(|_| self.back_high(high, &ops[1..], steps, *dim));
+                    } else if let Some(steps) = steps {
+                        let ops = ForwardsOperation::new(steps);
+                        let scratch = vec![N::zero(); *high.dims().iter().max().unwrap()];
+                        self.forw_(high, scratch, &ops);
                     }
                 });
 

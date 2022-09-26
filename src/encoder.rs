@@ -647,6 +647,19 @@ struct BlockBlueprintPart {
     adapt: Option<Vec<(usize, Vec<u32>)>>,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum CoeffType {
+    Low,
+    High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct CacheKey {
+    id: usize,
+    decomp: Vec<u32>,
+    coeff_type: CoeffType,
+}
+
 impl BlockBlueprintPart {
     fn init_cache<T>(
         filter: &(impl Filter<T> + Clone),
@@ -654,16 +667,20 @@ impl BlockBlueprintPart {
         size: Vec<usize>,
         part_id: usize,
         steps: Vec<u32>,
-        cache: &mut BTreeMap<(usize, Vec<u32>), VolumeBlock<T>>,
+        cache: &mut BTreeMap<CacheKey, VolumeBlock<T>>,
     ) where
         T: Deserializable + Send + Num + Copy,
     {
-        let k = (part_id, steps);
+        let k = CacheKey {
+            id: part_id,
+            decomp: steps,
+            coeff_type: CoeffType::Low,
+        };
         if cache.contains_key(&k) {
             return;
         }
 
-        let steps = k.1;
+        let steps = k.decomp;
         if steps.iter().all(|&s| s == 0) {
             let block_path = block_path
                 .as_ref()
@@ -682,7 +699,11 @@ impl BlockBlueprintPart {
                 }
             }
 
-            let entry = cache.entry((part_id, steps));
+            let entry = cache.entry(CacheKey {
+                id: part_id,
+                decomp: steps,
+                coeff_type: CoeffType::Low,
+            });
             entry.or_insert(block_part);
         } else {
             let mut prev_size = size.clone();
@@ -707,7 +728,12 @@ impl BlockBlueprintPart {
                 cache,
             );
 
-            let prev = &cache[&(part_id, prev_steps)];
+            let prev_key = CacheKey {
+                id: part_id,
+                decomp: prev_steps,
+                coeff_type: CoeffType::Low,
+            };
+            let prev = &cache[&prev_key];
 
             let mut rec_steps = vec![0; size.len()];
             rec_steps[dim] = 1;
@@ -716,17 +742,25 @@ impl BlockBlueprintPart {
             let w = WaveletTransform::<T, _>::new(filter.clone(), false);
             let part = w.forwards(prev.clone(), cfg);
 
-            /* let mut part_offset = vec![0; size.len()];
-            part_offset[dim] = size[dim]; */
-
             let part_window = part.window();
-            let part_window = part_window.custom_range(&size);
-            //let part_window = part_window.custom_window(&part_offset, &size);
+            let (low, high) = part_window.split_into(dim);
 
             let mut block_part = VolumeBlock::new(&size).unwrap();
-            part_window.copy_to(&mut block_part.window_mut());
+            low.copy_to(&mut block_part.window_mut());
+            let entry = cache.entry(CacheKey {
+                id: part_id,
+                decomp: steps.clone(),
+                coeff_type: CoeffType::Low,
+            });
+            entry.or_insert(block_part);
 
-            let entry = cache.entry((part_id, steps));
+            let mut block_part = VolumeBlock::new(&size).unwrap();
+            high.copy_to(&mut block_part.window_mut());
+            let entry = cache.entry(CacheKey {
+                id: part_id,
+                decomp: steps,
+                coeff_type: CoeffType::High,
+            });
             entry.or_insert(block_part);
         }
     }
@@ -738,7 +772,7 @@ impl BlockBlueprintPart {
         block_path: impl AsRef<Path>,
         block: &mut VolumeWindowMut<'_, T>,
         blocks: &[BlockLayout],
-        cache: &mut Option<BTreeMap<(usize, Vec<u32>), VolumeBlock<T>>>,
+        cache: &mut Option<BTreeMap<CacheKey, VolumeBlock<T>>>,
     ) where
         T: Deserializable + Num + Copy + Send,
     {
@@ -748,8 +782,30 @@ impl BlockBlueprintPart {
                 let mut decomp = VolumeBlock::new(adapted_size).unwrap();
                 let mut decomp_window = decomp.window_mut();
 
-                let mut ops = Vec::with_capacity(adapt.len());
+                {
+                    let steps = vec![0; blocks[self.id].size.len()];
+                    BlockBlueprintPart::init_cache(
+                        filter,
+                        &block_path,
+                        blocks[self.id].size.clone(),
+                        self.id,
+                        steps.clone(),
+                        cache,
+                    );
 
+                    let block_part_key = CacheKey {
+                        id: self.id,
+                        decomp: steps,
+                        coeff_type: CoeffType::Low,
+                    };
+                    let block_part = cache.get(&block_part_key).unwrap();
+                    let block_part_window = block_part.window();
+
+                    let mut decomp_window = decomp_window.custom_range_mut(&blocks[self.id].size);
+                    block_part_window.copy_to(&mut decomp_window);
+                }
+
+                let mut ops = Vec::with_capacity(adapt.len());
                 for (id, steps) in adapt.iter().rev() {
                     let part_size: Vec<_> = blocks[*id]
                         .size
@@ -767,7 +823,12 @@ impl BlockBlueprintPart {
                         cache,
                     );
 
-                    let block_part = cache.get(&(*id, steps.clone())).unwrap();
+                    let block_part_key = CacheKey {
+                        id: *id,
+                        decomp: steps.clone(),
+                        coeff_type: CoeffType::High,
+                    };
+                    let block_part = cache.get(&block_part_key).unwrap();
                     let block_part_window = block_part.window();
 
                     let mut decomp_window =
@@ -797,7 +858,12 @@ impl BlockBlueprintPart {
                     cache,
                 );
 
-                let block_part = cache.get(&(self.id, steps)).unwrap();
+                let block_part_key = CacheKey {
+                    id: self.id,
+                    decomp: steps,
+                    coeff_type: CoeffType::Low,
+                };
+                let block_part = cache.get(&block_part_key).unwrap();
                 let block_part_window = block_part.window();
 
                 let mut window =
@@ -897,6 +963,31 @@ mod test {
         encoder.insert_metadata::<String>("Test".into(), "Example metadata string".into());
 
         let block_size = [32, 32, 32, 2];
+        encoder.encode(res_path, &block_size, AverageFilter)
+    }
+
+    #[test]
+    fn encode_sample() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test/encode_sample");
+
+        let dims = [4, 4, 1];
+        let mut encoder = VolumeWaveletEncoder::new(&dims, 2);
+
+        let dims = [4, 4];
+        let block = VolumeBlock::new_with_data(
+            &dims,
+            vec![
+                1.0f32, 2.0f32, 3.0f32, 4.0f32, 6.0f32, 8.0f32, 10.0f32, 12.0f32, 15.0f32, 18.0f32,
+                21.0f32, 24.0f32, 28.0f32, 32.0f32, 36.0f32, 40.0f32,
+            ],
+        )
+        .unwrap();
+        let fetcher = move |idx: &[usize]| block[idx];
+
+        encoder.add_fetcher(&[0], fetcher);
+
+        let block_size = [4, 4, 1];
         encoder.encode(res_path, &block_size, AverageFilter)
     }
 

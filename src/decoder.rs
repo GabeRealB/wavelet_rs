@@ -185,9 +185,6 @@ impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clon
         let refinement_pass = Chain::combine(ResampleExtend, Reverse::new(ResampleIScale))
             .chain(WaveletTransform::new(self.filter.clone(), false));
 
-        /* let block_refinement_info =
-        RefinementInfo::new(&resample_dim, &block_decompositions, &block_levels); */
-
         let num_blocks = self.block_counts.iter().product();
         let mut block_iter_idx = vec![0; self.block_size.len()];
 
@@ -439,6 +436,43 @@ mod test {
 
         assert!(block_1.is_equal(&expected_block_1, TRANSFORM_ERROR));
         assert!(block_2.is_equal(&expected_block_2, TRANSFORM_ERROR));
+    }
+
+    #[test]
+    fn decode_sample() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test/decode_sample/");
+
+        let data_path = res_path.join("output.bin");
+        let decoder = VolumeWaveletDecoder::<f32, AverageFilter>::new(data_path);
+
+        let dims = [4, 4, 1];
+        let range = dims.map(|d| 0..d);
+        let steps = 4usize.ilog2();
+        let mut data = VolumeBlock::new(&dims).unwrap();
+        let writer = |idx: &[usize], elem| {
+            data[idx] = elem;
+        };
+
+        decoder.decode(writer, &range, &[0, steps, 0]);
+
+        for x in 1..steps + 1 {
+            let mut next = VolumeBlock::new(&dims).unwrap();
+            let reader = |idx: &[usize]| data[idx];
+            let writer = |idx: &[usize], elem| {
+                next[idx] = elem;
+            };
+
+            decoder.refine(
+                reader,
+                writer,
+                &range,
+                &range,
+                &[x - 1, steps, 0],
+                &[1, 0, 0],
+            );
+            data = next;
+        }
     }
 
     #[test]
