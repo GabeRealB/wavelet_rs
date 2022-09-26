@@ -9,11 +9,16 @@ use crate::{
     volume::{Row, RowMut, VolumeWindowMut},
 };
 
+/// Trait for implementing filters.
 pub trait Filter<T>: Sync {
+    /// Splits the input data into a low pass and a high pass.
     fn forwards(&self, input: &Row<'_, T>, low: &mut [T], high: &mut [T]);
+
+    /// Combines the low pass and the high pass into the original data.
     fn backwards(&self, output: &mut RowMut<'_, T>, low: &[T], high: &[T]);
 }
 
+/// Filter implementing an Haar wavelet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HaarWavelet;
 
@@ -62,6 +67,7 @@ impl Deserializable for HaarWavelet {
     }
 }
 
+/// Variation of the haar wavelet, using the average of pairs as it's low pass filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AverageFilter;
 
@@ -106,7 +112,9 @@ impl Deserializable for AverageFilter {
     }
 }
 
+/// Trait or types implementing an averaging operation.
 pub trait Average<Rhs = Self> {
+    /// Output type of the operation.
     type Output;
 
     /// Computes the average of two elements.
@@ -151,8 +159,8 @@ impl_avg_float! {
     f32, f64
 }
 
-/// Applies the forward procedure on each row of a [`VolumeWindow`]
-/// across the dimension `dim`.
+/// Applies the forward procedure on each lane of a [`VolumeWindowMut`]
+/// across the dimension `dim` and writes the result back into the lane.
 pub fn forwards_window<T: Clone>(
     dim: usize,
     wavelet: &impl Filter<T>,
@@ -170,8 +178,9 @@ pub fn forwards_window<T: Clone>(
     }
 }
 
-/// Applies the backwards procedure on each row of the low and high pass [`VolumeWindow`]s
-/// across the dimension `dim`.
+/// Applies the backwards procedure on each lane of the low and high
+/// pass [`VolumeWindowMut`] across the dimension `dim` and writes
+/// the result back into the lane.
 pub fn backwards_window<T: Clone>(
     dim: usize,
     wavelet: &impl Filter<T>,
@@ -180,7 +189,7 @@ pub fn backwards_window<T: Clone>(
 ) {
     for mut output in output.rows_mut(dim) {
         let scratch = &mut scratch[..output.len()];
-        for (src, dst) in output.iter().zip(scratch.iter_mut()) {
+        for (src, dst) in output.iter_mut().zip(scratch.iter_mut()) {
             *dst = src.clone();
         }
 

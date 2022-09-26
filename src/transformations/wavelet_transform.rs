@@ -4,10 +4,11 @@ use std::marker::PhantomData;
 use super::{Backwards, Forwards, OneWayTransform};
 use crate::{
     filter::{backwards_window, forwards_window, upscale_window, Filter},
-    stream::{Deserializable, Named, Serializable},
+    stream::{Deserializable, Serializable},
     volume::{VolumeBlock, VolumeWindowMut},
 };
 
+/// Implementation of a wavelet transform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WaveletTransform<T: Send, F: Filter<T>> {
     filter: F,
@@ -268,8 +269,8 @@ where
     F: Filter<T> + Serializable,
 {
     fn serialize(self, stream: &mut crate::stream::SerializeStream) {
-        T::name().serialize(stream);
-        F::name().serialize(stream);
+        std::any::type_name::<T>().serialize(stream);
+        std::any::type_name::<F>().serialize(stream);
         self.filter.serialize(stream);
         self.split_high.serialize(stream);
     }
@@ -283,8 +284,8 @@ where
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let n_type: String = Deserializable::deserialize(stream);
         let t_type: String = Deserializable::deserialize(stream);
-        assert_eq!(n_type, T::name());
-        assert_eq!(t_type, F::name());
+        assert_eq!(n_type, std::any::type_name::<T>());
+        assert_eq!(t_type, std::any::type_name::<F>());
 
         let filter = Deserializable::deserialize(stream);
         let split_high = Deserializable::deserialize(stream);
@@ -296,6 +297,7 @@ where
     }
 }
 
+/// Config for decomposing a volume with the wavelet transform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WaveletDecompCfg<'a> {
     steps: &'a [u32],
@@ -325,6 +327,7 @@ impl Serializable for WaveletDecompCfg<'_> {
     }
 }
 
+/// Config for recomposing a volume with the wavelet transform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WaveletRecompCfg<'a> {
     forwards: &'a [u32],
@@ -371,6 +374,7 @@ impl Serializable for WaveletRecompCfg<'_> {
     }
 }
 
+/// Owned variant of a [`WaveletDecompCfg`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WaveletDecompCfgOwned {
     steps: Vec<u32>,
@@ -402,6 +406,7 @@ impl Deserializable for WaveletDecompCfgOwned {
     }
 }
 
+/// Owned variant of a [`WaveletRecompCfg`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WaveletRecompCfgOwned {
     forwards: Vec<u32>,

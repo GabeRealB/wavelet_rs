@@ -9,6 +9,7 @@ use num_traits::{Float, FloatConst, Num, NumCast, One, ToPrimitive, Zero};
 
 use crate::{filter::Average, transformations::Lerp};
 
+/// Vector datatype.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Vector<T, const N: usize>([T; N]);
 

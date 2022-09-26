@@ -3,6 +3,7 @@ use num_traits::Zero;
 use super::{Backwards, Forwards, OneWayTransform};
 use crate::stream::{Deserializable, Serializable};
 
+/// Integer upsampling of a data block.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleIScale;
 
@@ -91,6 +92,7 @@ impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleIScale {
     }
 }
 
+/// Transformation which zero, extends a volume block.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleExtend;
 
@@ -148,6 +150,7 @@ impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleExtend {
     }
 }
 
+/// Transformation resampling a volume by linear interpolation.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleLinear;
 
@@ -213,6 +216,7 @@ impl<T: Zero + Lerp + Clone> OneWayTransform<Backwards, T> for ResampleLinear {
     }
 }
 
+/// Config for the resample operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleCfg<'a> {
     to: &'a [usize],
@@ -237,6 +241,7 @@ impl Serializable for ResampleCfg<'_> {
     }
 }
 
+/// Owned config of the resample operation.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleCfgOwned {
     to: Vec<usize>,
@@ -268,9 +273,12 @@ impl Deserializable for ResampleCfgOwned {
     }
 }
 
+/// Trait for types implementing a linear interpolation.
 pub trait Lerp<Other = Self> {
+    /// Output type of the lerp operation.
     type Output;
 
+    /// Linearely interpolates two elements by a stepping `0.0 <= t <= 1.0`.
     fn lerp(self, other: Other, t: f32) -> Self;
 }
 

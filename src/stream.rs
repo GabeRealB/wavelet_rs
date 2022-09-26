@@ -1,3 +1,5 @@
+//! De/Serialization utilities.
+
 use std::{
     borrow::Borrow,
     collections::BTreeMap,
@@ -7,45 +9,31 @@ use std::{
 
 use crate::vector::Vector;
 
-pub trait Named {
-    fn name() -> &'static str
-    where
-        Self: Sized;
-
-    fn get_name(&self) -> &'static str;
-}
-
-impl<T: ?Sized> Named for T {
-    fn name() -> &'static str
-    where
-        Self: Sized,
-    {
-        std::any::type_name::<T>()
-    }
-
-    fn get_name(&self) -> &'static str {
-        std::any::type_name::<T>()
-    }
-}
-
-pub trait Serializable: Named {
+/// Trait for types which can be serialized to a byte stream.
+pub trait Serializable {
+    /// Serializes a value into the stream.
     fn serialize(self, stream: &mut SerializeStream);
 }
 
-pub trait Deserializable: Named {
+/// Trait for types which can be deserialized from a byte stream.
+pub trait Deserializable {
+    /// Deserializes a value from a stream.
     fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self;
 }
 
+/// Serialization byte stream.
 #[derive(Debug, Default)]
 pub struct SerializeStream {
     bytes: Vec<u8>,
 }
 
 impl SerializeStream {
+    /// Constructs a new stream.
     pub fn new() -> Self {
         Self { bytes: Vec::new() }
     }
 
+    /// Writes the contents of the stream into a writer after compressing it.
     pub fn write_encode(&self, x: impl Write) -> std::io::Result<()> {
         zstd::stream::copy_encode(&*self.bytes, x, 0)
     }
@@ -61,27 +49,32 @@ impl Write for SerializeStream {
     }
 }
 
+/// Deserialization byte stream.
 #[derive(Debug, Default)]
 pub struct DeserializeStream {
     bytes: Vec<u8>,
 }
 
 impl DeserializeStream {
+    /// Constructs a new empty stream.
     pub fn new() -> Self {
         Self { bytes: Vec::new() }
     }
 
+    /// Constructs a new stream by decompressing the contents of `x`.
     pub fn new_decode(x: impl Read) -> std::io::Result<Self> {
         let mut bytes = Vec::new();
         zstd::stream::copy_decode(x, &mut bytes)?;
         Ok(Self { bytes })
     }
 
+    /// Borrows a reference to a stream starting from the beginning.
     pub fn stream(&self) -> DeserializeStreamRef<'_> {
         DeserializeStreamRef::new(&self.bytes)
     }
 }
 
+/// Borrowed deserialization stream.
 #[derive(Debug, Default)]
 pub struct DeserializeStreamRef<'a> {
     idx: usize,
@@ -89,6 +82,8 @@ pub struct DeserializeStreamRef<'a> {
 }
 
 impl<'a> DeserializeStreamRef<'a> {
+    /// Constructs a new stream which
+    /// deserializes the contents of `buf`.
     pub fn new(buf: &'a [u8]) -> Self {
         Self { idx: 0, bytes: buf }
     }
@@ -629,22 +624,26 @@ impl Deserializable for AnyMapItem {
     }
 }
 
+/// A map which can contain any serializable type.
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AnyMap {
     map: BTreeMap<String, AnyMapItem>,
 }
 
 impl AnyMap {
+    /// Constructs a new map.
     pub fn new() -> Self {
         Self {
             map: BTreeMap::new(),
         }
     }
 
+    /// Clears the contents of the map.
     pub fn clear(&mut self) {
         self.map.clear();
     }
 
+    /// Deserializes the element mapped by the key.
     pub fn get<Q, T>(&self, key: &Q) -> Option<T>
     where
         String: Borrow<Q> + Ord,
@@ -652,7 +651,7 @@ impl AnyMap {
         T: Deserializable,
     {
         let val = self.map.get(key)?;
-        if val.r#type != T::name() {
+        if val.r#type != std::any::type_name::<T>() {
             None
         } else {
             let mut stream = DeserializeStreamRef::new(&val.data);
@@ -660,11 +659,14 @@ impl AnyMap {
         }
     }
 
+    /// Inserts a new element into the map.
+    ///
+    /// Returns whether the key was previously populated.
     pub fn insert<T>(&mut self, key: String, value: T) -> bool
     where
         T: Serializable,
     {
-        let r#type = T::name();
+        let r#type = std::any::type_name::<T>();
 
         let mut stream = SerializeStream::new();
         value.serialize(&mut stream);

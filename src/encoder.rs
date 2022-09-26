@@ -1,3 +1,5 @@
+//! Utilities for encoding a large dataset.
+
 use std::{
     borrow::Borrow, collections::BTreeMap, fmt::Debug, fs::File, marker::PhantomData, path::Path,
 };
@@ -16,6 +18,7 @@ use crate::{
     volume::{VolumeBlock, VolumeWindowMut},
 };
 
+/// Encoder of a dataset with the wavelet transform.
 pub struct VolumeWaveletEncoder<'a, T> {
     metadata: AnyMap,
     dims: Vec<usize>,
@@ -37,8 +40,8 @@ pub(crate) struct OutputHeader<T, F> {
 
 impl<T: Serializable, F: Serializable> Serializable for OutputHeader<T, F> {
     fn serialize(self, stream: &mut SerializeStream) {
-        T::name().serialize(stream);
-        F::name().serialize(stream);
+        std::any::type_name::<T>().serialize(stream);
+        std::any::type_name::<F>().serialize(stream);
 
         self.num_type.serialize(stream);
         self.metadata.serialize(stream);
@@ -54,9 +57,9 @@ impl<T: Serializable, F: Serializable> Serializable for OutputHeader<T, F> {
 impl<T: Deserializable, F: Deserializable> Deserializable for OutputHeader<T, F> {
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let t_name: String = Deserializable::deserialize(stream);
-        assert_eq!(t_name, T::name());
+        assert_eq!(t_name, std::any::type_name::<T>());
         let f_name: String = Deserializable::deserialize(stream);
-        assert_eq!(f_name, F::name());
+        assert_eq!(f_name, std::any::type_name::<F>());
 
         let num_type = Deserializable::deserialize(stream);
         let metadata = Deserializable::deserialize(stream);
@@ -86,6 +89,10 @@ impl<'a, T> VolumeWaveletEncoder<'a, T>
 where
     T: Zero + Serializable + Send + Clone,
 {
+    /// Constructs a new encoder over a volume of dimensionality `dims`.
+    ///
+    /// The parameter `num_base_dims` describes the number of dimensions
+    /// contained in each fetcher.
     pub fn new(dims: &[usize], num_base_dims: usize) -> Self {
         assert!(dims.len() > num_base_dims);
         let num_fetchers = dims[num_base_dims..].iter().product();
@@ -104,12 +111,14 @@ where
         }
     }
 
+    /// Adds a closure to the list of data fetchers of the encoder.
     pub fn add_fetcher(&mut self, index: &[usize], f: impl Fn(&[usize]) -> T + Sync + Send + 'a) {
         let idx = flatten_idx(&self.dims[self.num_base_dims..], &self.strides, index);
         assert!(self.fetchers[idx].is_none());
         self.fetchers[idx] = Some(Box::new(f));
     }
 
+    /// Fetches a value inserted into the metadata.
     pub fn get_metadata<Q, M>(&self, key: &Q) -> Option<M>
     where
         String: Borrow<Q> + Ord,
@@ -119,6 +128,7 @@ where
         self.metadata.get(key)
     }
 
+    /// Inserts some metadata which will be included into the encoded dataset.
     pub fn insert_metadata<M>(&mut self, key: String, value: M) -> bool
     where
         M: Serializable,
@@ -126,6 +136,7 @@ where
         self.metadata.insert(key, value)
     }
 
+    /// Encodes the dataset with the specified block size and filter.
     pub fn encode(
         &self,
         output: impl AsRef<Path> + Sync,
@@ -244,7 +255,7 @@ where
 
         let output_header = OutputHeader {
             metadata: self.metadata.clone(),
-            num_type: T::name().into(),
+            num_type: std::any::type_name::<T>().into(),
             dims: self.dims.clone(),
             block_size: block_size.into(),
             block_counts,

@@ -13,6 +13,7 @@ use crate::utilities::{
     flatten_idx, flatten_idx_with_offset, flatten_idx_with_offset_unchecked, strides_for_dims,
 };
 
+/// Multi-dimensional volume.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VolumeBlock<T> {
     data: Vec<T>,
@@ -271,16 +272,31 @@ impl<T> IndexMut<&[usize]> for VolumeBlock<T> {
     }
 }
 
+/// Errors that can occur when constructing a [`VolumeBlock`].
 #[derive(Error, Debug)]
 pub enum VolumeError {
+    /// Tried to construct a [`VolumeBlock`] containing no elements.
     #[error("a block length of 0 is not supported")]
     ZeroBlockLength,
+
+    /// Tried to construct a [`VolumeBlock`] with an invalid dimension length.
     #[error("invalid length for dimension (got {length})")]
-    InvalidDimensionLenght { length: usize },
+    InvalidDimensionLenght {
+        /// Length of the axis.
+        length: usize,
+    },
+
+    /// Number of proveded elements does not match with the required length.
     #[error("invalid number of elements (got {got}, required {required})")]
-    InvalidNumberOfElements { got: usize, required: usize },
+    InvalidNumberOfElements {
+        /// Number of provided elements.
+        got: usize,
+        /// Number of required elements.
+        required: usize,
+    },
 }
 
+/// A borrowed window into a [`VolumeBlock`].
 #[derive(Debug, Clone)]
 pub struct VolumeWindow<'a, T> {
     dims: Vec<usize>,
@@ -407,6 +423,7 @@ impl<'a, T> VolumeWindow<'a, T> {
         (left, right)
     }
 
+    /// Borrows a subwindow in the range `[0..dims[0], ...]` from the window.
     pub fn custom_range(&self, range: &[usize]) -> VolumeWindow<'_, T> {
         assert_eq!(self.dims.len(), range.len());
         assert!(range
@@ -426,6 +443,7 @@ impl<'a, T> VolumeWindow<'a, T> {
         }
     }
 
+    /// Borrows a subwindow in the range `[offset[0]..dims[0], ...]` from the window.
     pub fn custom_window(&self, offset: &[usize], dims: &[usize]) -> VolumeWindow<'_, T> {
         assert_eq!(self.dims.len(), offset.len());
         assert_eq!(self.dims.len(), dims.len());
@@ -687,6 +705,7 @@ impl<'a, T> Index<&[usize]> for VolumeWindow<'a, T> {
     }
 }
 
+/// A borrowed mutable window into a [`VolumeBlock`].
 #[derive(Debug)]
 pub struct VolumeWindowMut<'a, T> {
     dims: Vec<usize>,
@@ -882,6 +901,7 @@ impl<'a, T> VolumeWindowMut<'a, T> {
         (left, right)
     }
 
+    /// Borrows a subwindow in the range `[0..dims[0], ...]` from the window.
     pub fn custom_range(&self, range: &[usize]) -> VolumeWindow<'_, T> {
         assert_eq!(self.dims.len(), range.len());
         assert!(range
@@ -901,6 +921,7 @@ impl<'a, T> VolumeWindowMut<'a, T> {
         }
     }
 
+    /// Borrows a mutable subwindow in the range `[0..dims[0], ...]` from the window.
     pub fn custom_range_mut(&mut self, range: &[usize]) -> VolumeWindowMut<'_, T> {
         assert_eq!(self.dims.len(), range.len());
         assert!(range
@@ -920,6 +941,7 @@ impl<'a, T> VolumeWindowMut<'a, T> {
         }
     }
 
+    /// Borrows a subwindow in the range `[offset[0]..dims[0], ...]` from the window.
     pub fn custom_window(&self, offset: &[usize], dims: &[usize]) -> VolumeWindow<'_, T> {
         assert_eq!(self.dims.len(), offset.len());
         assert_eq!(self.dims.len(), dims.len());
@@ -945,6 +967,7 @@ impl<'a, T> VolumeWindowMut<'a, T> {
         }
     }
 
+    /// Borrows a mutable subwindow in the range `[offset[0]..dims[0], ...]` from the window.
     pub fn custom_window_mut(
         &mut self,
         offset: &[usize],
@@ -1349,6 +1372,7 @@ impl<'a, T> IndexMut<&[usize]> for VolumeWindowMut<'a, T> {
     }
 }
 
+/// An iterator over the lanes of a [`VolumeWindow`] or [`VolumeWindowMut`].
 #[derive(Debug)]
 pub struct Rows<'a, T> {
     idx: usize,
@@ -1393,6 +1417,7 @@ impl<'a, T: 'a> Iterator for Rows<'a, T> {
 unsafe impl<'a, T> Send for Rows<'a, T> where &'a [T]: Send {}
 unsafe impl<'a, T> Sync for Rows<'a, T> where &'a [T]: Sync {}
 
+/// A mutable iterator over the lanes of a [`VolumeWindowMut`].
 #[derive(Debug)]
 pub struct RowsMut<'a, T> {
     idx: usize,
@@ -1437,6 +1462,7 @@ impl<'a, T: 'a> Iterator for RowsMut<'a, T> {
 unsafe impl<'a, T> Send for RowsMut<'a, T> where &'a mut [T]: Send {}
 unsafe impl<'a, T> Sync for RowsMut<'a, T> where &'a mut [T]: Sync {}
 
+/// Information regarding a lane of a [`VolumeWindow`] or [`VolumeWindowMut`].
 #[derive(Debug)]
 pub struct Row<'a, T> {
     stride: usize,
@@ -1447,14 +1473,18 @@ pub struct Row<'a, T> {
 }
 
 impl<'a, T> Row<'a, T> {
+    /// Checks if the lane contains any elements.
     pub fn is_empty(&self) -> bool {
         self.row_len == 0
     }
 
+    /// Returns the number of elements contained in the lane.
     pub fn len(&self) -> usize {
         self.row_len
     }
 
+    /// Returns a slice to the lane if all it's elements are
+    /// stored contiguously in memory.
     pub fn as_slice(&self) -> Option<&[T]> {
         if self.stride == 1 {
             unsafe {
@@ -1478,6 +1508,7 @@ impl<'a, T> Row<'a, T> {
         &*self.data.get_unchecked(flat_idx)
     }
 
+    /// Constructs an iterator over the elements of the lane.
     pub fn iter(&self) -> RowIter<'_, 'a, T> {
         self.into_iter()
     }
@@ -1505,6 +1536,7 @@ impl<'a, 'b, T> IntoIterator for &'a Row<'b, T> {
 unsafe impl<'a, T> Send for Row<'a, T> where &'a [T]: Send {}
 unsafe impl<'a, T> Sync for Row<'a, T> where &'a [T]: Sync {}
 
+/// Iterator over the elements of a [`Row`] or a [`RowMut`].
 #[derive(Debug)]
 pub struct RowIter<'a, 'b, T> {
     idx: usize,
@@ -1527,6 +1559,7 @@ impl<'a, 'b, T> Iterator for RowIter<'a, 'b, T> {
     }
 }
 
+/// Information regarding a mutable lane of a [`VolumeWindowMut`].
 #[derive(Debug)]
 pub struct RowMut<'a, T> {
     stride: usize,
@@ -1537,14 +1570,18 @@ pub struct RowMut<'a, T> {
 }
 
 impl<'a, T> RowMut<'a, T> {
+    /// Checks if the lane contains any elements.
     pub fn is_empty(&self) -> bool {
         self.row_len == 0
     }
 
+    /// Returns the number of elements contained in the lane.
     pub fn len(&self) -> usize {
         self.row_len
     }
 
+    /// Returns a slice to the lane if all it's elements are
+    /// stored contiguously in memory.
     pub fn as_slice(&self) -> Option<&[T]> {
         if self.stride == 1 {
             unsafe {
@@ -1557,6 +1594,8 @@ impl<'a, T> RowMut<'a, T> {
         }
     }
 
+    /// Returns a mutable slice to the lane if all it's elements are
+    /// stored contiguously in memory.
     pub fn as_slice_mut(&mut self) -> Option<&mut [T]> {
         if self.stride == 1 {
             unsafe {
@@ -1595,10 +1634,7 @@ impl<'a, T> RowMut<'a, T> {
         self.data.get_unchecked_mut(flat_idx)
     }
 
-    pub fn iter(&mut self) -> RowIterMut<'_, 'a, T> {
-        self.into_iter()
-    }
-
+    /// Borrows the lane immutably.
     pub fn as_row(&self) -> Row<'_, T> {
         Row {
             stride: self.stride,
@@ -1607,6 +1643,11 @@ impl<'a, T> RowMut<'a, T> {
             data: self.data,
             _phantom: PhantomData,
         }
+    }
+
+    /// Constructs a mutable iterator over the elements of the lane.
+    pub fn iter_mut(&mut self) -> RowIterMut<'_, 'a, T> {
+        self.into_iter()
     }
 }
 
@@ -1639,6 +1680,7 @@ impl<'a, 'b, T> IntoIterator for &'a mut RowMut<'b, T> {
 unsafe impl<'a, T> Send for RowMut<'a, T> where &'a mut [T]: Send {}
 unsafe impl<'a, T> Sync for RowMut<'a, T> where &'a mut [T]: Sync {}
 
+/// Iterator over the elements of a [`RowMut`].
 #[derive(Debug)]
 pub struct RowIterMut<'a, 'b, T> {
     idx: usize,

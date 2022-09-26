@@ -1,3 +1,5 @@
+//! Implementation of multi-dimensional ranges.
+
 use std::{
     iter::Product,
     ops::{AddAssign, Range, Sub},
@@ -5,6 +7,8 @@ use std::{
 
 use num_traits::{One, Zero};
 
+/// Iterates over each element of the multi-dimensional range
+/// and calls the provided closure with each element.
 pub fn for_each_range<T>(range: impl Iterator<Item = Range<T>> + Clone, mut f: impl FnMut(&[T]))
 where
     T: Zero + One + AddAssign + Sub<Output = T> + PartialOrd + Clone,
@@ -13,6 +17,8 @@ where
     for_each_range_enumerate(range, move |_, e| f(e))
 }
 
+/// Iterates over each element of the multi-dimensional range
+/// and calls the provided closure with each element and index.
 pub fn for_each_range_enumerate<T>(
     range: impl Iterator<Item = Range<T>> + Clone,
     mut f: impl FnMut(usize, &[T]),
@@ -43,6 +49,8 @@ pub fn for_each_range_enumerate<T>(
     }
 }
 
+/// Parallelly iterates over each element of the multi-dimensional range
+/// and calls the provided closure with each element.
 pub fn for_each_range_par<T>(
     range: impl Iterator<Item = Range<T>> + Send + Clone,
     f: impl FnOnce(&[T]) + Send + Clone,
@@ -53,6 +61,8 @@ pub fn for_each_range_par<T>(
     for_each_range_par_enumerate(range, move |_, e| f(e))
 }
 
+/// Parallelly iterates over each element of the multi-dimensional range
+/// and calls the provided closure with each element and index.
 pub fn for_each_range_par_enumerate<T>(
     range: impl Iterator<Item = Range<T>> + Send + Clone,
     f: impl FnOnce(usize, &[T]) + Send + Clone,

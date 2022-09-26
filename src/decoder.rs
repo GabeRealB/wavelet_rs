@@ -1,3 +1,5 @@
+//! Utilities for decoding a processed dataset.
+
 use num_traits::Zero;
 use std::{
     borrow::Borrow,
@@ -17,6 +19,7 @@ use crate::{
     volume::VolumeBlock,
 };
 
+/// Decoder for a dataset encoded with a wavelet transform.
 #[derive(Debug)]
 pub struct VolumeWaveletDecoder<T, F> {
     path: PathBuf,
@@ -35,6 +38,10 @@ where
     T: Zero + Deserializable + Clone + Send,
     F: Filter<T> + Deserializable + Clone,
 {
+    /// Constructs a new decoder.
+    ///
+    /// The provided path must point to the root of the
+    /// dataset, usually a file named `output.bin`.
     pub fn new(p: impl AsRef<Path>) -> Self {
         let p = p.as_ref();
         let input_path = p.parent().unwrap().to_path_buf();
@@ -67,6 +74,7 @@ where
         }
     }
 
+    /// Fetches the value associated with a key from the dataset.
     pub fn get_metadata<Q, M>(&self, key: &Q) -> Option<M>
     where
         String: Borrow<Q> + Ord,
@@ -76,6 +84,7 @@ where
         self.metadata.get(key)
     }
 
+    /// Applies a partial decoding to a partially decoded dataset.
     pub fn refine(
         &self,
         mut reader: impl FnMut(&[usize]) -> T,
@@ -152,13 +161,6 @@ where
             .zip(&block_levels)
             .map(|(&d, &l)| d - l)
             .collect();
-
-        /* let block_forwards_steps: Vec<_> = self
-        .block_blueprints
-        .block_size(&block_levels, &block_refinements)
-        .into_iter()
-        .map(|s| s.ilog2())
-        .collect(); */
 
         let block_input_dims: Vec<_> = block_levels.iter().map(|&re| 2usize.pow(re)).collect();
         let block_downsample_stepping: Vec<_> = resample_dim
@@ -282,6 +284,7 @@ where
         }
     }
 
+    /// Decodes the dataset.
     pub fn decode(
         &self,
         mut writer: impl FnMut(&[usize], T),

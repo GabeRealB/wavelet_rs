@@ -14,27 +14,35 @@ pub use wavelet_transform::{
     WaveletTransform,
 };
 
+/// Forwards direction.
 #[derive(Debug)]
-pub struct Forwards;
+pub enum Forwards {}
 
+/// Backwards direction.
 #[derive(Debug)]
-pub struct Backwards;
+pub enum Backwards {}
 
+/// Trait providing a, possibly irreversible, transformation.
 pub trait OneWayTransform<Dir, T> {
+    /// Type of the config parameter for the transformation.
     type Cfg<'a>;
 
+    /// Applies the transformation on a [`VolumeBlock`].
     fn apply(&self, input: VolumeBlock<T>, cfg: Self::Cfg<'_>) -> VolumeBlock<T>;
 }
 
+/// Trait providing a reversible transformation.
 pub trait ReversibleTransform<T>:
     OneWayTransform<Forwards, T> + OneWayTransform<Backwards, T>
 {
+    /// Applies the transformation on a [`VolumeBlock`].
     fn forwards(
         &self,
         input: VolumeBlock<T>,
         cfg: <Self as OneWayTransform<Forwards, T>>::Cfg<'_>,
     ) -> VolumeBlock<T>;
 
+    /// Applies the inverse of the transformation on a [`VolumeBlock`].
     fn backwards(
         &self,
         input: VolumeBlock<T>,
