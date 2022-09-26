@@ -34,12 +34,12 @@ impl<T: Zero + Clone> OneWayTransform<Forwards, T> for ResampleIScale {
         for (dim, (&src, &dst)) in input.dims().iter().zip(cfg.to).enumerate() {
             let scale_factor = dst / src;
 
-            for mut row in scaled_window.rows_mut(dim) {
-                let len = row.len() / scale_factor;
-                for (src, dst) in (0..len).zip((0..row.len()).step_by(scale_factor)).rev() {
+            for mut lane in scaled_window.lanes_mut(dim) {
+                let len = lane.len() / scale_factor;
+                for (src, dst) in (0..len).zip((0..lane.len()).step_by(scale_factor)).rev() {
                     for i in 0..scale_factor {
                         unsafe {
-                            *row.get_unchecked_mut(dst + i) = row.get_unchecked_mut(src).clone()
+                            *lane.get_unchecked_mut(dst + i) = lane.get_unchecked_mut(src).clone()
                         };
                     }
                 }
@@ -75,10 +75,10 @@ impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleIScale {
         for (dim, (&src, &dst)) in dims.iter().zip(cfg.to).enumerate() {
             let scale_factor = src / dst;
 
-            for mut row in window.rows_mut(dim) {
-                let len = row.len() / scale_factor;
-                for (src, dst) in (0..row.len()).step_by(scale_factor).zip(0..len) {
-                    unsafe { *row.get_unchecked_mut(dst) = row.get_unchecked_mut(src).clone() };
+            for mut lane in window.lanes_mut(dim) {
+                let len = lane.len() / scale_factor;
+                for (src, dst) in (0..lane.len()).step_by(scale_factor).zip(0..len) {
+                    unsafe { *lane.get_unchecked_mut(dst) = lane.get_unchecked_mut(src).clone() };
                 }
             }
         }
@@ -180,8 +180,8 @@ impl<T: Zero + Lerp + Clone> OneWayTransform<Forwards, T> for ResampleLinear {
             let num_steps = cfg.to[i];
             let step_size = (input.dims()[i] as f32) / (cfg.to[i] as f32);
 
-            let src = input_window.rows(i);
-            let dst = output_window.rows_mut(i);
+            let src = input_window.lanes(i);
+            let dst = output_window.lanes_mut(i);
 
             for (src, mut dst) in src.zip(dst) {
                 for j in 0..num_steps {

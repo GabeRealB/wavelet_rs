@@ -215,10 +215,10 @@ where
                     let (low, high) = block_decomp_window.split_into(dim);
                     block_decomp_window = low;
 
-                    let rows = high.rows(0);
+                    let lanes = high.lanes(0);
                     let mut stream = SerializeStream::new();
-                    for row in rows {
-                        for elem in row.as_slice().unwrap() {
+                    for lane in lanes {
+                        for elem in lane.as_slice().unwrap() {
                             elem.clone().serialize(&mut stream);
                         }
                     }
@@ -699,9 +699,9 @@ impl BlockBlueprintPart {
 
             let mut block_part = VolumeBlock::new_zero(&size).unwrap();
             let mut block_part_window = block_part.window_mut();
-            let rows = block_part_window.rows_mut(0);
-            for mut row in rows {
-                for elem in row.as_slice_mut().unwrap() {
+            let lanes = block_part_window.lanes_mut(0);
+            for mut lane in lanes {
+                for elem in lane.as_slice_mut().unwrap() {
                     *elem = Deserializable::deserialize(&mut stream);
                 }
             }
@@ -888,9 +888,9 @@ impl BlockBlueprintPart {
 
             let mut window =
                 block.custom_window_mut(&blocks[self.id].offset, &blocks[self.id].size);
-            let rows = window.rows_mut(0);
-            for mut row in rows {
-                for elem in row.as_slice_mut().unwrap() {
+            let lanes = window.lanes_mut(0);
+            for mut lane in lanes {
+                for elem in lane.as_slice_mut().unwrap() {
                     *elem = Deserializable::deserialize(&mut stream);
                 }
             }

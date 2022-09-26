@@ -474,7 +474,7 @@ impl<'a, T> VolumeWindow<'a, T> {
         &self.dims
     }
 
-    /// Constructs an iterator over the rows of a window.
+    /// Constructs an iterator over the lanes of a window.
     ///
     /// # Examples
     ///
@@ -486,62 +486,62 @@ impl<'a, T> VolumeWindow<'a, T> {
     /// let block = VolumeBlock::new_with_data(&dims, data).unwrap();
     /// let window = block.window();
     ///
-    /// let mut rows_x = window.rows(0);
-    /// assert_eq!(rows_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 2.0]);
-    /// assert_eq!(rows_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [3.0, 4.0]);
-    /// assert_eq!(rows_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0, 6.0]);
-    /// assert_eq!(rows_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [7.0, 8.0]);
-    /// assert!(rows_x.next().is_none());
+    /// let mut lanes_x = window.lanes(0);
+    /// assert_eq!(lanes_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 2.0]);
+    /// assert_eq!(lanes_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [3.0, 4.0]);
+    /// assert_eq!(lanes_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0, 6.0]);
+    /// assert_eq!(lanes_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [7.0, 8.0]);
+    /// assert!(lanes_x.next().is_none());
     ///
-    /// let mut rows_y = window.rows(1);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 3.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 4.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0, 7.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [6.0, 8.0]);
-    /// assert!(rows_y.next().is_none());
+    /// let mut lanes_y = window.lanes(1);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 3.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 4.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0, 7.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [6.0, 8.0]);
+    /// assert!(lanes_y.next().is_none());
     ///
-    /// let mut rows_z = window.rows(2);
-    /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 5.0]);
-    /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 6.0]);
-    /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [3.0, 7.0]);
-    /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [4.0, 8.0]);
-    /// assert!(rows_z.next().is_none());
+    /// let mut lanes_z = window.lanes(2);
+    /// assert_eq!(lanes_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 5.0]);
+    /// assert_eq!(lanes_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 6.0]);
+    /// assert_eq!(lanes_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [3.0, 7.0]);
+    /// assert_eq!(lanes_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [4.0, 8.0]);
+    /// assert!(lanes_z.next().is_none());
     ///
     /// let (top, _) = window.split(1);
-    /// let mut rows_x = top.rows(0);
-    /// assert_eq!(rows_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 2.0]);
-    /// assert_eq!(rows_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0, 6.0]);
-    /// assert!(rows_x.next().is_none());
+    /// let mut lanes_x = top.lanes(0);
+    /// assert_eq!(lanes_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 2.0]);
+    /// assert_eq!(lanes_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0, 6.0]);
+    /// assert!(lanes_x.next().is_none());
     ///
-    /// let mut rows_y = top.rows(1);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [6.0]);
-    /// assert!(rows_y.next().is_none());
+    /// let mut lanes_y = top.lanes(1);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [6.0]);
+    /// assert!(lanes_y.next().is_none());
     ///
-    /// let mut rows_z = top.rows(2);
-    /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 5.0]);
-    /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 6.0]);
-    /// assert!(rows_z.next().is_none());
+    /// let mut lanes_z = top.lanes(2);
+    /// assert_eq!(lanes_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 5.0]);
+    /// assert_eq!(lanes_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 6.0]);
+    /// assert!(lanes_z.next().is_none());
     /// ```
-    pub fn rows(&self, dim: usize) -> Rows<'_, T> {
+    pub fn lanes(&self, dim: usize) -> Lanes<'_, T> {
         let start_idx = flatten_idx(self.block_dims, self.block_strides, &self.dim_offsets);
 
-        let (divisor, stride, row_strides) = with_alloca_zeroed(
+        let (divisor, stride, lane_strides) = with_alloca_zeroed(
             self.dims.len() * 2 * std::mem::size_of::<usize>(),
             |alloc| {
-                let (tmp_idx, row_starts) = unsafe {
-                    let (tmp_alloc, row_starts_alloc) = alloc.split_at_mut(alloc.len() / 2);
+                let (tmp_idx, lane_starts) = unsafe {
+                    let (tmp_alloc, lane_starts_alloc) = alloc.split_at_mut(alloc.len() / 2);
                     let tmp_idx = std::slice::from_raw_parts_mut(
                         tmp_alloc.as_mut_ptr() as *mut usize,
                         self.dims.len(),
                     );
-                    let row_starts = std::slice::from_raw_parts_mut(
-                        row_starts_alloc.as_mut_ptr() as *mut usize,
+                    let lane_starts = std::slice::from_raw_parts_mut(
+                        lane_starts_alloc.as_mut_ptr() as *mut usize,
                         self.dims.len(),
                     );
-                    (tmp_idx, row_starts)
+                    (tmp_idx, lane_starts)
                 };
 
                 tmp_idx[dim] = 1;
@@ -555,12 +555,12 @@ impl<'a, T> VolumeWindow<'a, T> {
                 tmp_idx[dim] = 0;
 
                 let mut divisor = 1;
-                let mut row_start_idx = start_idx;
-                let mut row_strides = Vec::with_capacity(self.dims.len() - 1);
+                let mut lane_start_idx = start_idx;
+                let mut lane_strides = Vec::with_capacity(self.dims.len() - 1);
                 for (i, &d) in self.dims.iter().enumerate() {
                     if i != dim {
                         tmp_idx[i] = 1;
-                        let row_end = unsafe {
+                        let lane_end = unsafe {
                             flatten_idx_with_offset_unchecked(
                                 self.block_strides,
                                 tmp_idx,
@@ -569,35 +569,35 @@ impl<'a, T> VolumeWindow<'a, T> {
                         };
                         tmp_idx[i] = 0;
 
-                        row_starts[i] = d - 1;
-                        let next_row_start_idx = unsafe {
+                        lane_starts[i] = d - 1;
+                        let next_lane_start_idx = unsafe {
                             flatten_idx_with_offset_unchecked(
                                 self.block_strides,
-                                row_starts,
+                                lane_starts,
                                 &self.dim_offsets,
                             )
                         };
 
-                        let row_stride = row_end - row_start_idx;
-                        row_strides.push((divisor, row_stride));
+                        let lane_stride = lane_end - lane_start_idx;
+                        lane_strides.push((divisor, lane_stride));
 
                         divisor *= d;
-                        row_start_idx = next_row_start_idx;
+                        lane_start_idx = next_lane_start_idx;
                     }
                 }
 
-                (divisor, stride, row_strides)
+                (divisor, stride, lane_strides)
             },
         );
 
-        let num_rows = divisor;
-        Rows {
+        let num_lanes = divisor;
+        Lanes {
             idx: 0,
             stride,
-            num_rows,
-            row_strides,
-            row_idx: start_idx,
-            row_len: self.dims[dim],
+            num_lanes,
+            lane_strides,
+            lane_idx: start_idx,
+            lane_len: self.dims[dim],
             data: self.block_data,
             _phantom: PhantomData,
         }
@@ -635,10 +635,10 @@ impl<'a, T: Copy> VolumeWindow<'a, T> {
     /// assert_eq!(right[[0usize, 1usize].as_ref()], 3.0);
     pub fn copy_to(&self, window: &mut VolumeWindowMut<'_, T>) {
         assert!(self.dims == window.dims);
-        let src_rows = self.rows(0);
-        let dst_rows = window.rows_mut(0);
+        let src_lanes = self.lanes(0);
+        let dst_lanes = window.lanes_mut(0);
 
-        for (src, mut dst) in src_rows.zip(dst_rows) {
+        for (src, mut dst) in src_lanes.zip(dst_lanes) {
             let src = src.as_slice().unwrap();
             let dst = dst.as_slice_mut().unwrap();
             dst.copy_from_slice(src)
@@ -677,10 +677,10 @@ impl<'a, T: Clone> VolumeWindow<'a, T> {
     /// assert_eq!(right[[0usize, 1usize].as_ref()], 3.0);
     pub fn clone_to(&self, window: &mut VolumeWindowMut<'_, T>) {
         assert!(self.dims == window.dims);
-        let src_rows = self.rows(0);
-        let dst_rows = window.rows_mut(0);
+        let src_lanes = self.lanes(0);
+        let dst_lanes = window.lanes_mut(0);
 
-        for (src, mut dst) in src_rows.zip(dst_rows) {
+        for (src, mut dst) in src_lanes.zip(dst_lanes) {
             let src = src.as_slice().unwrap();
             let dst = dst.as_slice_mut().unwrap();
             dst.clone_from_slice(src)
@@ -1002,7 +1002,7 @@ impl<'a, T> VolumeWindowMut<'a, T> {
         &self.dims
     }
 
-    /// Constructs an iterator over the rows of a window.
+    /// Constructs an iterator over the lanes of a window.
     ///
     /// # Examples
     ///
@@ -1014,62 +1014,62 @@ impl<'a, T> VolumeWindowMut<'a, T> {
     /// let mut block = VolumeBlock::new_with_data(&dims, data).unwrap();
     /// let window = block.window_mut();
     ///
-    /// let mut rows_x = window.rows(0);
-    /// assert_eq!(rows_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 2.0]);
-    /// assert_eq!(rows_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [3.0, 4.0]);
-    /// assert_eq!(rows_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0, 6.0]);
-    /// assert_eq!(rows_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [7.0, 8.0]);
-    /// assert!(rows_x.next().is_none());
+    /// let mut lanes_x = window.lanes(0);
+    /// assert_eq!(lanes_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 2.0]);
+    /// assert_eq!(lanes_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [3.0, 4.0]);
+    /// assert_eq!(lanes_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0, 6.0]);
+    /// assert_eq!(lanes_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [7.0, 8.0]);
+    /// assert!(lanes_x.next().is_none());
     ///
-    /// let mut rows_y = window.rows(1);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 3.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 4.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0, 7.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [6.0, 8.0]);
-    /// assert!(rows_y.next().is_none());
+    /// let mut lanes_y = window.lanes(1);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 3.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 4.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0, 7.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [6.0, 8.0]);
+    /// assert!(lanes_y.next().is_none());
     ///
-    /// let mut rows_z = window.rows(2);
-    /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 5.0]);
-    /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 6.0]);
-    /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [3.0, 7.0]);
-    /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [4.0, 8.0]);
-    /// assert!(rows_z.next().is_none());
+    /// let mut lanes_z = window.lanes(2);
+    /// assert_eq!(lanes_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 5.0]);
+    /// assert_eq!(lanes_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 6.0]);
+    /// assert_eq!(lanes_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [3.0, 7.0]);
+    /// assert_eq!(lanes_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [4.0, 8.0]);
+    /// assert!(lanes_z.next().is_none());
     ///
     /// let (top, _) = window.split(1);
-    /// let mut rows_x = top.rows(0);
-    /// assert_eq!(rows_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 2.0]);
-    /// assert_eq!(rows_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0, 6.0]);
-    /// assert!(rows_x.next().is_none());
+    /// let mut lanes_x = top.lanes(0);
+    /// assert_eq!(lanes_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 2.0]);
+    /// assert_eq!(lanes_x.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0, 6.0]);
+    /// assert!(lanes_x.next().is_none());
     ///
-    /// let mut rows_y = top.rows(1);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [6.0]);
-    /// assert!(rows_y.next().is_none());
+    /// let mut lanes_y = top.lanes(1);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [5.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [6.0]);
+    /// assert!(lanes_y.next().is_none());
     ///
-    /// let mut rows_z = top.rows(2);
-    /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 5.0]);
-    /// assert_eq!(rows_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 6.0]);
-    /// assert!(rows_z.next().is_none());
+    /// let mut lanes_z = top.lanes(2);
+    /// assert_eq!(lanes_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [1.0, 5.0]);
+    /// assert_eq!(lanes_z.next().unwrap().iter().cloned().collect::<Vec<f32>>(), [2.0, 6.0]);
+    /// assert!(lanes_z.next().is_none());
     /// ```
-    pub fn rows(&self, dim: usize) -> Rows<'_, T> {
+    pub fn lanes(&self, dim: usize) -> Lanes<'_, T> {
         let start_idx = flatten_idx(self.block_dims, self.block_strides, &self.dim_offsets);
 
-        let (divisor, stride, row_strides) = with_alloca_zeroed(
+        let (divisor, stride, lane_strides) = with_alloca_zeroed(
             self.dims.len() * 2 * std::mem::size_of::<usize>(),
             |alloc| {
-                let (tmp_idx, row_starts) = unsafe {
-                    let (tmp_alloc, row_starts_alloc) = alloc.split_at_mut(alloc.len() / 2);
+                let (tmp_idx, lane_starts) = unsafe {
+                    let (tmp_alloc, lane_starts_alloc) = alloc.split_at_mut(alloc.len() / 2);
                     let tmp_idx = std::slice::from_raw_parts_mut(
                         tmp_alloc.as_mut_ptr() as *mut usize,
                         self.dims.len(),
                     );
-                    let row_starts = std::slice::from_raw_parts_mut(
-                        row_starts_alloc.as_mut_ptr() as *mut usize,
+                    let lane_starts = std::slice::from_raw_parts_mut(
+                        lane_starts_alloc.as_mut_ptr() as *mut usize,
                         self.dims.len(),
                     );
-                    (tmp_idx, row_starts)
+                    (tmp_idx, lane_starts)
                 };
 
                 tmp_idx[dim] = 1;
@@ -1083,12 +1083,12 @@ impl<'a, T> VolumeWindowMut<'a, T> {
                 tmp_idx[dim] = 0;
 
                 let mut divisor = 1;
-                let mut row_start_idx = start_idx;
-                let mut row_strides = Vec::with_capacity(self.dims.len() - 1);
+                let mut lane_start_idx = start_idx;
+                let mut lane_strides = Vec::with_capacity(self.dims.len() - 1);
                 for (i, &d) in self.dims.iter().enumerate() {
                     if i != dim {
                         tmp_idx[i] = 1;
-                        let row_end = unsafe {
+                        let lane_end = unsafe {
                             flatten_idx_with_offset_unchecked(
                                 self.block_strides,
                                 tmp_idx,
@@ -1097,41 +1097,41 @@ impl<'a, T> VolumeWindowMut<'a, T> {
                         };
                         tmp_idx[i] = 0;
 
-                        row_starts[i] = d - 1;
-                        let next_row_start_idx = unsafe {
+                        lane_starts[i] = d - 1;
+                        let next_lane_start_idx = unsafe {
                             flatten_idx_with_offset_unchecked(
                                 self.block_strides,
-                                row_starts,
+                                lane_starts,
                                 &self.dim_offsets,
                             )
                         };
 
-                        let row_stride = row_end - row_start_idx;
-                        row_strides.push((divisor, row_stride));
+                        let lane_stride = lane_end - lane_start_idx;
+                        lane_strides.push((divisor, lane_stride));
 
                         divisor *= d;
-                        row_start_idx = next_row_start_idx;
+                        lane_start_idx = next_lane_start_idx;
                     }
                 }
 
-                (divisor, stride, row_strides)
+                (divisor, stride, lane_strides)
             },
         );
 
-        let num_rows = divisor;
-        Rows {
+        let num_lanes = divisor;
+        Lanes {
             idx: 0,
             stride,
-            num_rows,
-            row_strides,
-            row_idx: start_idx,
-            row_len: self.dims[dim],
+            num_lanes,
+            lane_strides,
+            lane_idx: start_idx,
+            lane_len: self.dims[dim],
             data: self.block_data,
             _phantom: PhantomData,
         }
     }
 
-    /// Constructs a mutable iterator over the rows of a window.
+    /// Constructs a mutable iterator over the lanes of a window.
     ///
     /// # Examples
     ///
@@ -1143,62 +1143,62 @@ impl<'a, T> VolumeWindowMut<'a, T> {
     /// let mut block = VolumeBlock::new_with_data(&dims, data).unwrap();
     /// let mut window = block.window_mut();
     ///
-    /// let mut rows_x = window.rows_mut(0);
-    /// assert_eq!(rows_x.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [1.0, 2.0]);
-    /// assert_eq!(rows_x.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [3.0, 4.0]);
-    /// assert_eq!(rows_x.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [5.0, 6.0]);
-    /// assert_eq!(rows_x.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [7.0, 8.0]);
-    /// assert!(rows_x.next().is_none());
+    /// let mut lanes_x = window.lanes_mut(0);
+    /// assert_eq!(lanes_x.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [1.0, 2.0]);
+    /// assert_eq!(lanes_x.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [3.0, 4.0]);
+    /// assert_eq!(lanes_x.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [5.0, 6.0]);
+    /// assert_eq!(lanes_x.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [7.0, 8.0]);
+    /// assert!(lanes_x.next().is_none());
     ///
-    /// let mut rows_y = window.rows_mut(1);
-    /// assert_eq!(rows_y.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [1.0, 3.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [2.0, 4.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [5.0, 7.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [6.0, 8.0]);
-    /// assert!(rows_y.next().is_none());
+    /// let mut lanes_y = window.lanes_mut(1);
+    /// assert_eq!(lanes_y.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [1.0, 3.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [2.0, 4.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [5.0, 7.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [6.0, 8.0]);
+    /// assert!(lanes_y.next().is_none());
     ///
-    /// let mut rows_z = window.rows_mut(2);
-    /// assert_eq!(rows_z.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [1.0, 5.0]);
-    /// assert_eq!(rows_z.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [2.0, 6.0]);
-    /// assert_eq!(rows_z.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [3.0, 7.0]);
-    /// assert_eq!(rows_z.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [4.0, 8.0]);
-    /// assert!(rows_z.next().is_none());
+    /// let mut lanes_z = window.lanes_mut(2);
+    /// assert_eq!(lanes_z.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [1.0, 5.0]);
+    /// assert_eq!(lanes_z.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [2.0, 6.0]);
+    /// assert_eq!(lanes_z.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [3.0, 7.0]);
+    /// assert_eq!(lanes_z.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [4.0, 8.0]);
+    /// assert!(lanes_z.next().is_none());
     ///
     /// let (mut top, _) = window.split_mut(1);
-    /// let mut rows_x = top.rows_mut(0);
-    /// assert_eq!(rows_x.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [1.0, 2.0]);
-    /// assert_eq!(rows_x.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [5.0, 6.0]);
-    /// assert!(rows_x.next().is_none());
+    /// let mut lanes_x = top.lanes_mut(0);
+    /// assert_eq!(lanes_x.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [1.0, 2.0]);
+    /// assert_eq!(lanes_x.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [5.0, 6.0]);
+    /// assert!(lanes_x.next().is_none());
     ///
-    /// let mut rows_y = top.rows_mut(1);
-    /// assert_eq!(rows_y.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [1.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [2.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [5.0]);
-    /// assert_eq!(rows_y.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [6.0]);
-    /// assert!(rows_y.next().is_none());
+    /// let mut lanes_y = top.lanes_mut(1);
+    /// assert_eq!(lanes_y.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [1.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [2.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [5.0]);
+    /// assert_eq!(lanes_y.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [6.0]);
+    /// assert!(lanes_y.next().is_none());
     ///
-    /// let mut rows_z = top.rows_mut(2);
-    /// assert_eq!(rows_z.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [1.0, 5.0]);
-    /// assert_eq!(rows_z.next().unwrap().iter().map(|x| *x).collect::<Vec<f32>>(), [2.0, 6.0]);
-    /// assert!(rows_z.next().is_none());
+    /// let mut lanes_z = top.lanes_mut(2);
+    /// assert_eq!(lanes_z.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [1.0, 5.0]);
+    /// assert_eq!(lanes_z.next().unwrap().iter_mut().map(|x| *x).collect::<Vec<f32>>(), [2.0, 6.0]);
+    /// assert!(lanes_z.next().is_none());
     /// ```
-    pub fn rows_mut(&mut self, dim: usize) -> RowsMut<'_, T> {
+    pub fn lanes_mut(&mut self, dim: usize) -> LanesMut<'_, T> {
         let start_idx = flatten_idx(self.block_dims, self.block_strides, &self.dim_offsets);
 
-        let (divisor, stride, row_strides) = with_alloca_zeroed(
+        let (divisor, stride, lane_strides) = with_alloca_zeroed(
             self.dims.len() * 2 * std::mem::size_of::<usize>(),
             |alloc| {
-                let (tmp_idx, row_starts) = unsafe {
-                    let (tmp_alloc, row_starts_alloc) = alloc.split_at_mut(alloc.len() / 2);
+                let (tmp_idx, lane_starts) = unsafe {
+                    let (tmp_alloc, lane_starts_alloc) = alloc.split_at_mut(alloc.len() / 2);
                     let tmp_idx = std::slice::from_raw_parts_mut(
                         tmp_alloc.as_mut_ptr() as *mut usize,
                         self.dims.len(),
                     );
-                    let row_starts = std::slice::from_raw_parts_mut(
-                        row_starts_alloc.as_mut_ptr() as *mut usize,
+                    let lane_starts = std::slice::from_raw_parts_mut(
+                        lane_starts_alloc.as_mut_ptr() as *mut usize,
                         self.dims.len(),
                     );
-                    (tmp_idx, row_starts)
+                    (tmp_idx, lane_starts)
                 };
 
                 tmp_idx[dim] = 1;
@@ -1212,12 +1212,12 @@ impl<'a, T> VolumeWindowMut<'a, T> {
                 tmp_idx[dim] = 0;
 
                 let mut divisor = 1;
-                let mut row_start_idx = start_idx;
-                let mut row_strides = Vec::with_capacity(self.dims.len() - 1);
+                let mut lane_start_idx = start_idx;
+                let mut lane_strides = Vec::with_capacity(self.dims.len() - 1);
                 for (i, &d) in self.dims.iter().enumerate() {
                     if i != dim {
                         tmp_idx[i] = 1;
-                        let row_end = unsafe {
+                        let lane_end = unsafe {
                             flatten_idx_with_offset_unchecked(
                                 self.block_strides,
                                 tmp_idx,
@@ -1226,35 +1226,35 @@ impl<'a, T> VolumeWindowMut<'a, T> {
                         };
                         tmp_idx[i] = 0;
 
-                        row_starts[i] = d - 1;
-                        let next_row_start_idx = unsafe {
+                        lane_starts[i] = d - 1;
+                        let next_lane_start_idx = unsafe {
                             flatten_idx_with_offset_unchecked(
                                 self.block_strides,
-                                row_starts,
+                                lane_starts,
                                 &self.dim_offsets,
                             )
                         };
 
-                        let row_stride = row_end - row_start_idx;
-                        row_strides.push((divisor, row_stride));
+                        let lane_stride = lane_end - lane_start_idx;
+                        lane_strides.push((divisor, lane_stride));
 
                         divisor *= d;
-                        row_start_idx = next_row_start_idx;
+                        lane_start_idx = next_lane_start_idx;
                     }
                 }
 
-                (divisor, stride, row_strides)
+                (divisor, stride, lane_strides)
             },
         );
 
-        let num_rows = divisor;
-        RowsMut {
+        let num_lanes = divisor;
+        LanesMut {
             idx: 0,
             stride,
-            num_rows,
-            row_strides,
-            row_idx: start_idx,
-            row_len: self.dims[dim],
+            num_lanes,
+            lane_strides,
+            lane_idx: start_idx,
+            lane_len: self.dims[dim],
             data: self.block_data,
             _phantom: PhantomData,
         }
@@ -1291,10 +1291,10 @@ impl<'a, T: Copy> VolumeWindowMut<'a, T> {
     /// assert_eq!(right[[0usize, 1usize].as_ref()], 3.0);
     pub fn copy_to(&self, window: &mut VolumeWindowMut<'_, T>) {
         assert!(self.dims == window.dims);
-        let src_rows = self.rows(0);
-        let dst_rows = window.rows_mut(0);
+        let src_lanes = self.lanes(0);
+        let dst_lanes = window.lanes_mut(0);
 
-        for (src, mut dst) in src_rows.zip(dst_rows) {
+        for (src, mut dst) in src_lanes.zip(dst_lanes) {
             let src = src.as_slice().unwrap();
             let dst = dst.as_slice_mut().unwrap();
             dst.copy_from_slice(src)
@@ -1332,10 +1332,10 @@ impl<'a, T: Clone> VolumeWindowMut<'a, T> {
     /// assert_eq!(right[[0usize, 1usize].as_ref()], 3.0);
     pub fn clone_to(&self, window: &mut VolumeWindowMut<'_, T>) {
         assert!(self.dims == window.dims);
-        let src_rows = self.rows(0);
-        let dst_rows = window.rows_mut(0);
+        let src_lanes = self.lanes(0);
+        let dst_lanes = window.lanes_mut(0);
 
-        for (src, mut dst) in src_rows.zip(dst_rows) {
+        for (src, mut dst) in src_lanes.zip(dst_lanes) {
             let src = src.as_slice().unwrap();
             let dst = dst.as_slice_mut().unwrap();
             dst.clone_from_slice(src)
@@ -1374,37 +1374,37 @@ impl<'a, T> IndexMut<&[usize]> for VolumeWindowMut<'a, T> {
 
 /// An iterator over the lanes of a [`VolumeWindow`] or [`VolumeWindowMut`].
 #[derive(Debug)]
-pub struct Rows<'a, T> {
+pub struct Lanes<'a, T> {
     idx: usize,
     stride: usize,
-    row_len: usize,
-    row_idx: usize,
-    num_rows: usize,
-    row_strides: Vec<(usize, usize)>,
+    lane_len: usize,
+    lane_idx: usize,
+    num_lanes: usize,
+    lane_strides: Vec<(usize, usize)>,
     data: *const [T],
     _phantom: PhantomData<&'a [T]>,
 }
 
-impl<'a, T: 'a> Iterator for Rows<'a, T> {
-    type Item = Row<'a, T>;
+impl<'a, T: 'a> Iterator for Lanes<'a, T> {
+    type Item = Lane<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx < self.num_rows {
+        if self.idx < self.num_lanes {
             self.idx += 1;
 
-            let row_start = self.row_idx;
-            let &(_, row_stride) = self
-                .row_strides
+            let lane_start = self.lane_idx;
+            let &(_, lane_stride) = self
+                .lane_strides
                 .iter()
                 .rev()
                 .find(|(div, _)| self.idx % div == 0)
                 .unwrap_or(&(0, 0));
-            self.row_idx += row_stride;
+            self.lane_idx += lane_stride;
 
-            Some(Row {
+            Some(Lane {
                 stride: self.stride,
-                row_len: self.row_len,
-                row_start,
+                lane_len: self.lane_len,
+                lane_start,
                 data: self.data,
                 _phantom: PhantomData,
             })
@@ -1414,42 +1414,42 @@ impl<'a, T: 'a> Iterator for Rows<'a, T> {
     }
 }
 
-unsafe impl<'a, T> Send for Rows<'a, T> where &'a [T]: Send {}
-unsafe impl<'a, T> Sync for Rows<'a, T> where &'a [T]: Sync {}
+unsafe impl<'a, T> Send for Lanes<'a, T> where &'a [T]: Send {}
+unsafe impl<'a, T> Sync for Lanes<'a, T> where &'a [T]: Sync {}
 
 /// A mutable iterator over the lanes of a [`VolumeWindowMut`].
 #[derive(Debug)]
-pub struct RowsMut<'a, T> {
+pub struct LanesMut<'a, T> {
     idx: usize,
     stride: usize,
-    row_len: usize,
-    row_idx: usize,
-    num_rows: usize,
-    row_strides: Vec<(usize, usize)>,
+    lane_len: usize,
+    lane_idx: usize,
+    num_lanes: usize,
+    lane_strides: Vec<(usize, usize)>,
     data: *mut [T],
     _phantom: PhantomData<&'a mut [T]>,
 }
 
-impl<'a, T: 'a> Iterator for RowsMut<'a, T> {
-    type Item = RowMut<'a, T>;
+impl<'a, T: 'a> Iterator for LanesMut<'a, T> {
+    type Item = LaneMut<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx < self.num_rows {
+        if self.idx < self.num_lanes {
             self.idx += 1;
 
-            let row_start = self.row_idx;
-            let &(_, row_stride) = self
-                .row_strides
+            let lane_start = self.lane_idx;
+            let &(_, lane_stride) = self
+                .lane_strides
                 .iter()
                 .rev()
                 .find(|(div, _)| self.idx % div == 0)
                 .unwrap_or(&(0, 0));
-            self.row_idx += row_stride;
+            self.lane_idx += lane_stride;
 
-            Some(RowMut {
+            Some(LaneMut {
                 stride: self.stride,
-                row_len: self.row_len,
-                row_start,
+                lane_len: self.lane_len,
+                lane_start,
                 data: self.data,
                 _phantom: PhantomData,
             })
@@ -1459,28 +1459,28 @@ impl<'a, T: 'a> Iterator for RowsMut<'a, T> {
     }
 }
 
-unsafe impl<'a, T> Send for RowsMut<'a, T> where &'a mut [T]: Send {}
-unsafe impl<'a, T> Sync for RowsMut<'a, T> where &'a mut [T]: Sync {}
+unsafe impl<'a, T> Send for LanesMut<'a, T> where &'a mut [T]: Send {}
+unsafe impl<'a, T> Sync for LanesMut<'a, T> where &'a mut [T]: Sync {}
 
 /// Information regarding a lane of a [`VolumeWindow`] or [`VolumeWindowMut`].
 #[derive(Debug)]
-pub struct Row<'a, T> {
+pub struct Lane<'a, T> {
     stride: usize,
-    row_len: usize,
-    row_start: usize,
+    lane_len: usize,
+    lane_start: usize,
     data: *const [T],
     _phantom: PhantomData<&'a [T]>,
 }
 
-impl<'a, T> Row<'a, T> {
+impl<'a, T> Lane<'a, T> {
     /// Checks if the lane contains any elements.
     pub fn is_empty(&self) -> bool {
-        self.row_len == 0
+        self.lane_len == 0
     }
 
     /// Returns the number of elements contained in the lane.
     pub fn len(&self) -> usize {
-        self.row_len
+        self.lane_len
     }
 
     /// Returns a slice to the lane if all it's elements are
@@ -1490,7 +1490,7 @@ impl<'a, T> Row<'a, T> {
             unsafe {
                 let slice = self
                     .data
-                    .get_unchecked(self.row_start..self.row_start + self.row_len);
+                    .get_unchecked(self.lane_start..self.lane_start + self.lane_len);
                 Some(&*slice)
             }
         } else {
@@ -1504,54 +1504,54 @@ impl<'a, T> Row<'a, T> {
     ///
     /// The caller must ensure that `index < self.len()`.
     pub unsafe fn get_unchecked(&self, index: usize) -> &T {
-        let flat_idx = self.row_start + (index * self.stride);
+        let flat_idx = self.lane_start + (index * self.stride);
         &*self.data.get_unchecked(flat_idx)
     }
 
     /// Constructs an iterator over the elements of the lane.
-    pub fn iter(&self) -> RowIter<'_, 'a, T> {
+    pub fn iter(&self) -> LaneIter<'_, 'a, T> {
         self.into_iter()
     }
 }
 
-impl<'a, T> Index<usize> for Row<'a, T> {
+impl<'a, T> Index<usize> for Lane<'a, T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
-        assert!(index < self.row_len);
+        assert!(index < self.lane_len);
         unsafe { self.get_unchecked(index) }
     }
 }
 
-impl<'a, 'b, T> IntoIterator for &'a Row<'b, T> {
+impl<'a, 'b, T> IntoIterator for &'a Lane<'b, T> {
     type Item = &'a T;
 
-    type IntoIter = RowIter<'a, 'b, T>;
+    type IntoIter = LaneIter<'a, 'b, T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        RowIter { idx: 0, row: self }
+        LaneIter { idx: 0, lane: self }
     }
 }
 
-unsafe impl<'a, T> Send for Row<'a, T> where &'a [T]: Send {}
-unsafe impl<'a, T> Sync for Row<'a, T> where &'a [T]: Sync {}
+unsafe impl<'a, T> Send for Lane<'a, T> where &'a [T]: Send {}
+unsafe impl<'a, T> Sync for Lane<'a, T> where &'a [T]: Sync {}
 
-/// Iterator over the elements of a [`Row`] or a [`RowMut`].
+/// Iterator over the elements of a [`Lane`] or a [`LaneMut`].
 #[derive(Debug)]
-pub struct RowIter<'a, 'b, T> {
+pub struct LaneIter<'a, 'b, T> {
     idx: usize,
-    row: &'a Row<'b, T>,
+    lane: &'a Lane<'b, T>,
 }
 
-impl<'a, 'b, T> Iterator for RowIter<'a, 'b, T> {
+impl<'a, 'b, T> Iterator for LaneIter<'a, 'b, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx < self.row.row_len {
+        if self.idx < self.lane.lane_len {
             let idx = self.idx;
             self.idx += 1;
 
-            let val = unsafe { self.row.get_unchecked(idx) };
+            let val = unsafe { self.lane.get_unchecked(idx) };
             Some(val)
         } else {
             None
@@ -1561,23 +1561,23 @@ impl<'a, 'b, T> Iterator for RowIter<'a, 'b, T> {
 
 /// Information regarding a mutable lane of a [`VolumeWindowMut`].
 #[derive(Debug)]
-pub struct RowMut<'a, T> {
+pub struct LaneMut<'a, T> {
     stride: usize,
-    row_len: usize,
-    row_start: usize,
+    lane_len: usize,
+    lane_start: usize,
     data: *mut [T],
     _phantom: PhantomData<&'a mut [T]>,
 }
 
-impl<'a, T> RowMut<'a, T> {
+impl<'a, T> LaneMut<'a, T> {
     /// Checks if the lane contains any elements.
     pub fn is_empty(&self) -> bool {
-        self.row_len == 0
+        self.lane_len == 0
     }
 
     /// Returns the number of elements contained in the lane.
     pub fn len(&self) -> usize {
-        self.row_len
+        self.lane_len
     }
 
     /// Returns a slice to the lane if all it's elements are
@@ -1586,7 +1586,7 @@ impl<'a, T> RowMut<'a, T> {
         if self.stride == 1 {
             unsafe {
                 let data = self.data as *const [T];
-                let slice = data.get_unchecked(self.row_start..self.row_start + self.row_len);
+                let slice = data.get_unchecked(self.lane_start..self.lane_start + self.lane_len);
                 Some(&*slice)
             }
         } else {
@@ -1601,7 +1601,7 @@ impl<'a, T> RowMut<'a, T> {
             unsafe {
                 let slice = self
                     .data
-                    .get_unchecked_mut(self.row_start..self.row_start + self.row_len);
+                    .get_unchecked_mut(self.lane_start..self.lane_start + self.lane_len);
                 Some(&mut *slice)
             }
         } else {
@@ -1615,7 +1615,7 @@ impl<'a, T> RowMut<'a, T> {
     ///
     /// The caller must ensure that `index < self.len()`.
     pub unsafe fn get_unchecked(&self, index: usize) -> &T {
-        let flat_idx = self.row_start + (index * self.stride);
+        let flat_idx = self.lane_start + (index * self.stride);
         let data = self.data as *const [T];
         &*data.get_unchecked(flat_idx)
     }
@@ -1630,72 +1630,72 @@ impl<'a, T> RowMut<'a, T> {
     }
 
     unsafe fn get_unchecked_mut_ptr(&mut self, index: usize) -> *mut T {
-        let flat_idx = self.row_start + (index * self.stride);
+        let flat_idx = self.lane_start + (index * self.stride);
         self.data.get_unchecked_mut(flat_idx)
     }
 
     /// Borrows the lane immutably.
-    pub fn as_row(&self) -> Row<'_, T> {
-        Row {
+    pub fn as_lane(&self) -> Lane<'_, T> {
+        Lane {
             stride: self.stride,
-            row_len: self.row_len,
-            row_start: self.row_start,
+            lane_len: self.lane_len,
+            lane_start: self.lane_start,
             data: self.data,
             _phantom: PhantomData,
         }
     }
 
     /// Constructs a mutable iterator over the elements of the lane.
-    pub fn iter_mut(&mut self) -> RowIterMut<'_, 'a, T> {
+    pub fn iter_mut(&mut self) -> LaneIterMut<'_, 'a, T> {
         self.into_iter()
     }
 }
 
-impl<'a, T> Index<usize> for RowMut<'a, T> {
+impl<'a, T> Index<usize> for LaneMut<'a, T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
-        assert!(index < self.row_len);
+        assert!(index < self.lane_len);
         unsafe { self.get_unchecked(index) }
     }
 }
 
-impl<'a, T> IndexMut<usize> for RowMut<'a, T> {
+impl<'a, T> IndexMut<usize> for LaneMut<'a, T> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        assert!(index < self.row_len);
+        assert!(index < self.lane_len);
         unsafe { self.get_unchecked_mut(index) }
     }
 }
 
-impl<'a, 'b, T> IntoIterator for &'a mut RowMut<'b, T> {
+impl<'a, 'b, T> IntoIterator for &'a mut LaneMut<'b, T> {
     type Item = &'a mut T;
 
-    type IntoIter = RowIterMut<'a, 'b, T>;
+    type IntoIter = LaneIterMut<'a, 'b, T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        RowIterMut { idx: 0, row: self }
+        LaneIterMut { idx: 0, lane: self }
     }
 }
 
-unsafe impl<'a, T> Send for RowMut<'a, T> where &'a mut [T]: Send {}
-unsafe impl<'a, T> Sync for RowMut<'a, T> where &'a mut [T]: Sync {}
+unsafe impl<'a, T> Send for LaneMut<'a, T> where &'a mut [T]: Send {}
+unsafe impl<'a, T> Sync for LaneMut<'a, T> where &'a mut [T]: Sync {}
 
-/// Iterator over the elements of a [`RowMut`].
+/// Iterator over the elements of a [`LaneMut`].
 #[derive(Debug)]
-pub struct RowIterMut<'a, 'b, T> {
+pub struct LaneIterMut<'a, 'b, T> {
     idx: usize,
-    row: &'a mut RowMut<'b, T>,
+    lane: &'a mut LaneMut<'b, T>,
 }
 
-impl<'a, 'b, T> Iterator for RowIterMut<'a, 'b, T> {
+impl<'a, 'b, T> Iterator for LaneIterMut<'a, 'b, T> {
     type Item = &'a mut T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx < self.row.row_len {
+        if self.idx < self.lane.lane_len {
             let idx = self.idx;
             self.idx += 1;
 
-            let val = unsafe { &mut *self.row.get_unchecked_mut_ptr(idx) };
+            let val = unsafe { &mut *self.lane.get_unchecked_mut_ptr(idx) };
             Some(val)
         } else {
             None
