@@ -173,7 +173,7 @@ impl<'a, T: Serializable + Num + Send + Copy> VolumeWaveletEncoder<'a, T> {
                 .map(|(&idx, &size)| idx * size)
                 .collect();
 
-            let mut block = VolumeBlock::new(block_size).unwrap();
+            let mut block = VolumeBlock::new_zero(block_size).unwrap();
 
             for_each_range_enumerate(block_range.iter().cloned(), |i, inner_idx| {
                 let idx: Vec<_> = block_offset
@@ -225,7 +225,7 @@ impl<'a, T: Serializable + Num + Send + Copy> VolumeWaveletEncoder<'a, T> {
             }
         });
 
-        let mut superblock = VolumeBlock::new(&block_counts).unwrap();
+        let mut superblock = VolumeBlock::new_zero(&block_counts).unwrap();
         for (i, elem) in rx.try_iter() {
             superblock[i] = elem;
         }
@@ -587,7 +587,7 @@ impl<T> BlockBlueprint<T> {
         assert_eq!(steps.len(), self.base_size.len());
 
         let block_size = self.block_size(blocks, steps);
-        let mut block = VolumeBlock::new(&block_size).unwrap();
+        let mut block = VolumeBlock::new_zero(&block_size).unwrap();
 
         if steps.iter().all(|&s| s == 0) {
             return block;
@@ -690,7 +690,7 @@ impl BlockBlueprintPart {
             let stream = DeserializeStream::new_decode(f).unwrap();
             let mut stream = stream.stream();
 
-            let mut block_part = VolumeBlock::new(&size).unwrap();
+            let mut block_part = VolumeBlock::new_zero(&size).unwrap();
             let mut block_part_window = block_part.window_mut();
             let rows = block_part_window.rows_mut(0);
             for mut row in rows {
@@ -745,7 +745,7 @@ impl BlockBlueprintPart {
             let part_window = part.window();
             let (low, high) = part_window.split_into(dim);
 
-            let mut block_part = VolumeBlock::new(&size).unwrap();
+            let mut block_part = VolumeBlock::new_zero(&size).unwrap();
             low.copy_to(&mut block_part.window_mut());
             let entry = cache.entry(CacheKey {
                 id: part_id,
@@ -754,7 +754,7 @@ impl BlockBlueprintPart {
             });
             entry.or_insert(block_part);
 
-            let mut block_part = VolumeBlock::new(&size).unwrap();
+            let mut block_part = VolumeBlock::new_zero(&size).unwrap();
             high.copy_to(&mut block_part.window_mut());
             let entry = cache.entry(CacheKey {
                 id: part_id,
@@ -779,7 +779,7 @@ impl BlockBlueprintPart {
         if let Some(cache) = cache {
             if let Some((adapted_size, adapt)) = self.adapted_size.as_ref().zip(self.adapt.as_ref())
             {
-                let mut decomp = VolumeBlock::new(adapted_size).unwrap();
+                let mut decomp = VolumeBlock::new_zero(adapted_size).unwrap();
                 let mut decomp_window = decomp.window_mut();
 
                 {

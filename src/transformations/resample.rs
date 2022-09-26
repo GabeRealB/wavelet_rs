@@ -26,7 +26,7 @@ impl<N: Num + Copy> OneWayTransform<Forwards, N> for ResampleIScale {
             return input;
         }
 
-        let mut scaled = crate::volume::VolumeBlock::new(cfg.to).unwrap();
+        let mut scaled = crate::volume::VolumeBlock::new_zero(cfg.to).unwrap();
         let mut scaled_window = scaled.window_mut();
         let input_window = input.window();
         input_window.copy_to(&mut scaled_window.custom_range_mut(input_window.dims()));
@@ -83,7 +83,7 @@ impl<N: Num + Copy> OneWayTransform<Backwards, N> for ResampleIScale {
 
         let window = window.custom_range(cfg.to);
 
-        let mut output = crate::volume::VolumeBlock::new(cfg.to).unwrap();
+        let mut output = crate::volume::VolumeBlock::new_zero(cfg.to).unwrap();
         window.copy_to(&mut output.window_mut());
 
         output
@@ -109,7 +109,7 @@ impl<N: Num + Copy> OneWayTransform<Forwards, N> for ResampleExtend {
             return input;
         }
 
-        let mut resampled = crate::volume::VolumeBlock::new(cfg.to).unwrap();
+        let mut resampled = crate::volume::VolumeBlock::new_zero(cfg.to).unwrap();
         let input_window = input.window();
 
         let mut output_window = resampled.window_mut();
@@ -136,7 +136,7 @@ impl<N: Num + Copy> OneWayTransform<Backwards, N> for ResampleExtend {
             return input;
         }
 
-        let mut resampled = crate::volume::VolumeBlock::new(cfg.to).unwrap();
+        let mut resampled = crate::volume::VolumeBlock::new_zero(cfg.to).unwrap();
         let input_window = input.window();
         let input_window = input_window.custom_range(cfg.to);
 
@@ -164,7 +164,7 @@ impl<N: Num + Lerp + Copy> OneWayTransform<Forwards, N> for ResampleLinear {
             return input;
         }
 
-        let mut resampled = crate::volume::VolumeBlock::new(cfg.to).unwrap();
+        let mut resampled = crate::volume::VolumeBlock::new_zero(cfg.to).unwrap();
         let input_window = input.window();
         let mut output_window = resampled.window_mut();
 

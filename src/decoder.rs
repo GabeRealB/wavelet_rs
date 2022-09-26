@@ -208,7 +208,7 @@ impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clon
                 .zip(block_range)
                 .all(|(i_r, b_r)| (i_r.start <= b_r.start) && (i_r.end >= b_r.end))
             {
-                let mut block_input = VolumeBlock::new(&self.block_size).unwrap();
+                let mut block_input = VolumeBlock::new_zero(&self.block_size).unwrap();
                 let mut elem_idx = vec![0; self.block_size.len()];
                 for _ in 0..num_elements {
                     let idx: Vec<_> = block_offset
@@ -411,8 +411,8 @@ mod test {
 
         let dims = [256, 256, 256];
         let num_elements = dims.iter().product();
-        let mut block_1 = VolumeBlock::new(&dims).unwrap();
-        let mut block_2 = VolumeBlock::new(&dims).unwrap();
+        let mut block_1 = VolumeBlock::new_zero(&dims).unwrap();
+        let mut block_2 = VolumeBlock::new_zero(&dims).unwrap();
         let writer = |idx: &[usize], elem: f32| {
             let block_idx = idx[3];
             let idx = &idx[..3];
@@ -449,7 +449,7 @@ mod test {
         let dims = [4, 4, 1];
         let range = dims.map(|d| 0..d);
         let steps = 4usize.ilog2();
-        let mut data = VolumeBlock::new(&dims).unwrap();
+        let mut data = VolumeBlock::new_zero(&dims).unwrap();
         let writer = |idx: &[usize], elem| {
             data[idx] = elem;
         };
@@ -457,7 +457,7 @@ mod test {
         decoder.decode(writer, &range, &[0, steps, 0]);
 
         for x in 1..steps + 1 {
-            let mut next = VolumeBlock::new(&dims).unwrap();
+            let mut next = VolumeBlock::new_zero(&dims).unwrap();
             let reader = |idx: &[usize]| data[idx];
             let writer = |idx: &[usize], elem| {
                 next[idx] = elem;
@@ -487,7 +487,7 @@ mod test {
         let dims = [2048, 2048, 1];
         let range = dims.map(|d| 0..d);
         let steps = 2048usize.ilog2();
-        let mut data = VolumeBlock::new(&dims).unwrap();
+        let mut data = VolumeBlock::new_zero(&dims).unwrap();
 
         for x in 0..steps + 1 {
             let writer = |idx: &[usize], elem| {
@@ -516,7 +516,7 @@ mod test {
         let dims = [2048, 2048, 1];
         let range = dims.map(|d| 0..d);
         let steps = 2048usize.ilog2();
-        let mut data = VolumeBlock::new(&dims).unwrap();
+        let mut data = VolumeBlock::new_zero(&dims).unwrap();
         let writer = |idx: &[usize], elem| {
             data[idx] = elem;
         };
@@ -530,7 +530,7 @@ mod test {
         img.save(res_path.join("img_1_ref_x_0.png")).unwrap();
 
         for x in 1..steps + 1 {
-            let mut next = VolumeBlock::new(&dims).unwrap();
+            let mut next = VolumeBlock::new_zero(&dims).unwrap();
             let reader = |idx: &[usize]| data[idx];
             let writer = |idx: &[usize], elem| {
                 next[idx] = elem;

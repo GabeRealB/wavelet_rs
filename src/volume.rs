@@ -6,20 +6,20 @@ use std::{
 };
 
 use alloca::with_alloca_zeroed;
-use num_traits::{Float, Num};
+use num_traits::{Float, Zero};
 use thiserror::Error;
 
 use crate::utilities::{flatten_idx, flatten_idx_with_offset, flatten_idx_with_offset_unchecked};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VolumeBlock<T: Num + Copy> {
+pub struct VolumeBlock<T> {
     data: Vec<T>,
     dims: Vec<usize>,
     strides: Vec<usize>,
 }
 
-impl<T: Num + Copy> VolumeBlock<T> {
-    /// Constructs a new block.
+impl<T: Clone> VolumeBlock<T> {
+    /// Constructs a new block filled with the provided value.
     ///
     /// # Examples
     ///
@@ -27,19 +27,63 @@ impl<T: Num + Copy> VolumeBlock<T> {
     /// use wavelet_rs::volume::VolumeBlock;
     ///
     /// let dims = [2, 2];
-    /// let block = VolumeBlock::<f32>::new(&dims).unwrap();
+    /// let block = VolumeBlock::<f32>::new_fill(&dims, 1.0).unwrap();
+    ///
+    /// assert_eq!(block[[0usize, 0usize].as_ref()], 1.0);
+    /// assert_eq!(block[[1usize, 0usize].as_ref()], 1.0);
+    /// assert_eq!(block[[0usize, 1usize].as_ref()], 1.0);
+    /// assert_eq!(block[[1usize, 1usize].as_ref()], 1.0);
+    /// ```
+    pub fn new_fill(dims: &[usize], fill: T) -> Result<Self, VolumeError> {
+        let num_elements = dims.iter().product();
+        let data = vec![fill; num_elements];
+        Self::new_with_data(dims, data)
+    }
+}
+
+impl<T: Zero + Clone> VolumeBlock<T> {
+    /// Constructs a new zeroed block.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wavelet_rs::volume::VolumeBlock;
+    ///
+    /// let dims = [2, 2];
+    /// let block = VolumeBlock::<f32>::new_zero(&dims).unwrap();
     ///
     /// assert_eq!(block[[0usize, 0usize].as_ref()], 0.0);
     /// assert_eq!(block[[1usize, 0usize].as_ref()], 0.0);
     /// assert_eq!(block[[0usize, 1usize].as_ref()], 0.0);
     /// assert_eq!(block[[1usize, 1usize].as_ref()], 0.0);
     /// ```
-    pub fn new(dims: &[usize]) -> Result<Self, VolumeError> {
-        let num_elements = dims.iter().product();
-        let data = vec![T::zero(); num_elements];
-        Self::new_with_data(dims, data)
+    pub fn new_zero(dims: &[usize]) -> Result<Self, VolumeError> {
+        Self::new_fill(dims, T::zero())
     }
+}
 
+impl<T: Default + Clone> VolumeBlock<T> {
+    /// Constructs a new zeroed block.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wavelet_rs::volume::VolumeBlock;
+    ///
+    /// let dims = [2, 2];
+    /// let block = VolumeBlock::<f32>::new_default(&dims).unwrap();
+    ///
+    /// assert_eq!(block[[0usize, 0usize].as_ref()], 0.0);
+    /// assert_eq!(block[[1usize, 0usize].as_ref()], 0.0);
+    /// assert_eq!(block[[0usize, 1usize].as_ref()], 0.0);
+    /// assert_eq!(block[[1usize, 1usize].as_ref()], 0.0);
+    /// ```
+    pub fn new_default(dims: &[usize]) -> Result<Self, VolumeError> {
+        Self::new_fill(dims, Default::default())
+    }
+}
+
+impl<T> VolumeBlock<T> {
     /// Constructs a new block.
     ///
     /// # Examples
@@ -201,7 +245,7 @@ impl<T: Num + Copy> VolumeBlock<T> {
     }
 }
 
-impl<T: Num + Copy> Index<usize> for VolumeBlock<T> {
+impl<T> Index<usize> for VolumeBlock<T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -209,13 +253,13 @@ impl<T: Num + Copy> Index<usize> for VolumeBlock<T> {
     }
 }
 
-impl<T: Num + Copy> IndexMut<usize> for VolumeBlock<T> {
+impl<T> IndexMut<usize> for VolumeBlock<T> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         &mut self.data[index]
     }
 }
 
-impl<T: Num + Copy> Index<&[usize]> for VolumeBlock<T> {
+impl<T> Index<&[usize]> for VolumeBlock<T> {
     type Output = T;
 
     fn index(&self, index: &[usize]) -> &Self::Output {
@@ -224,7 +268,7 @@ impl<T: Num + Copy> Index<&[usize]> for VolumeBlock<T> {
     }
 }
 
-impl<T: Num + Copy> IndexMut<&[usize]> for VolumeBlock<T> {
+impl<T> IndexMut<&[usize]> for VolumeBlock<T> {
     fn index_mut(&mut self, index: &[usize]) -> &mut Self::Output {
         let idx = flatten_idx(&self.dims, &self.strides, index);
         &mut self[idx]
@@ -242,7 +286,7 @@ pub enum VolumeError {
 }
 
 #[derive(Debug, Clone)]
-pub struct VolumeWindow<'a, T: Num + Copy> {
+pub struct VolumeWindow<'a, T> {
     dims: Vec<usize>,
     dim_offsets: Vec<usize>,
     block_data: *const [T],
@@ -251,7 +295,7 @@ pub struct VolumeWindow<'a, T: Num + Copy> {
     _phantom: PhantomData<&'a [T]>,
 }
 
-impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
+impl<'a, T> VolumeWindow<'a, T> {
     /// Splits a window into two non overlapping halves.
     ///
     /// # Examples
@@ -544,8 +588,10 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
             _phantom: PhantomData,
         }
     }
+}
 
-    /// Copies a window into another window.
+impl<'a, T: Copy> VolumeWindow<'a, T> {
+    /// Copies the contents of a window into another window.
     /// The two windows must be identical is size.
     ///
     /// # Examples
@@ -586,10 +632,52 @@ impl<'a, T: Num + Copy> VolumeWindow<'a, T> {
     }
 }
 
-unsafe impl<'a, T: Num + Copy> Send for VolumeWindow<'a, T> where &'a [T]: Send {}
-unsafe impl<'a, T: Num + Copy> Sync for VolumeWindow<'a, T> where &'a [T]: Sync {}
+impl<'a, T: Clone> VolumeWindow<'a, T> {
+    /// Clones the contents of a window into another window.
+    /// The two windows must be identical is size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wavelet_rs::volume::VolumeBlock;
+    ///
+    /// let dims = [2, 2];
+    /// let data = vec![1.0, 2.0, 3.0, 4.0];
+    /// let mut block = VolumeBlock::new_with_data(&dims, data).unwrap();
+    /// let mut window = block.window_mut();
+    /// let (left, mut right) = window.split_into(0);
+    /// let left = left.window();
+    ///
+    /// assert_eq!(left[[0usize, 0usize].as_ref()], 1.0);
+    /// assert_eq!(left[[0usize, 1usize].as_ref()], 3.0);
+    ///
+    /// assert_eq!(right[[0usize, 0usize].as_ref()], 2.0);
+    /// assert_eq!(right[[0usize, 1usize].as_ref()], 4.0);
+    ///
+    /// left.clone_to(&mut right);
+    ///
+    /// assert_eq!(left[[0usize, 0usize].as_ref()], 1.0);
+    /// assert_eq!(left[[0usize, 1usize].as_ref()], 3.0);
+    ///
+    /// assert_eq!(right[[0usize, 0usize].as_ref()], 1.0);
+    /// assert_eq!(right[[0usize, 1usize].as_ref()], 3.0);
+    pub fn clone_to(&self, window: &mut VolumeWindowMut<'_, T>) {
+        assert!(self.dims == window.dims);
+        let src_rows = self.rows(0);
+        let dst_rows = window.rows_mut(0);
 
-impl<'a, T: Num + Copy> Index<&[usize]> for VolumeWindow<'a, T> {
+        for (src, mut dst) in src_rows.zip(dst_rows) {
+            let src = src.as_slice().unwrap();
+            let dst = dst.as_slice_mut().unwrap();
+            dst.clone_from_slice(src)
+        }
+    }
+}
+
+unsafe impl<'a, T> Send for VolumeWindow<'a, T> where &'a [T]: Send {}
+unsafe impl<'a, T> Sync for VolumeWindow<'a, T> where &'a [T]: Sync {}
+
+impl<'a, T> Index<&[usize]> for VolumeWindow<'a, T> {
     type Output = T;
 
     fn index(&self, index: &[usize]) -> &Self::Output {
@@ -604,7 +692,7 @@ impl<'a, T: Num + Copy> Index<&[usize]> for VolumeWindow<'a, T> {
 }
 
 #[derive(Debug)]
-pub struct VolumeWindowMut<'a, T: Num + Copy> {
+pub struct VolumeWindowMut<'a, T> {
     dims: Vec<usize>,
     dim_offsets: Vec<usize>,
     block_data: *mut [T],
@@ -613,7 +701,7 @@ pub struct VolumeWindowMut<'a, T: Num + Copy> {
     _phantom: PhantomData<&'a mut [T]>,
 }
 
-impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
+impl<'a, T> VolumeWindowMut<'a, T> {
     /// Constructs a shared window from the mutable window.
     pub fn window(&self) -> VolumeWindow<'_, T> {
         VolumeWindow {
@@ -1152,8 +1240,10 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
             _phantom: PhantomData,
         }
     }
+}
 
-    /// Copies a window into another window.
+impl<'a, T: Copy> VolumeWindowMut<'a, T> {
+    /// Copies the contents of a window into another window.
     /// The two windows must be identical is size.
     ///
     /// # Examples
@@ -1193,10 +1283,51 @@ impl<'a, T: Num + Copy> VolumeWindowMut<'a, T> {
     }
 }
 
-unsafe impl<'a, T: Num + Copy> Send for VolumeWindowMut<'a, T> where &'a mut [T]: Send {}
-unsafe impl<'a, T: Num + Copy> Sync for VolumeWindowMut<'a, T> where &'a mut [T]: Sync {}
+impl<'a, T: Clone> VolumeWindowMut<'a, T> {
+    /// Clones the contents of a window into another window.
+    /// The two windows must be identical is size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wavelet_rs::volume::VolumeBlock;
+    ///
+    /// let dims = [2, 2];
+    /// let data = vec![1.0, 2.0, 3.0, 4.0];
+    /// let mut block = VolumeBlock::new_with_data(&dims, data).unwrap();
+    /// let mut window = block.window_mut();
+    /// let (left, mut right) = window.split_into(0);
+    ///
+    /// assert_eq!(left[[0usize, 0usize].as_ref()], 1.0);
+    /// assert_eq!(left[[0usize, 1usize].as_ref()], 3.0);
+    ///
+    /// assert_eq!(right[[0usize, 0usize].as_ref()], 2.0);
+    /// assert_eq!(right[[0usize, 1usize].as_ref()], 4.0);
+    ///
+    /// left.clone_to(&mut right);
+    ///
+    /// assert_eq!(left[[0usize, 0usize].as_ref()], 1.0);
+    /// assert_eq!(left[[0usize, 1usize].as_ref()], 3.0);
+    ///
+    /// assert_eq!(right[[0usize, 0usize].as_ref()], 1.0);
+    /// assert_eq!(right[[0usize, 1usize].as_ref()], 3.0);
+    pub fn clone_to(&self, window: &mut VolumeWindowMut<'_, T>) {
+        assert!(self.dims == window.dims);
+        let src_rows = self.rows(0);
+        let dst_rows = window.rows_mut(0);
 
-impl<'a, T: Num + Copy> Index<&[usize]> for VolumeWindowMut<'a, T> {
+        for (src, mut dst) in src_rows.zip(dst_rows) {
+            let src = src.as_slice().unwrap();
+            let dst = dst.as_slice_mut().unwrap();
+            dst.clone_from_slice(src)
+        }
+    }
+}
+
+unsafe impl<'a, T> Send for VolumeWindowMut<'a, T> where &'a mut [T]: Send {}
+unsafe impl<'a, T> Sync for VolumeWindowMut<'a, T> where &'a mut [T]: Sync {}
+
+impl<'a, T> Index<&[usize]> for VolumeWindowMut<'a, T> {
     type Output = T;
 
     fn index(&self, index: &[usize]) -> &Self::Output {
@@ -1210,7 +1341,7 @@ impl<'a, T: Num + Copy> Index<&[usize]> for VolumeWindowMut<'a, T> {
     }
 }
 
-impl<'a, T: Num + Copy> IndexMut<&[usize]> for VolumeWindowMut<'a, T> {
+impl<'a, T> IndexMut<&[usize]> for VolumeWindowMut<'a, T> {
     fn index_mut(&mut self, index: &[usize]) -> &mut Self::Output {
         let idx = flatten_idx_with_offset(
             self.block_dims,
@@ -1223,7 +1354,7 @@ impl<'a, T: Num + Copy> IndexMut<&[usize]> for VolumeWindowMut<'a, T> {
 }
 
 #[derive(Debug)]
-pub struct Rows<'a, T: Num + Copy> {
+pub struct Rows<'a, T> {
     idx: usize,
     stride: usize,
     row_len: usize,
@@ -1234,7 +1365,7 @@ pub struct Rows<'a, T: Num + Copy> {
     _phantom: PhantomData<&'a [T]>,
 }
 
-impl<'a, T: Num + Copy + 'a> Iterator for Rows<'a, T> {
+impl<'a, T: 'a> Iterator for Rows<'a, T> {
     type Item = Row<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1263,11 +1394,11 @@ impl<'a, T: Num + Copy + 'a> Iterator for Rows<'a, T> {
     }
 }
 
-unsafe impl<'a, T: Num + Copy> Send for Rows<'a, T> where &'a [T]: Send {}
-unsafe impl<'a, T: Num + Copy> Sync for Rows<'a, T> where &'a [T]: Sync {}
+unsafe impl<'a, T> Send for Rows<'a, T> where &'a [T]: Send {}
+unsafe impl<'a, T> Sync for Rows<'a, T> where &'a [T]: Sync {}
 
 #[derive(Debug)]
-pub struct RowsMut<'a, T: Num + Copy> {
+pub struct RowsMut<'a, T> {
     idx: usize,
     stride: usize,
     row_len: usize,
@@ -1278,7 +1409,7 @@ pub struct RowsMut<'a, T: Num + Copy> {
     _phantom: PhantomData<&'a mut [T]>,
 }
 
-impl<'a, T: Num + Copy + 'a> Iterator for RowsMut<'a, T> {
+impl<'a, T: 'a> Iterator for RowsMut<'a, T> {
     type Item = RowMut<'a, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1307,11 +1438,11 @@ impl<'a, T: Num + Copy + 'a> Iterator for RowsMut<'a, T> {
     }
 }
 
-unsafe impl<'a, T: Num + Copy> Send for RowsMut<'a, T> where &'a mut [T]: Send {}
-unsafe impl<'a, T: Num + Copy> Sync for RowsMut<'a, T> where &'a mut [T]: Sync {}
+unsafe impl<'a, T> Send for RowsMut<'a, T> where &'a mut [T]: Send {}
+unsafe impl<'a, T> Sync for RowsMut<'a, T> where &'a mut [T]: Sync {}
 
 #[derive(Debug)]
-pub struct Row<'a, T: Num + Copy> {
+pub struct Row<'a, T> {
     stride: usize,
     row_len: usize,
     row_start: usize,
@@ -1319,7 +1450,7 @@ pub struct Row<'a, T: Num + Copy> {
     _phantom: PhantomData<&'a [T]>,
 }
 
-impl<'a, T: Num + Copy> Row<'a, T> {
+impl<'a, T> Row<'a, T> {
     pub fn is_empty(&self) -> bool {
         self.row_len == 0
     }
@@ -1356,7 +1487,7 @@ impl<'a, T: Num + Copy> Row<'a, T> {
     }
 }
 
-impl<'a, T: Num + Copy> Index<usize> for Row<'a, T> {
+impl<'a, T> Index<usize> for Row<'a, T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -1365,7 +1496,7 @@ impl<'a, T: Num + Copy> Index<usize> for Row<'a, T> {
     }
 }
 
-impl<'a, 'b, T: Num + Copy> IntoIterator for &'a Row<'b, T> {
+impl<'a, 'b, T> IntoIterator for &'a Row<'b, T> {
     type Item = &'a T;
 
     type IntoIter = RowIter<'a, 'b, T>;
@@ -1375,16 +1506,16 @@ impl<'a, 'b, T: Num + Copy> IntoIterator for &'a Row<'b, T> {
     }
 }
 
-unsafe impl<'a, T: Num + Copy> Send for Row<'a, T> where &'a [T]: Send {}
-unsafe impl<'a, T: Num + Copy> Sync for Row<'a, T> where &'a [T]: Sync {}
+unsafe impl<'a, T> Send for Row<'a, T> where &'a [T]: Send {}
+unsafe impl<'a, T> Sync for Row<'a, T> where &'a [T]: Sync {}
 
 #[derive(Debug)]
-pub struct RowIter<'a, 'b, T: Num + Copy> {
+pub struct RowIter<'a, 'b, T> {
     idx: usize,
     row: &'a Row<'b, T>,
 }
 
-impl<'a, 'b, T: Num + Copy> Iterator for RowIter<'a, 'b, T> {
+impl<'a, 'b, T> Iterator for RowIter<'a, 'b, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1401,7 +1532,7 @@ impl<'a, 'b, T: Num + Copy> Iterator for RowIter<'a, 'b, T> {
 }
 
 #[derive(Debug)]
-pub struct RowMut<'a, T: Num + Copy> {
+pub struct RowMut<'a, T> {
     stride: usize,
     row_len: usize,
     row_start: usize,
@@ -1409,7 +1540,7 @@ pub struct RowMut<'a, T: Num + Copy> {
     _phantom: PhantomData<&'a mut [T]>,
 }
 
-impl<'a, T: Num + Copy> RowMut<'a, T> {
+impl<'a, T> RowMut<'a, T> {
     pub fn is_empty(&self) -> bool {
         self.row_len == 0
     }
@@ -1483,7 +1614,7 @@ impl<'a, T: Num + Copy> RowMut<'a, T> {
     }
 }
 
-impl<'a, T: Num + Copy> Index<usize> for RowMut<'a, T> {
+impl<'a, T> Index<usize> for RowMut<'a, T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -1492,14 +1623,14 @@ impl<'a, T: Num + Copy> Index<usize> for RowMut<'a, T> {
     }
 }
 
-impl<'a, T: Num + Copy> IndexMut<usize> for RowMut<'a, T> {
+impl<'a, T> IndexMut<usize> for RowMut<'a, T> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         assert!(index < self.row_len);
         unsafe { self.get_unchecked_mut(index) }
     }
 }
 
-impl<'a, 'b, T: Num + Copy> IntoIterator for &'a mut RowMut<'b, T> {
+impl<'a, 'b, T> IntoIterator for &'a mut RowMut<'b, T> {
     type Item = &'a mut T;
 
     type IntoIter = RowIterMut<'a, 'b, T>;
@@ -1509,16 +1640,16 @@ impl<'a, 'b, T: Num + Copy> IntoIterator for &'a mut RowMut<'b, T> {
     }
 }
 
-unsafe impl<'a, T: Num + Copy> Send for RowMut<'a, T> where &'a mut [T]: Send {}
-unsafe impl<'a, T: Num + Copy> Sync for RowMut<'a, T> where &'a mut [T]: Sync {}
+unsafe impl<'a, T> Send for RowMut<'a, T> where &'a mut [T]: Send {}
+unsafe impl<'a, T> Sync for RowMut<'a, T> where &'a mut [T]: Sync {}
 
 #[derive(Debug)]
-pub struct RowIterMut<'a, 'b, T: Num + Copy> {
+pub struct RowIterMut<'a, 'b, T> {
     idx: usize,
     row: &'a mut RowMut<'b, T>,
 }
 
-impl<'a, 'b, T: Num + Copy> Iterator for RowIterMut<'a, 'b, T> {
+impl<'a, 'b, T> Iterator for RowIterMut<'a, 'b, T> {
     type Item = &'a mut T;
 
     fn next(&mut self) -> Option<Self::Item> {
