@@ -1,10 +1,9 @@
+use num_traits::Zero;
 use std::{
     borrow::Borrow,
     ops::Range,
     path::{Path, PathBuf},
 };
-
-use num_traits::Num;
 
 use crate::{
     encoder::{BlockBlueprints, OutputHeader},
@@ -19,10 +18,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub struct VolumeWaveletDecoder<
-    T: Deserializable + Num + Send + Copy,
-    F: Filter<T> + Deserializable + Clone,
-> {
+pub struct VolumeWaveletDecoder<T, F> {
     path: PathBuf,
     metadata: AnyMap,
     dims: Vec<usize>,
@@ -34,8 +30,10 @@ pub struct VolumeWaveletDecoder<
     filter: F,
 }
 
-impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clone>
-    VolumeWaveletDecoder<T, F>
+impl<T, F> VolumeWaveletDecoder<T, F>
+where
+    T: Zero + Deserializable + Clone + Send,
+    F: Filter<T> + Deserializable + Clone,
 {
     pub fn new(p: impl AsRef<Path>) -> Self {
         let p = p.as_ref();
@@ -246,7 +244,7 @@ impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clon
                         .zip(&elem_idx)
                         .map(|(&step, &idx)| step * idx)
                         .collect();
-                    block_window[&*elem_idx] = block_input[&*idx];
+                    block_window[&*elem_idx] = block_input[&*idx].clone();
 
                     for (idx, &size) in elem_idx.iter_mut().zip(&block_input_dims) {
                         *idx = (*idx + 1) % size;
@@ -264,7 +262,7 @@ impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clon
                         .zip(&elem_idx)
                         .map(|(&offset, &idx)| offset + idx)
                         .collect();
-                    writer(&idx, block[&*elem_idx]);
+                    writer(&idx, block[&*elem_idx].clone());
 
                     for (idx, &size) in elem_idx.iter_mut().zip(&self.block_size) {
                         *idx = (*idx + 1) % size;
@@ -366,7 +364,7 @@ impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clon
                     block_path,
                     &block_backwards_steps,
                 );
-                block[0] = first_pass[block_idx];
+                block[0] = first_pass[block_idx].clone();
 
                 let block_pass = block_transform.backwards(block, block_transform_cfg);
 
@@ -384,7 +382,7 @@ impl<T: Deserializable + Num + Send + Copy, F: Filter<T> + Deserializable + Clon
                         .map(|(&global, &offset)| global - offset)
                         .collect();
 
-                    let elem = block_pass[&*local_idx];
+                    let elem = block_pass[&*local_idx].clone();
                     writer(idx, elem);
                 });
             }

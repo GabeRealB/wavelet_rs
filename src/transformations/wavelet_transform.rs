@@ -1,25 +1,27 @@
+use num_traits::Zero;
 use std::marker::PhantomData;
 
-use num_traits::Num;
-
+use super::{Backwards, Forwards, OneWayTransform};
 use crate::{
     filter::{backwards_window, forwards_window, upscale_window, Filter},
     stream::{Deserializable, Named, Serializable},
     volume::{VolumeBlock, VolumeWindowMut},
 };
 
-use super::{Backwards, Forwards, OneWayTransform};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WaveletTransform<N: Num + Copy + Send, T: Filter<N>> {
-    filter: T,
+pub struct WaveletTransform<T: Send, F: Filter<T>> {
+    filter: F,
     split_high: bool,
-    _phantom: PhantomData<fn() -> N>,
+    _phantom: PhantomData<fn() -> T>,
 }
 
-impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
+impl<T, F> WaveletTransform<T, F>
+where
+    T: Zero + Clone + Send,
+    F: Filter<T>,
+{
     /// Constructs a new `WaveletTransform` with the provided filter.
-    pub fn new(filter: T, split_high: bool) -> Self {
+    pub fn new(filter: F, split_high: bool) -> Self {
         Self {
             filter,
             split_high,
@@ -29,8 +31,8 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
 
     fn forw_(
         &self,
-        mut input: VolumeWindowMut<'_, N>,
-        mut scratch: Vec<N>,
+        mut input: VolumeWindowMut<'_, T>,
+        mut scratch: Vec<T>,
         ops: &[ForwardsOperation],
     ) {
         if ops.is_empty() {
@@ -55,8 +57,8 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
 
     fn forw_high(
         &self,
-        mut input: VolumeWindowMut<'_, N>,
-        scratch: Option<Vec<N>>,
+        mut input: VolumeWindowMut<'_, T>,
+        scratch: Option<Vec<T>>,
         ops: &[ForwardsOperation],
         last_dim: usize,
     ) {
@@ -66,7 +68,7 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
 
         let dim = ops[0].dim;
         let mut scratch =
-            scratch.unwrap_or_else(|| vec![N::zero(); *input.dims().iter().max().unwrap()]);
+            scratch.unwrap_or_else(|| vec![T::zero(); *input.dims().iter().max().unwrap()]);
         forwards_window(dim, &self.filter, &mut input, &mut scratch);
 
         let (input_low, input_high) = input.split_into(dim);
@@ -78,8 +80,8 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
 
     pub(crate) fn back_(
         &self,
-        mut input: VolumeWindowMut<'_, N>,
-        scratch: &mut [N],
+        mut input: VolumeWindowMut<'_, T>,
+        scratch: &mut [T],
         ops: &[BackwardsOperation],
     ) {
         if ops.is_empty() {
@@ -103,7 +105,7 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
                         s.spawn(|_| self.back_high(high, &ops[1..], steps, *dim));
                     } else if let Some(steps) = steps {
                         let ops = ForwardsOperation::new(steps);
-                        let scratch = vec![N::zero(); *high.dims().iter().max().unwrap()];
+                        let scratch = vec![T::zero(); *high.dims().iter().max().unwrap()];
                         self.forw_(high, scratch, &ops);
                     }
                 });
@@ -134,7 +136,7 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
 
     fn back_high(
         &self,
-        mut input: VolumeWindowMut<'_, N>,
+        mut input: VolumeWindowMut<'_, T>,
         ops: &[BackwardsOperation],
         steps: Option<&[u32]>,
         last_dim: usize,
@@ -155,7 +157,7 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
                     s.spawn(|_| self.back_high(high, &ops[1..], None, dim));
                 });
 
-                let mut scratch = vec![N::zero(); input.dims()[dim]];
+                let mut scratch = vec![T::zero(); input.dims()[dim]];
                 backwards_window(dim, &self.filter, &mut input, &mut scratch);
                 drop(scratch);
             }
@@ -176,16 +178,20 @@ impl<N: Num + Copy + Send, T: Filter<N>> WaveletTransform<N, T> {
 
         if let Some(steps) = steps {
             let ops = ForwardsOperation::new(steps);
-            let scratch = vec![N::zero(); *input.dims().iter().max().unwrap()];
+            let scratch = vec![T::zero(); *input.dims().iter().max().unwrap()];
             self.forw_(input, scratch, &ops);
         }
     }
 }
 
-impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Forwards, N> for WaveletTransform<N, T> {
+impl<T, F> OneWayTransform<Forwards, T> for WaveletTransform<T, F>
+where
+    T: Zero + Clone + Send,
+    F: Filter<T>,
+{
     type Cfg<'a> = WaveletDecompCfg<'a>;
 
-    fn apply(&self, mut input: VolumeBlock<N>, cfg: Self::Cfg<'_>) -> VolumeBlock<N> {
+    fn apply(&self, mut input: VolumeBlock<T>, cfg: Self::Cfg<'_>) -> VolumeBlock<T> {
         let dims = input.dims();
 
         assert!(dims.len() == cfg.steps.len());
@@ -202,7 +208,7 @@ impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Forwards, N> for Wavele
             return input;
         }
 
-        let scratch = vec![N::zero(); *input.dims().iter().max().unwrap()];
+        let scratch = vec![T::zero(); *input.dims().iter().max().unwrap()];
         let ops = ForwardsOperation::new(cfg.steps);
         let input_window = input.window_mut();
 
@@ -212,10 +218,14 @@ impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Forwards, N> for Wavele
     }
 }
 
-impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Backwards, N> for WaveletTransform<N, T> {
+impl<T, F> OneWayTransform<Backwards, T> for WaveletTransform<T, F>
+where
+    T: Zero + Clone + Send,
+    F: Filter<T>,
+{
     type Cfg<'a> = WaveletRecompCfg<'a>;
 
-    fn apply(&self, mut input: VolumeBlock<N>, cfg: Self::Cfg<'_>) -> VolumeBlock<N> {
+    fn apply(&self, mut input: VolumeBlock<T>, cfg: Self::Cfg<'_>) -> VolumeBlock<T> {
         let dims = input.dims();
 
         assert!(dims.len() == cfg.backwards.len());
@@ -233,7 +243,7 @@ impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Backwards, N> for Wavel
             return input;
         }
 
-        let mut scratch = vec![N::zero(); *input.dims().iter().max().unwrap()];
+        let mut scratch = vec![T::zero(); *input.dims().iter().max().unwrap()];
         let (ops, output_size) =
             BackwardsOperation::new(cfg.forwards, cfg.backwards, cfg.start_dim, input.dims());
         let input_window = input.window_mut();
@@ -252,23 +262,29 @@ impl<N: Num + Copy + Send, T: Filter<N>> OneWayTransform<Backwards, N> for Wavel
     }
 }
 
-impl<N: Num + Copy + Send, T: Filter<N> + Serializable> Serializable for WaveletTransform<N, T> {
+impl<T, F> Serializable for WaveletTransform<T, F>
+where
+    T: Send,
+    F: Filter<T> + Serializable,
+{
     fn serialize(self, stream: &mut crate::stream::SerializeStream) {
-        N::name().serialize(stream);
         T::name().serialize(stream);
+        F::name().serialize(stream);
         self.filter.serialize(stream);
         self.split_high.serialize(stream);
     }
 }
 
-impl<N: Num + Copy + Send, T: Filter<N> + Deserializable> Deserializable
-    for WaveletTransform<N, T>
+impl<T, F> Deserializable for WaveletTransform<T, F>
+where
+    T: Send,
+    F: Filter<T> + Deserializable,
 {
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let n_type: String = Deserializable::deserialize(stream);
         let t_type: String = Deserializable::deserialize(stream);
-        assert_eq!(n_type, N::name());
-        assert_eq!(t_type, T::name());
+        assert_eq!(n_type, T::name());
+        assert_eq!(t_type, F::name());
 
         let filter = Deserializable::deserialize(stream);
         let split_high = Deserializable::deserialize(stream);

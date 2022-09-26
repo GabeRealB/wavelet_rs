@@ -3,6 +3,16 @@ use std::{
     ops::{Add, Mul},
 };
 
+pub fn strides_for_dims(dims: &[usize]) -> Vec<usize> {
+    std::iter::once(1)
+        .chain(dims.iter().scan(1usize, |s, &d| {
+            *s *= d;
+            Some(*s)
+        }))
+        .take(dims.len())
+        .collect()
+}
+
 pub fn flatten_idx(dims: &[usize], strides: &[usize], index: &[usize]) -> usize {
     assert_eq!(index.len(), dims.len());
     assert_eq!(strides.len(), dims.len());

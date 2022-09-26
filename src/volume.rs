@@ -9,7 +9,9 @@ use alloca::with_alloca_zeroed;
 use num_traits::{Float, Zero};
 use thiserror::Error;
 
-use crate::utilities::{flatten_idx, flatten_idx_with_offset, flatten_idx_with_offset_unchecked};
+use crate::utilities::{
+    flatten_idx, flatten_idx_with_offset, flatten_idx_with_offset_unchecked, strides_for_dims,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VolumeBlock<T> {
@@ -87,7 +89,7 @@ impl<T> VolumeBlock<T> {
     /// Constructs a new block.
     ///
     /// # Examples
-    ///
+    ////newegg
     /// ```
     /// use wavelet_rs::volume::VolumeBlock;
     ///
@@ -113,13 +115,7 @@ impl<T> VolumeBlock<T> {
                 required: num_elements,
             })
         } else {
-            let strides = std::iter::once(1)
-                .chain(dims.iter().scan(1usize, |s, &d| {
-                    *s *= d;
-                    Some(*s)
-                }))
-                .take(dims.len())
-                .collect();
+            let strides = strides_for_dims(dims);
 
             Ok(Self {
                 data,

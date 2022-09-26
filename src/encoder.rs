@@ -2,7 +2,7 @@ use std::{
     borrow::Borrow, collections::BTreeMap, fmt::Debug, fs::File, marker::PhantomData, path::Path,
 };
 
-use num_traits::Num;
+use num_traits::Zero;
 
 use crate::{
     filter::Filter,
@@ -12,11 +12,11 @@ use crate::{
         wavelet_transform::BackwardsOperation, Chain, ResampleCfg, ResampleExtend,
         ReversibleTransform, WaveletDecompCfg, WaveletTransform,
     },
-    utilities::{flatten_idx, flatten_idx_unchecked},
+    utilities::{flatten_idx, flatten_idx_unchecked, strides_for_dims},
     volume::{VolumeBlock, VolumeWindowMut},
 };
 
-pub struct VolumeWaveletEncoder<'a, T: Num + Copy> {
+pub struct VolumeWaveletEncoder<'a, T> {
     metadata: AnyMap,
     dims: Vec<usize>,
     strides: Vec<usize>,
@@ -82,7 +82,10 @@ impl<T: Deserializable, F: Deserializable> Deserializable for OutputHeader<T, F>
 
 type VolumeFetcher<'a, T> = Box<dyn Fn(&[usize]) -> T + Sync + Send + 'a>;
 
-impl<'a, T: Serializable + Num + Send + Copy> VolumeWaveletEncoder<'a, T> {
+impl<'a, T> VolumeWaveletEncoder<'a, T>
+where
+    T: Zero + Serializable + Send + Clone,
+{
     pub fn new(dims: &[usize], num_base_dims: usize) -> Self {
         assert!(dims.len() > num_base_dims);
         let num_fetchers = dims[num_base_dims..].iter().product();
@@ -91,14 +94,7 @@ impl<'a, T: Serializable + Num + Send + Copy> VolumeWaveletEncoder<'a, T> {
             fetchers.push(None);
         }
 
-        let strides = std::iter::once(1)
-            .chain(dims[num_base_dims..].iter().scan(1usize, |s, &d| {
-                *s *= d;
-                Some(*s)
-            }))
-            .take(dims.len() - num_base_dims)
-            .collect();
-
+        let strides = strides_for_dims(&dims[num_base_dims..]);
         Self {
             metadata: AnyMap::new(),
             dims: dims.into(),
@@ -187,7 +183,7 @@ impl<'a, T: Serializable + Num + Send + Copy> VolumeWaveletEncoder<'a, T> {
             });
 
             let block_decomp = block_transform.forwards(block, block_transform_cfg);
-            sx.send((i, block_decomp[0])).unwrap();
+            sx.send((i, block_decomp[0].clone())).unwrap();
 
             let block_dir = output.as_ref().join(format!("block_{i}"));
             if block_dir.exists() {
@@ -212,7 +208,7 @@ impl<'a, T: Serializable + Num + Send + Copy> VolumeWaveletEncoder<'a, T> {
                     let mut stream = SerializeStream::new();
                     for row in rows {
                         for elem in row.as_slice().unwrap() {
-                            elem.serialize(&mut stream);
+                            elem.clone().serialize(&mut stream);
                         }
                     }
 
@@ -258,7 +254,7 @@ impl<'a, T: Serializable + Num + Send + Copy> VolumeWaveletEncoder<'a, T> {
         };
         output_header.serialize(&mut stream);
         for elem in transformed.flatten() {
-            elem.serialize(&mut stream);
+            elem.clone().serialize(&mut stream);
         }
         let output_path = output.as_ref().join("output.bin");
         let output_file = File::create(output_path).unwrap();
@@ -270,7 +266,7 @@ impl<'a, T: Serializable + Num + Send + Copy> VolumeWaveletEncoder<'a, T> {
     }
 }
 
-impl<'a, T: Num + Copy> Debug for VolumeWaveletEncoder<'a, T> {
+impl<'a, T> Debug for VolumeWaveletEncoder<'a, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VolumeWaveletEncoder")
             .field("metadata", &self.metadata)
@@ -336,7 +332,7 @@ impl<T> BlockBlueprints<T> {
         steps: &[u32],
     ) -> VolumeBlock<T>
     where
-        T: Deserializable + Num + Copy + Send,
+        T: Zero + Deserializable + Send + Clone,
     {
         assert_eq!(self.dims, steps.len());
 
@@ -358,7 +354,7 @@ impl<T> BlockBlueprints<T> {
         refinements: &[u32],
     ) -> VolumeBlock<T>
     where
-        T: Deserializable + Num + Copy + Send,
+        T: Zero + Deserializable + Send + Clone,
     {
         assert_eq!(self.dims, steps.len());
         assert_eq!(self.dims, refinements.len());
@@ -582,7 +578,7 @@ impl<T> BlockBlueprint<T> {
         steps: &[u32],
     ) -> VolumeBlock<T>
     where
-        T: Deserializable + Num + Copy + Send,
+        T: Zero + Deserializable + Send + Clone,
     {
         assert_eq!(steps.len(), self.base_size.len());
 
@@ -669,7 +665,7 @@ impl BlockBlueprintPart {
         steps: Vec<u32>,
         cache: &mut BTreeMap<CacheKey, VolumeBlock<T>>,
     ) where
-        T: Deserializable + Send + Num + Copy,
+        T: Zero + Deserializable + Send + Clone,
     {
         let k = CacheKey {
             id: part_id,
@@ -746,7 +742,7 @@ impl BlockBlueprintPart {
             let (low, high) = part_window.split_into(dim);
 
             let mut block_part = VolumeBlock::new_zero(&size).unwrap();
-            low.copy_to(&mut block_part.window_mut());
+            low.clone_to(&mut block_part.window_mut());
             let entry = cache.entry(CacheKey {
                 id: part_id,
                 decomp: steps.clone(),
@@ -755,7 +751,7 @@ impl BlockBlueprintPart {
             entry.or_insert(block_part);
 
             let mut block_part = VolumeBlock::new_zero(&size).unwrap();
-            high.copy_to(&mut block_part.window_mut());
+            high.clone_to(&mut block_part.window_mut());
             let entry = cache.entry(CacheKey {
                 id: part_id,
                 decomp: steps,
@@ -774,7 +770,7 @@ impl BlockBlueprintPart {
         blocks: &[BlockLayout],
         cache: &mut Option<BTreeMap<CacheKey, VolumeBlock<T>>>,
     ) where
-        T: Deserializable + Num + Copy + Send,
+        T: Zero + Deserializable + Send + Clone,
     {
         if let Some(cache) = cache {
             if let Some((adapted_size, adapt)) = self.adapted_size.as_ref().zip(self.adapt.as_ref())
@@ -802,7 +798,7 @@ impl BlockBlueprintPart {
                     let block_part_window = block_part.window();
 
                     let mut decomp_window = decomp_window.custom_range_mut(&blocks[self.id].size);
-                    block_part_window.copy_to(&mut decomp_window);
+                    block_part_window.clone_to(&mut decomp_window);
                 }
 
                 let mut ops = Vec::with_capacity(adapt.len());
@@ -833,7 +829,7 @@ impl BlockBlueprintPart {
 
                     let mut decomp_window =
                         decomp_window.custom_window_mut(&blocks[*id].offset, &part_size);
-                    block_part_window.copy_to(&mut decomp_window);
+                    block_part_window.clone_to(&mut decomp_window);
 
                     ops.push(BackwardsOperation::Backwards {
                         dim: blocks[*id].dim,
@@ -846,7 +842,7 @@ impl BlockBlueprintPart {
                 trans.back_(decomp_window, &mut scratch, &ops);
 
                 let mut window = block.custom_window_mut(&blocks[self.id].offset, adapted_size);
-                decomp.window().copy_to(&mut window);
+                decomp.window().clone_to(&mut window);
             } else {
                 let steps = vec![0; blocks[self.id].size.len()];
                 BlockBlueprintPart::init_cache(
@@ -868,7 +864,7 @@ impl BlockBlueprintPart {
 
                 let mut window =
                     block.custom_window_mut(&blocks[self.id].offset, &blocks[self.id].size);
-                block_part_window.copy_to(&mut window);
+                block_part_window.clone_to(&mut window);
             }
         } else {
             let block_path = block_path

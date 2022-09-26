@@ -1,20 +1,19 @@
-use num_traits::Num;
-
-use crate::stream::{Deserializable, Serializable};
+use num_traits::Zero;
 
 use super::{Backwards, Forwards, OneWayTransform};
+use crate::stream::{Deserializable, Serializable};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleIScale;
 
-impl<N: Num + Copy> OneWayTransform<Forwards, N> for ResampleIScale {
+impl<T: Zero + Clone> OneWayTransform<Forwards, T> for ResampleIScale {
     type Cfg<'a> = ResampleCfg<'a>;
 
     fn apply(
         &self,
-        input: crate::volume::VolumeBlock<N>,
+        input: crate::volume::VolumeBlock<T>,
         cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<N> {
+    ) -> crate::volume::VolumeBlock<T> {
         assert!(input.dims().len() == cfg.to.len());
         assert!(input
             .dims()
@@ -29,7 +28,7 @@ impl<N: Num + Copy> OneWayTransform<Forwards, N> for ResampleIScale {
         let mut scaled = crate::volume::VolumeBlock::new_zero(cfg.to).unwrap();
         let mut scaled_window = scaled.window_mut();
         let input_window = input.window();
-        input_window.copy_to(&mut scaled_window.custom_range_mut(input_window.dims()));
+        input_window.clone_to(&mut scaled_window.custom_range_mut(input_window.dims()));
 
         for (dim, (&src, &dst)) in input.dims().iter().zip(cfg.to).enumerate() {
             let scale_factor = dst / src;
@@ -38,7 +37,9 @@ impl<N: Num + Copy> OneWayTransform<Forwards, N> for ResampleIScale {
                 let len = row.len() / scale_factor;
                 for (src, dst) in (0..len).zip((0..row.len()).step_by(scale_factor)).rev() {
                     for i in 0..scale_factor {
-                        unsafe { *row.get_unchecked_mut(dst + i) = *row.get_unchecked_mut(src) };
+                        unsafe {
+                            *row.get_unchecked_mut(dst + i) = row.get_unchecked_mut(src).clone()
+                        };
                     }
                 }
             }
@@ -48,14 +49,14 @@ impl<N: Num + Copy> OneWayTransform<Forwards, N> for ResampleIScale {
     }
 }
 
-impl<N: Num + Copy> OneWayTransform<Backwards, N> for ResampleIScale {
+impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleIScale {
     type Cfg<'a> = ResampleCfg<'a>;
 
     fn apply(
         &self,
-        mut input: crate::volume::VolumeBlock<N>,
+        mut input: crate::volume::VolumeBlock<T>,
         cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<N> {
+    ) -> crate::volume::VolumeBlock<T> {
         assert!(input.dims().len() == cfg.to.len());
         assert!(input
             .dims()
@@ -76,7 +77,7 @@ impl<N: Num + Copy> OneWayTransform<Backwards, N> for ResampleIScale {
             for mut row in window.rows_mut(dim) {
                 let len = row.len() / scale_factor;
                 for (src, dst) in (0..row.len()).step_by(scale_factor).zip(0..len) {
-                    unsafe { *row.get_unchecked_mut(dst) = *row.get_unchecked_mut(src) };
+                    unsafe { *row.get_unchecked_mut(dst) = row.get_unchecked_mut(src).clone() };
                 }
             }
         }
@@ -84,7 +85,7 @@ impl<N: Num + Copy> OneWayTransform<Backwards, N> for ResampleIScale {
         let window = window.custom_range(cfg.to);
 
         let mut output = crate::volume::VolumeBlock::new_zero(cfg.to).unwrap();
-        window.copy_to(&mut output.window_mut());
+        window.clone_to(&mut output.window_mut());
 
         output
     }
@@ -93,15 +94,15 @@ impl<N: Num + Copy> OneWayTransform<Backwards, N> for ResampleIScale {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleExtend;
 
-impl<N: Num + Copy> OneWayTransform<Forwards, N> for ResampleExtend {
+impl<T: Zero + Clone> OneWayTransform<Forwards, T> for ResampleExtend {
     type Cfg<'a> = ResampleCfg<'a>;
 
     #[inline]
     fn apply(
         &self,
-        input: crate::volume::VolumeBlock<N>,
+        input: crate::volume::VolumeBlock<T>,
         cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<N> {
+    ) -> crate::volume::VolumeBlock<T> {
         assert!(input.dims().len() == cfg.to.len());
         assert!(input.dims().iter().zip(cfg.to).all(|(&s, &d)| s <= d));
 
@@ -115,20 +116,20 @@ impl<N: Num + Copy> OneWayTransform<Forwards, N> for ResampleExtend {
         let mut output_window = resampled.window_mut();
         let mut output_window = output_window.custom_range_mut(input.dims());
 
-        input_window.copy_to(&mut output_window);
+        input_window.clone_to(&mut output_window);
         resampled
     }
 }
 
-impl<N: Num + Copy> OneWayTransform<Backwards, N> for ResampleExtend {
+impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleExtend {
     type Cfg<'a> = ResampleCfg<'a>;
 
     #[inline]
     fn apply(
         &self,
-        input: crate::volume::VolumeBlock<N>,
+        input: crate::volume::VolumeBlock<T>,
         cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<N> {
+    ) -> crate::volume::VolumeBlock<T> {
         assert!(input.dims().len() == cfg.to.len());
         assert!(input.dims().iter().zip(cfg.to).all(|(&s, &d)| s >= d));
 
@@ -142,7 +143,7 @@ impl<N: Num + Copy> OneWayTransform<Backwards, N> for ResampleExtend {
 
         let mut output_window = resampled.window_mut();
 
-        input_window.copy_to(&mut output_window);
+        input_window.clone_to(&mut output_window);
         resampled
     }
 }
@@ -150,15 +151,15 @@ impl<N: Num + Copy> OneWayTransform<Backwards, N> for ResampleExtend {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleLinear;
 
-impl<N: Num + Lerp + Copy> OneWayTransform<Forwards, N> for ResampleLinear {
+impl<T: Zero + Lerp + Clone> OneWayTransform<Forwards, T> for ResampleLinear {
     type Cfg<'a> = ResampleCfg<'a>;
 
     #[inline]
     fn apply(
         &self,
-        input: crate::volume::VolumeBlock<N>,
+        input: crate::volume::VolumeBlock<T>,
         cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<N> {
+    ) -> crate::volume::VolumeBlock<T> {
         assert!(input.dims().len() == cfg.to.len());
         if input.dims() == cfg.to {
             return input;
@@ -186,8 +187,8 @@ impl<N: Num + Lerp + Copy> OneWayTransform<Forwards, N> for ResampleLinear {
                     let second = (pos.ceil() as usize).min(src.len() - 1);
                     let t = pos.fract();
 
-                    let first = src[first];
-                    let second = src[second];
+                    let first = src[first].clone();
+                    let second = src[second].clone();
                     let val = first.lerp(second, t);
 
                     dst[j] = val;
@@ -199,16 +200,16 @@ impl<N: Num + Lerp + Copy> OneWayTransform<Forwards, N> for ResampleLinear {
     }
 }
 
-impl<N: Num + Lerp + Copy> OneWayTransform<Backwards, N> for ResampleLinear {
+impl<T: Zero + Lerp + Clone> OneWayTransform<Backwards, T> for ResampleLinear {
     type Cfg<'a> = ResampleCfg<'a>;
 
     #[inline]
     fn apply(
         &self,
-        input: crate::volume::VolumeBlock<N>,
+        input: crate::volume::VolumeBlock<T>,
         cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<N> {
-        <Self as OneWayTransform<Forwards, N>>::apply(self, input, cfg)
+    ) -> crate::volume::VolumeBlock<T> {
+        <Self as OneWayTransform<Forwards, T>>::apply(self, input, cfg)
     }
 }
 

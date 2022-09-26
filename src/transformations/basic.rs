@@ -1,34 +1,31 @@
-use num_traits::Num;
-
-use crate::stream::{Deserializable, Serializable};
-
 use super::{Backwards, Forwards, OneWayTransform};
+use crate::stream::{Deserializable, Serializable};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Identity;
 
-impl<N: Num + Copy> OneWayTransform<Forwards, N> for Identity {
+impl<T> OneWayTransform<Forwards, T> for Identity {
     type Cfg<'a> = Identity;
 
     #[inline(always)]
     fn apply(
         &self,
-        input: crate::volume::VolumeBlock<N>,
+        input: crate::volume::VolumeBlock<T>,
         _cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<N> {
+    ) -> crate::volume::VolumeBlock<T> {
         input
     }
 }
 
-impl<N: Num + Copy> OneWayTransform<Backwards, N> for Identity {
+impl<T> OneWayTransform<Backwards, T> for Identity {
     type Cfg<'a> = Identity;
 
     #[inline(always)]
     fn apply(
         &self,
-        input: crate::volume::VolumeBlock<N>,
+        input: crate::volume::VolumeBlock<T>,
         _cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<N> {
+    ) -> crate::volume::VolumeBlock<T> {
         input
     }
 }
@@ -61,34 +58,34 @@ impl<T> From<T> for Reverse<T> {
     }
 }
 
-impl<T, N: Num + Copy> OneWayTransform<Forwards, N> for Reverse<T>
+impl<T, U> OneWayTransform<Forwards, U> for Reverse<T>
 where
-    T: OneWayTransform<Backwards, N>,
+    T: OneWayTransform<Backwards, U>,
 {
     type Cfg<'a> = T::Cfg<'a>;
 
     #[inline(always)]
     fn apply(
         &self,
-        input: crate::volume::VolumeBlock<N>,
+        input: crate::volume::VolumeBlock<U>,
         cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<N> {
+    ) -> crate::volume::VolumeBlock<U> {
         self.0.apply(input, cfg)
     }
 }
 
-impl<T, N: Num + Copy> OneWayTransform<Backwards, N> for Reverse<T>
+impl<T, U> OneWayTransform<Backwards, U> for Reverse<T>
 where
-    T: OneWayTransform<Forwards, N>,
+    T: OneWayTransform<Forwards, U>,
 {
     type Cfg<'a> = T::Cfg<'a>;
 
     #[inline(always)]
     fn apply(
         &self,
-        input: crate::volume::VolumeBlock<N>,
+        input: crate::volume::VolumeBlock<U>,
         cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<N> {
+    ) -> crate::volume::VolumeBlock<U> {
         self.0.apply(input, cfg)
     }
 }
@@ -144,37 +141,35 @@ impl<T, U> From<(T, U)> for Chain<T, U> {
     }
 }
 
-impl<N, T, U> OneWayTransform<Forwards, N> for Chain<T, U>
+impl<T, U, V> OneWayTransform<Forwards, V> for Chain<T, U>
 where
-    N: Num + Copy,
-    T: OneWayTransform<Forwards, N>,
-    U: OneWayTransform<Forwards, N>,
+    T: OneWayTransform<Forwards, V>,
+    U: OneWayTransform<Forwards, V>,
 {
     type Cfg<'a> = Chain<T::Cfg<'a>, U::Cfg<'a>>;
 
     fn apply(
         &self,
-        input: crate::volume::VolumeBlock<N>,
+        input: crate::volume::VolumeBlock<V>,
         cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<N> {
+    ) -> crate::volume::VolumeBlock<V> {
         let tmp = self.0.apply(input, cfg.0);
         self.1.apply(tmp, cfg.1)
     }
 }
 
-impl<N, T, U> OneWayTransform<Backwards, N> for Chain<T, U>
+impl<T, U, V> OneWayTransform<Backwards, V> for Chain<T, U>
 where
-    N: Num + Copy,
-    T: OneWayTransform<Backwards, N>,
-    U: OneWayTransform<Backwards, N>,
+    T: OneWayTransform<Backwards, V>,
+    U: OneWayTransform<Backwards, V>,
 {
     type Cfg<'a> = Chain<T::Cfg<'a>, U::Cfg<'a>>;
 
     fn apply(
         &self,
-        input: crate::volume::VolumeBlock<N>,
+        input: crate::volume::VolumeBlock<V>,
         cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<N> {
+    ) -> crate::volume::VolumeBlock<V> {
         let tmp = self.1.apply(input, cfg.1);
         self.0.apply(tmp, cfg.0)
     }
