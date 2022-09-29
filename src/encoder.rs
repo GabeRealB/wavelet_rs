@@ -356,7 +356,6 @@ impl<T> BlockBlueprints<T> {
         unreachable!()
     }
 
-    #[allow(unused)]
     pub fn reconstruct(
         &self,
         filter: &(impl Filter<T> + Clone),
@@ -374,25 +373,16 @@ impl<T> BlockBlueprints<T> {
         blueprint.reconstruct(filter, &self.layouts, block_path, refinements)
     }
 
-    pub fn block_size_full(&self, steps: &[u32]) -> Vec<usize> {
+    pub fn block_decompositions_full(&self, steps: &[u32]) -> Vec<u32> {
         assert_eq!(self.dims, steps.len());
 
         for (k, b) in &self.blueprints {
             if k.iter().all(|&s| s == 0) {
-                return b.block_size(&self.layouts, steps);
+                return b.block_decompositions(&self.layouts, steps);
             }
         }
 
         unreachable!()
-    }
-
-    #[allow(unused)]
-    pub fn block_size(&self, steps: &[u32], refinements: &[u32]) -> Vec<usize> {
-        assert_eq!(self.dims, steps.len());
-        assert_eq!(self.dims, refinements.len());
-
-        let blueprint = self.blueprints.get(steps).unwrap();
-        blueprint.block_size(&self.layouts, refinements)
     }
 
     pub fn start_dim_full(&self, steps: &[u32]) -> usize {
@@ -560,6 +550,24 @@ impl<T> BlockBlueprint<T> {
                 .zip(&self.base_size)
                 .map(|(&st, &si)| (si << st))
                 .collect()
+        }
+    }
+
+    fn block_decompositions(&self, blocks: &[BlockLayout], steps: &[u32]) -> Vec<u32> {
+        if steps.iter().all(|&s| s == 0) {
+            vec![0; steps.len()]
+        } else {
+            let mut curr = vec![0; steps.len()];
+
+            for part in self.parts.iter().rev() {
+                curr[blocks[part.id].dim] += 1;
+
+                if steps.iter().zip(&curr).all(|(&s, &c)| c >= s) {
+                    break;
+                }
+            }
+
+            curr
         }
     }
 

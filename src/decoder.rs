@@ -87,7 +87,7 @@ where
     /// Applies a partial decoding to a partially decoded dataset.
     pub fn refine(
         &self,
-        mut reader: impl FnMut(&[usize]) -> T,
+        reader: impl Fn(&[usize]) -> T,
         mut writer: impl FnMut(&[usize], T),
         input_range: &[Range<usize>],
         output_range: &[Range<usize>],
@@ -169,9 +169,6 @@ where
             .map(|(&s, &d)| s / d)
             .collect();
 
-        let resample_cfg = ResampleCfg::new(&resample_dim);
-        let resample_pass = ResampleExtend;
-
         let refinement_cfg = Chain::combine(
             ResampleCfg::new(&self.block_size),
             ResampleCfg::new(&resample_dim),
@@ -185,13 +182,11 @@ where
         let refinement_pass = Chain::combine(ResampleExtend, Reverse::new(ResampleIScale))
             .chain(WaveletTransform::new(self.filter.clone(), false));
 
-        let num_blocks = self.block_counts.iter().product();
-        let mut block_iter_idx = vec![0; self.block_size.len()];
+        let block_range: Vec<_> = self.block_counts.iter().map(|&c| 0..c).collect();
+        let block_input_range: Vec<_> = block_input_dims.iter().map(|&c| 0..c).collect();
+        let block_size_range: Vec<_> = self.block_size.iter().map(|&c| 0..c).collect();
 
-        let num_elements = self.block_size.iter().product();
-        let num_elements_downs = block_input_dims.iter().product();
-
-        for block_idx in 0..num_blocks {
+        for_each_range_enumerate(block_range.iter().cloned(), |block_idx, block_iter_idx| {
             let block_offset: Vec<_> = block_iter_idx
                 .iter()
                 .zip(&self.block_size)
@@ -208,26 +203,6 @@ where
                 .zip(block_range)
                 .all(|(i_r, b_r)| (i_r.start <= b_r.start) && (i_r.end >= b_r.end))
             {
-                let mut block_input = VolumeBlock::new_zero(&self.block_size).unwrap();
-                let mut elem_idx = vec![0; self.block_size.len()];
-                for _ in 0..num_elements {
-                    let idx: Vec<_> = block_offset
-                        .iter()
-                        .zip(&elem_idx)
-                        .map(|(&offset, &idx)| offset + idx)
-                        .collect();
-                    block_input[&*elem_idx] = reader(&idx);
-
-                    for (idx, &size) in elem_idx.iter_mut().zip(&self.block_size) {
-                        *idx = (*idx + 1) % size;
-                        if *idx != 0 {
-                            break;
-                        }
-                    }
-                }
-
-                let block_input = resample_pass.forwards(block_input, resample_cfg);
-
                 let block_path = self.path.join(format!("block_{block_idx}"));
                 let mut block = self.block_blueprints.reconstruct(
                     &self.filter,
@@ -236,52 +211,32 @@ where
                     &block_refinements,
                 );
 
-                let mut block_window = block.window_mut();
-                let mut block_window = block_window.custom_range_mut(&block_input_dims);
-
-                let mut elem_idx = vec![0; self.block_size.len()];
-                for _ in 0..num_elements_downs {
-                    let idx: Vec<_> = block_downsample_stepping
+                // Load the partially recomposed data into the block.
+                for_each_range(block_input_range.iter().cloned(), |local_idx| {
+                    let global_idx: Vec<_> = block_offset
                         .iter()
-                        .zip(&elem_idx)
-                        .map(|(&step, &idx)| step * idx)
+                        .zip(&block_downsample_stepping)
+                        .zip(local_idx)
+                        .map(|((&offset, &step), &idx)| offset + (step * idx))
                         .collect();
-                    block_window[&*elem_idx] = block_input[&*idx].clone();
 
-                    for (idx, &size) in elem_idx.iter_mut().zip(&block_input_dims) {
-                        *idx = (*idx + 1) % size;
-                        if *idx != 0 {
-                            break;
-                        }
-                    }
-                }
+                    block[local_idx] = reader(&global_idx);
+                });
 
                 let block = refinement_pass.backwards(block, refinement_cfg);
-                let mut elem_idx = vec![0; self.block_size.len()];
-                for _ in 0..num_elements {
-                    let idx: Vec<_> = block_offset
+
+                // Copy the result back to the caller.
+                for_each_range_enumerate(block_size_range.iter().cloned(), |i, local_idx| {
+                    let global_idx: Vec<_> = block_offset
                         .iter()
-                        .zip(&elem_idx)
+                        .zip(local_idx)
                         .map(|(&offset, &idx)| offset + idx)
                         .collect();
-                    writer(&idx, block[&*elem_idx].clone());
 
-                    for (idx, &size) in elem_idx.iter_mut().zip(&self.block_size) {
-                        *idx = (*idx + 1) % size;
-                        if *idx != 0 {
-                            break;
-                        }
-                    }
-                }
+                    writer(&global_idx, block[i].clone());
+                });
             }
-
-            for (block_idx, &count) in block_iter_idx.iter_mut().zip(&self.block_counts) {
-                *block_idx = (*block_idx + 1) % count;
-                if *block_idx != 0 {
-                    break;
-                }
-            }
-        }
+        });
     }
 
     /// Decodes the dataset.
@@ -316,22 +271,9 @@ where
             .iter()
             .map(|&dim| dim.ilog2())
             .collect();
-        let block_forwards_steps: Vec<_> = self
+        let block_forwards_steps = self
             .block_blueprints
-            .block_size_full(&block_backwards_steps)
-            .into_iter()
-            .map(|s| s.ilog2())
-            .collect();
-
-        let input_transform_cfg = Chain::combine(
-            ResampleCfg::new(&self.block_counts),
-            WaveletRecompCfg::new(&input_forwards_steps, &input_backwards_steps),
-        );
-        let input_transform = Chain::combine(
-            ResampleExtend,
-            WaveletTransform::new(self.filter.clone(), false),
-        );
-        let first_pass = input_transform.backwards(self.input_block.clone(), input_transform_cfg);
+            .block_decompositions_full(&block_backwards_steps);
 
         let block_transform_cfg = Chain::combine(
             ResampleCfg::new(&self.block_size),
@@ -345,6 +287,25 @@ where
         let block_transform = Chain::combine(ResampleExtend, Reverse::new(ResampleIScale))
             .chain(WaveletTransform::new(self.filter.clone(), false));
 
+        // The dataset was encoded using a two pass approach.
+        // The first pass deconstructs each block independently. Since each
+        // decomposition step halves the size of the decomposed axis, it would
+        // only allow for a partial decomposition, if the used block size is
+        // smaller than the size of the dataset. To mitigate this, we collect
+        // the computed approximation coefficients into a new block, and decompose
+        // it in a second pass. To recompose the original dataset, we simply
+        // follow the same procedure backwards.
+        let input_transform_cfg = Chain::combine(
+            ResampleCfg::new(&self.block_counts),
+            WaveletRecompCfg::new(&input_forwards_steps, &input_backwards_steps),
+        );
+        let input_transform = Chain::combine(
+            ResampleExtend,
+            WaveletTransform::new(self.filter.clone(), false),
+        );
+        let first_pass = input_transform.backwards(self.input_block.clone(), input_transform_cfg);
+
+        // Iterate over each block and decode it, if it is part of the requested data range.
         let block_range: Vec<_> = self.block_counts.iter().map(|&c| 0..c).collect();
         for_each_range_enumerate(block_range.iter().cloned(), |block_idx, block_iter_idx| {
             let block_offset: Vec<_> = block_iter_idx
@@ -358,9 +319,14 @@ where
                 .map(|(&start, &size)| start..start + size)
                 .collect();
 
+            // Check whether the block contains data in the requested range.
             if roi.iter().zip(&block_range).all(|(required, range)| {
                 required.contains(&range.start) || required.contains(&range.end)
             }) {
+                // To recompose a block we need to reconstruct the block of coefficients.
+                // The detail coefficients are stored on disk, while the approximation coefficient
+                // (i.e. the first element) is contained in the block from the first reconstruction
+                // pass.
                 let block_path = self.path.join(format!("block_{block_idx}"));
                 let mut block = self.block_blueprints.reconstruct_full(
                     &self.filter,
@@ -371,6 +337,7 @@ where
 
                 let block_pass = block_transform.backwards(block, block_transform_cfg);
 
+                // Write back all elements of required range, which are contained in the reconstructed block.
                 let sub_range: Vec<_> = roi
                     .iter()
                     .zip(block_range)
