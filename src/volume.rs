@@ -9,8 +9,11 @@ use alloca::with_alloca_zeroed;
 use num_traits::{Float, Zero};
 use thiserror::Error;
 
-use crate::utilities::{
-    flatten_idx, flatten_idx_with_offset, flatten_idx_with_offset_unchecked, strides_for_dims,
+use crate::{
+    range::for_each_range,
+    utilities::{
+        flatten_idx, flatten_idx_with_offset, flatten_idx_with_offset_unchecked, strides_for_dims,
+    },
 };
 
 /// Multi-dimensional volume.
@@ -240,6 +243,11 @@ impl<T> VolumeBlock<T> {
     pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut T {
         self.data.get_unchecked_mut(index)
     }
+
+    /// Splits up the `VolumeBlock` into it's constituent parts.
+    pub fn into_raw_parts(self) -> (Vec<T>, Vec<usize>, Vec<usize>) {
+        (self.data, self.dims, self.strides)
+    }
 }
 
 impl<T> Index<usize> for VolumeBlock<T> {
@@ -467,6 +475,44 @@ impl<'a, T> VolumeWindow<'a, T> {
             block_strides: self.block_strides,
             _phantom: PhantomData,
         }
+    }
+
+    /// Divides the current window into `counts[0] * ... * counts[N]` nonoverlapping windows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current window can not fit the required number of windows.
+    pub fn divide_into(self, counts: &[usize]) -> VolumeBlock<VolumeWindow<'a, T>> {
+        assert!(self
+            .dims
+            .iter()
+            .zip(counts)
+            .all(|(&d, &c)| (d >= c) && (c != 0) && (d % c == 0)));
+
+        let dims: Vec<_> = self.dims.iter().zip(counts).map(|(&d, &c)| d / c).collect();
+        let mut windows = Vec::new();
+
+        let range = counts.iter().map(|&c| 0..c);
+        for_each_range(range, |idx| {
+            let offset = self
+                .dim_offsets
+                .iter()
+                .zip(&dims)
+                .zip(idx)
+                .map(|((&off, &dim), &idx)| off + (dim * idx))
+                .collect();
+
+            windows.push(VolumeWindow {
+                dims: dims.clone(),
+                dim_offsets: offset,
+                block_data: self.block_data,
+                block_dims: self.block_dims,
+                block_strides: self.block_strides,
+                _phantom: PhantomData,
+            })
+        });
+
+        VolumeBlock::new_with_data(counts, windows).unwrap()
     }
 
     /// Returns the dimensions of the window.
@@ -995,6 +1041,82 @@ impl<'a, T> VolumeWindowMut<'a, T> {
             block_strides: self.block_strides,
             _phantom: PhantomData,
         }
+    }
+
+    /// Divides the current window into `counts[0] * ... * counts[N]` nonoverlapping windows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current window can not fit the required number of windows.
+    pub fn divide_into(self, counts: &[usize]) -> VolumeBlock<VolumeWindow<'a, T>> {
+        assert!(self
+            .dims
+            .iter()
+            .zip(counts)
+            .all(|(&d, &c)| (d >= c) && (c != 0) && (d % c == 0)));
+
+        let dims: Vec<_> = self.dims.iter().zip(counts).map(|(&d, &c)| d / c).collect();
+        let mut windows = Vec::new();
+
+        let range = counts.iter().map(|&c| 0..c);
+        for_each_range(range, |idx| {
+            let offset = self
+                .dim_offsets
+                .iter()
+                .zip(&dims)
+                .zip(idx)
+                .map(|((&off, &dim), &idx)| off + (dim * idx))
+                .collect();
+
+            windows.push(VolumeWindow {
+                dims: dims.clone(),
+                dim_offsets: offset,
+                block_data: self.block_data,
+                block_dims: self.block_dims,
+                block_strides: self.block_strides,
+                _phantom: PhantomData,
+            })
+        });
+
+        VolumeBlock::new_with_data(counts, windows).unwrap()
+    }
+
+    /// Divides the current window into `counts[0] * ... * counts[N]` nonoverlapping mutable windows.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current window can not fit the required number of windows.
+    pub fn divide_into_mut(self, counts: &[usize]) -> VolumeBlock<VolumeWindowMut<'a, T>> {
+        assert!(self
+            .dims
+            .iter()
+            .zip(counts)
+            .all(|(&d, &c)| (d >= c) && (c != 0) && (d % c == 0)));
+
+        let dims: Vec<_> = self.dims.iter().zip(counts).map(|(&d, &c)| d / c).collect();
+        let mut windows = Vec::new();
+
+        let range = counts.iter().map(|&c| 0..c);
+        for_each_range(range, |idx| {
+            let offset = self
+                .dim_offsets
+                .iter()
+                .zip(&dims)
+                .zip(idx)
+                .map(|((&off, &dim), &idx)| off + (dim * idx))
+                .collect();
+
+            windows.push(VolumeWindowMut {
+                dims: dims.clone(),
+                dim_offsets: offset,
+                block_data: self.block_data,
+                block_dims: self.block_dims,
+                block_strides: self.block_strides,
+                _phantom: PhantomData,
+            })
+        });
+
+        VolumeBlock::new_with_data(counts, windows).unwrap()
     }
 
     /// Returns the dimensions of the window.

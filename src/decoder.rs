@@ -10,7 +10,7 @@ use std::{
 use crate::{
     encoder::{BlockBlueprints, OutputHeader},
     filter::Filter,
-    range::{for_each_range, for_each_range_enumerate},
+    range::{for_each_range, for_each_range_enumerate, for_each_range_par_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream},
     transformations::{
         Chain, ResampleCfg, ResampleExtend, ResampleIScale, Reverse, ReversibleTransform,
@@ -35,7 +35,7 @@ pub struct VolumeWaveletDecoder<T, F> {
 
 impl<T, F> VolumeWaveletDecoder<T, F>
 where
-    T: Zero + Deserializable + Clone + Send,
+    T: Zero + Deserializable + Clone + Send + Sync,
     F: Filter<T> + Deserializable + Clone,
 {
     /// Constructs a new decoder.
@@ -85,15 +85,20 @@ where
     }
 
     /// Applies a partial decoding to a partially decoded dataset.
-    pub fn refine(
+    pub fn refine<BR, R, BW, W>(
         &self,
-        reader: impl Fn(&[usize]) -> T,
-        mut writer: impl FnMut(&[usize], T),
+        reader_fetcher: impl FnOnce(&[usize]) -> BR,
+        writer_fetcher: impl FnOnce(&[usize]) -> BW,
         input_range: &[Range<usize>],
         output_range: &[Range<usize>],
         curr_levels: &[u32],
         refinements: &[u32],
-    ) {
+    ) where
+        BR: Fn(usize) -> R + Sync,
+        R: Fn(&[usize]) -> T,
+        BW: Fn(usize) -> W + Sync,
+        W: FnMut(&[usize], T),
+    {
         assert_eq!(input_range.len(), self.dims.len());
         assert_eq!(output_range.len(), self.dims.len());
         assert_eq!(curr_levels.len(), self.dims.len());
@@ -147,7 +152,7 @@ where
                 .zip(refinements)
                 .map(|(&c, &r)| c + r)
                 .collect();
-            return self.decode(writer, output_range, &new_levels);
+            return self.decode(writer_fetcher, output_range, &new_levels);
         }
 
         let resample_dim: Vec<_> = self
@@ -186,7 +191,13 @@ where
         let block_input_range: Vec<_> = block_input_dims.iter().map(|&c| 0..c).collect();
         let block_size_range: Vec<_> = self.block_size.iter().map(|&c| 0..c).collect();
 
-        for_each_range_enumerate(block_range.iter().cloned(), |block_idx, block_iter_idx| {
+        let readers = reader_fetcher(&self.block_counts);
+        let writers = writer_fetcher(&self.block_counts);
+
+        for_each_range_par_enumerate(block_range.iter().cloned(), |block_idx, block_iter_idx| {
+            let reader = readers(block_idx);
+            let mut writer = writers(block_idx);
+
             let block_offset: Vec<_> = block_iter_idx
                 .iter()
                 .zip(&self.block_size)
@@ -213,39 +224,35 @@ where
 
                 // Load the partially recomposed data into the block.
                 for_each_range(block_input_range.iter().cloned(), |local_idx| {
-                    let global_idx: Vec<_> = block_offset
+                    let reader_idx: Vec<_> = block_downsample_stepping
                         .iter()
-                        .zip(&block_downsample_stepping)
                         .zip(local_idx)
-                        .map(|((&offset, &step), &idx)| offset + (step * idx))
+                        .map(|(&step, &idx)| step * idx)
                         .collect();
 
-                    block[local_idx] = reader(&global_idx);
+                    block[local_idx] = reader(&reader_idx);
                 });
 
                 let block = refinement_pass.backwards(block, refinement_cfg);
 
                 // Copy the result back to the caller.
                 for_each_range_enumerate(block_size_range.iter().cloned(), |i, local_idx| {
-                    let global_idx: Vec<_> = block_offset
-                        .iter()
-                        .zip(local_idx)
-                        .map(|(&offset, &idx)| offset + idx)
-                        .collect();
-
-                    writer(&global_idx, block[i].clone());
+                    writer(local_idx, block[i].clone());
                 });
             }
         });
     }
 
     /// Decodes the dataset.
-    pub fn decode(
+    pub fn decode<BW, W>(
         &self,
-        mut writer: impl FnMut(&[usize], T),
+        writer_fetcher: impl FnOnce(&[usize]) -> BW,
         roi: &[Range<usize>],
         levels: &[u32],
-    ) {
+    ) where
+        BW: Fn(usize) -> W + Sync,
+        W: FnMut(&[usize], T),
+    {
         assert_eq!(roi.len(), self.dims.len());
         assert_eq!(levels.len(), self.dims.len());
 
@@ -287,6 +294,8 @@ where
         let block_transform = Chain::combine(ResampleExtend, Reverse::new(ResampleIScale))
             .chain(WaveletTransform::new(self.filter.clone(), false));
 
+        let writers = writer_fetcher(&self.block_counts);
+
         // The dataset was encoded using a two pass approach.
         // The first pass deconstructs each block independently. Since each
         // decomposition step halves the size of the decomposed axis, it would
@@ -307,7 +316,7 @@ where
 
         // Iterate over each block and decode it, if it is part of the requested data range.
         let block_range: Vec<_> = self.block_counts.iter().map(|&c| 0..c).collect();
-        for_each_range_enumerate(block_range.iter().cloned(), |block_idx, block_iter_idx| {
+        for_each_range_par_enumerate(block_range.iter().cloned(), |block_idx, block_iter_idx| {
             let block_offset: Vec<_> = block_iter_idx
                 .iter()
                 .zip(&self.block_size)
@@ -337,6 +346,9 @@ where
 
                 let block_pass = block_transform.backwards(block, block_transform_cfg);
 
+                // Fetch the writer for the current block.
+                let mut writer = writers(block_idx);
+
                 // Write back all elements of required range, which are contained in the reconstructed block.
                 let sub_range: Vec<_> = roi
                     .iter()
@@ -353,7 +365,7 @@ where
                         .collect();
 
                     let elem = block_pass[&*local_idx].clone();
-                    writer(idx, elem);
+                    writer(&local_idx, elem);
                 });
             }
         });
@@ -362,13 +374,19 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::path::PathBuf;
+    use std::{path::PathBuf, sync::Mutex};
 
     use crate::{
         decoder::VolumeWaveletDecoder, filter::AverageFilter, vector::Vector, volume::VolumeBlock,
     };
 
     const TRANSFORM_ERROR: f32 = 0.001;
+
+    struct ForceOnce;
+
+    impl ForceOnce {
+        fn consume(self) {}
+    }
 
     #[test]
     fn decode() {
@@ -381,14 +399,37 @@ mod test {
         let num_elements = dims.iter().product();
         let mut block_1 = VolumeBlock::new_zero(&dims).unwrap();
         let mut block_2 = VolumeBlock::new_zero(&dims).unwrap();
-        let writer = |idx: &[usize], elem: f32| {
-            let block_idx = idx[3];
-            let idx = &idx[..3];
 
-            if block_idx == 0 {
-                block_1[idx] = elem
-            } else if block_idx == 1 {
-                block_2[idx] = elem
+        let force_once = ForceOnce;
+        let writer = |counts: &[usize]| {
+            force_once.consume();
+
+            let block_1_windows = block_1.window_mut().divide_into_mut(counts);
+            let block_2_windows = block_2.window_mut().divide_into_mut(counts);
+
+            let (block_1_windows, _, _) = block_1_windows.into_raw_parts();
+            let (block_2_windows, _, _) = block_2_windows.into_raw_parts();
+
+            let windows: Vec<_> = block_1_windows
+                .into_iter()
+                .zip(block_2_windows)
+                .map(|a| Mutex::new(Some(a)))
+                .collect();
+
+            move |block_idx: usize| {
+                let window = windows.get(block_idx).unwrap();
+                let (mut block_1, mut block_2) = window.lock().unwrap().take().unwrap();
+
+                move |idx: &[usize], elem: f32| {
+                    let block_idx = idx[3];
+                    let idx = &idx[..3];
+
+                    if block_idx == 0 {
+                        block_1[idx] = elem
+                    } else if block_idx == 1 {
+                        block_2[idx] = elem
+                    }
+                }
             }
         };
 
@@ -418,17 +459,60 @@ mod test {
         let range = dims.map(|d| 0..d);
         let steps = 4usize.ilog2();
         let mut data = VolumeBlock::new_zero(&dims).unwrap();
-        let writer = |idx: &[usize], elem| {
-            data[idx] = elem;
+
+        let force_once = ForceOnce;
+        let writer = |counts: &[usize]| {
+            force_once.consume();
+
+            let windows = data.window_mut().divide_into_mut(counts);
+
+            let (windows, _, _) = windows.into_raw_parts();
+            let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+            move |block_idx: usize| {
+                let window = &windows[block_idx];
+                let mut window = window.lock().unwrap().take().unwrap();
+
+                move |idx: &[usize], elem| {
+                    window[idx] = elem;
+                }
+            }
         };
 
         decoder.decode(writer, &range, &[0, steps, 0]);
 
         for x in 1..steps + 1 {
             let mut next = VolumeBlock::new_zero(&dims).unwrap();
-            let reader = |idx: &[usize]| data[idx];
-            let writer = |idx: &[usize], elem| {
-                next[idx] = elem;
+            let reader = |counts: &[usize]| {
+                let windows = data.window().divide_into(counts);
+
+                let (windows, _, _) = windows.into_raw_parts();
+                let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+                move |block_idx: usize| {
+                    let window = &windows[block_idx];
+                    let window = window.lock().unwrap().take().unwrap();
+                    move |idx: &[usize]| window[idx]
+                }
+            };
+
+            let force_once = ForceOnce;
+            let writer = |counts: &[usize]| {
+                force_once.consume();
+
+                let windows = next.window_mut().divide_into_mut(counts);
+
+                let (windows, _, _) = windows.into_raw_parts();
+                let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+                move |block_idx: usize| {
+                    let window = &windows[block_idx];
+                    let mut window = window.lock().unwrap().take().unwrap();
+
+                    move |idx: &[usize], elem| {
+                        window[idx] = elem;
+                    }
+                }
             };
 
             decoder.refine(
@@ -458,8 +542,23 @@ mod test {
         let mut data = VolumeBlock::new_zero(&dims).unwrap();
 
         for x in 0..steps + 1 {
-            let writer = |idx: &[usize], elem| {
-                data[idx] = elem;
+            let force_once = ForceOnce;
+            let writer = |counts: &[usize]| {
+                force_once.consume();
+
+                let windows = data.window_mut().divide_into_mut(counts);
+
+                let (windows, _, _) = windows.into_raw_parts();
+                let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+                move |block_idx: usize| {
+                    let window = &windows[block_idx];
+                    let mut window = window.lock().unwrap().take().unwrap();
+
+                    move |idx: &[usize], elem| {
+                        window[idx] = elem;
+                    }
+                }
             };
 
             decoder.decode(writer, &range, &[x, steps, 0]);
@@ -485,8 +584,24 @@ mod test {
         let range = dims.map(|d| 0..d);
         let steps = 2048usize.ilog2();
         let mut data = VolumeBlock::new_zero(&dims).unwrap();
-        let writer = |idx: &[usize], elem| {
-            data[idx] = elem;
+
+        let force_once = ForceOnce;
+        let writer = |counts: &[usize]| {
+            force_once.consume();
+
+            let windows = data.window_mut().divide_into_mut(counts);
+
+            let (windows, _, _) = windows.into_raw_parts();
+            let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+            move |block_idx: usize| {
+                let window = &windows[block_idx];
+                let mut window = window.lock().unwrap().take().unwrap();
+
+                move |idx: &[usize], elem| {
+                    window[idx] = elem;
+                }
+            }
         };
 
         decoder.decode(writer, &range, &[0, steps, 0]);
@@ -499,9 +614,36 @@ mod test {
 
         for x in 1..steps + 1 {
             let mut next = VolumeBlock::new_zero(&dims).unwrap();
-            let reader = |idx: &[usize]| data[idx];
-            let writer = |idx: &[usize], elem| {
-                next[idx] = elem;
+            let reader = |counts: &[usize]| {
+                let windows = data.window().divide_into(counts);
+
+                let (windows, _, _) = windows.into_raw_parts();
+                let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+                move |block_idx: usize| {
+                    let window = &windows[block_idx];
+                    let window = window.lock().unwrap().take().unwrap();
+                    move |idx: &[usize]| window[idx]
+                }
+            };
+
+            let force_once = ForceOnce;
+            let writer = |counts: &[usize]| {
+                force_once.consume();
+
+                let windows = next.window_mut().divide_into_mut(counts);
+
+                let (windows, _, _) = windows.into_raw_parts();
+                let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+                move |block_idx: usize| {
+                    let window = &windows[block_idx];
+                    let mut window = window.lock().unwrap().take().unwrap();
+
+                    move |idx: &[usize], elem| {
+                        window[idx] = elem;
+                    }
+                }
             };
 
             decoder.refine(
