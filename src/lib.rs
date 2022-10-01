@@ -10,6 +10,7 @@
 
 pub mod decoder;
 pub mod encoder;
+pub mod ffi;
 pub mod filter;
 pub mod range;
 pub mod stream;

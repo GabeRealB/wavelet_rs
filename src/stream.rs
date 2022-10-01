@@ -410,19 +410,33 @@ impl Deserializable for String {
     }
 }
 
+impl<T: Serializable, const N: usize> Serializable for [T; N] {
+    #[inline]
+    fn serialize(self, stream: &mut SerializeStream) {
+        for x in self {
+            x.serialize(stream);
+        }
+    }
+}
+
+impl<T: Deserializable, const N: usize> Deserializable for [T; N] {
+    #[inline]
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
+        [(); N].map(|_| Deserializable::deserialize(stream))
+    }
+}
+
 impl<T: Serializable, const N: usize> Serializable for Vector<T, N> {
     #[inline]
     fn serialize(self, stream: &mut SerializeStream) {
-        for x in self.into_array() {
-            x.serialize(stream);
-        }
+        self.into_array().serialize(stream)
     }
 }
 
 impl<T: Deserializable, const N: usize> Deserializable for Vector<T, N> {
     #[inline]
     fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
-        let x = [(); N].map(|_| Deserializable::deserialize(stream));
+        let x = Deserializable::deserialize(stream);
         Vector::new(x)
     }
 }
@@ -447,6 +461,19 @@ impl<T: Deserializable> Deserializable for Vec<T> {
         }
 
         vec
+    }
+}
+
+impl<T: Serializable> Serializable for Box<[T]> {
+    fn serialize(self, stream: &mut SerializeStream) {
+        self.into_vec().serialize(stream)
+    }
+}
+
+impl<T: Deserializable> Deserializable for Box<[T]> {
+    fn deserialize(stream: &mut DeserializeStreamRef<'_>) -> Self {
+        let vec = Vec::deserialize(stream);
+        vec.into_boxed_slice()
     }
 }
 
