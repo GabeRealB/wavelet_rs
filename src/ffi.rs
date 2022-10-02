@@ -5,13 +5,14 @@ use std::{
     fmt::Debug,
     marker::PhantomData,
     mem::ManuallyDrop,
-    ops::{Deref, DerefMut},
+    ops::{Deref, DerefMut, Range},
     ptr::NonNull,
 };
 
 use paste::paste;
 
 use crate::{
+    decoder::VolumeWaveletDecoder,
     encoder::VolumeWaveletEncoder,
     filter::{AverageFilter, HaarWavelet},
     stream::{Deserializable, Serializable},
@@ -47,6 +48,32 @@ impl<T: Deserializable, const N: usize> Deserializable for CArray<T, N> {
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let arr = Deserializable::deserialize(stream);
         Self(arr)
+    }
+}
+
+/// C compatible range type
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CRange<T> {
+    start: T,
+    end: T,
+}
+
+impl<T> From<Range<T>> for CRange<T> {
+    fn from(x: Range<T>) -> Self {
+        Self {
+            start: x.start,
+            end: x.end,
+        }
+    }
+}
+
+impl<T> From<CRange<T>> for Range<T> {
+    fn from(x: CRange<T>) -> Self {
+        Range {
+            start: x.start,
+            end: x.end,
+        }
     }
 }
 
@@ -311,8 +338,236 @@ impl<'a, T> Drop for VolumeFetcher<'a, T> {
     }
 }
 
-unsafe impl<'a, T> Send for VolumeFetcher<'a, T> {}
-unsafe impl<'a, T> Sync for VolumeFetcher<'a, T> {}
+unsafe impl<'a, T: Send> Send for VolumeFetcher<'a, T> {}
+unsafe impl<'a, T: Sync> Sync for VolumeFetcher<'a, T> {}
+
+/// Definition of a block reader.
+#[repr(C)]
+#[allow(clippy::type_complexity, missing_debug_implementations)]
+pub struct BlockReader<'a, T> {
+    ctx: BlockReaderCtx<T>,
+    drop: unsafe extern "C" fn(BlockReaderCtx<T>),
+    call: unsafe extern "C" fn(BlockReaderCtx<T>, CSlice<'_, usize>) -> T,
+    _phantom: PhantomData<dyn Fn(CSlice<'_, usize>) -> T + 'a>,
+}
+
+#[repr(C)]
+union BlockReaderCtx<T> {
+    opaque: *mut (),
+    func: unsafe extern "C" fn(CSlice<'_, usize>) -> T,
+}
+
+impl<T> Copy for BlockReaderCtx<T> {}
+
+impl<T> Clone for BlockReaderCtx<T> {
+    fn clone(&self) -> Self {
+        unsafe { std::ptr::read(self) }
+    }
+}
+
+impl<'a, T> BlockReader<'a, T> {
+    fn call(&self, index: &[usize]) -> T {
+        unsafe { (self.call)(self.ctx, index.into()) }
+    }
+}
+
+impl<'a, T> Drop for BlockReader<'a, T> {
+    fn drop(&mut self) {
+        unsafe { (self.drop)(self.ctx) }
+    }
+}
+
+/// Definition of a block reader fetcher.
+#[repr(C)]
+#[allow(clippy::type_complexity, missing_debug_implementations)]
+pub struct BlockReaderFetcher<'a, T> {
+    ctx: BlockReaderFetcherCtx<'a, T>,
+    drop: unsafe extern "C" fn(BlockReaderFetcherCtx<'a, T>),
+    call: unsafe extern "C" fn(BlockReaderFetcherCtx<'a, T>, usize) -> BlockReader<'a, T>,
+    _phantom: PhantomData<dyn Fn(usize) -> BlockReader<'a, T> + Sync + 'a>,
+}
+
+#[repr(C)]
+union BlockReaderFetcherCtx<'a, T> {
+    opaque: *mut (),
+    func: unsafe extern "C" fn(usize) -> BlockReader<'a, T>,
+}
+
+impl<T> Copy for BlockReaderFetcherCtx<'_, T> {}
+
+impl<T> Clone for BlockReaderFetcherCtx<'_, T> {
+    fn clone(&self) -> Self {
+        unsafe { std::ptr::read(self) }
+    }
+}
+
+impl<'a, T> BlockReaderFetcher<'a, T> {
+    fn call(&self, index: usize) -> BlockReader<'a, T> {
+        unsafe { (self.call)(self.ctx, index) }
+    }
+}
+
+impl<'a, T> Drop for BlockReaderFetcher<'a, T> {
+    fn drop(&mut self) {
+        unsafe { (self.drop)(self.ctx) }
+    }
+}
+
+unsafe impl<'a, T: Sync> Sync for BlockReaderFetcherCtx<'a, T> {}
+
+/// Definition of a block reader fetcher builder.
+#[repr(C)]
+#[allow(clippy::type_complexity, missing_debug_implementations)]
+pub struct BlockReaderFetcherBuilder<'a, T> {
+    ctx: BlockReaderFetcherBuilderCtx<'a, T>,
+    drop: unsafe extern "C" fn(BlockReaderFetcherBuilderCtx<'a, T>),
+    call: unsafe extern "C" fn(
+        BlockReaderFetcherBuilderCtx<'a, T>,
+        CSlice<'_, usize>,
+    ) -> BlockReaderFetcher<'a, T>,
+    _phantom: PhantomData<dyn FnOnce(CSlice<'_, usize>) -> BlockReaderFetcher<'a, T> + 'a>,
+}
+
+#[repr(C)]
+union BlockReaderFetcherBuilderCtx<'a, T> {
+    opaque: *mut (),
+    func: unsafe extern "C" fn(CSlice<'_, usize>) -> BlockReaderFetcher<'a, T>,
+}
+
+impl<T> Copy for BlockReaderFetcherBuilderCtx<'_, T> {}
+
+impl<T> Clone for BlockReaderFetcherBuilderCtx<'_, T> {
+    fn clone(&self) -> Self {
+        unsafe { std::ptr::read(self) }
+    }
+}
+
+impl<'a, T> BlockReaderFetcherBuilder<'a, T> {
+    fn call(self, num_blocks: &[usize]) -> BlockReaderFetcher<'a, T> {
+        let this = ManuallyDrop::new(self);
+        unsafe { (this.call)(this.ctx, num_blocks.into()) }
+    }
+}
+
+impl<'a, T> Drop for BlockReaderFetcherBuilder<'a, T> {
+    fn drop(&mut self) {
+        unsafe { (self.drop)(self.ctx) }
+    }
+}
+
+/// Definition of a block writer.
+#[repr(C)]
+#[allow(clippy::type_complexity, missing_debug_implementations)]
+pub struct BlockWriter<'a, T> {
+    ctx: BlockWriterCtx<T>,
+    drop: unsafe extern "C" fn(BlockWriterCtx<T>),
+    call: unsafe extern "C" fn(BlockWriterCtx<T>, CSlice<'_, usize>, T),
+    _phantom: PhantomData<dyn FnMut(CSlice<'_, usize>, T) + 'a>,
+}
+
+#[repr(C)]
+union BlockWriterCtx<T> {
+    opaque: *mut (),
+    func: unsafe extern "C" fn(CSlice<'_, usize>, T),
+}
+
+impl<T> Copy for BlockWriterCtx<T> {}
+
+impl<T> Clone for BlockWriterCtx<T> {
+    fn clone(&self) -> Self {
+        unsafe { std::ptr::read(self) }
+    }
+}
+
+impl<'a, T> BlockWriter<'a, T> {
+    fn call(&mut self, index: &[usize], val: T) {
+        unsafe { (self.call)(self.ctx, index.into(), val) }
+    }
+}
+
+impl<'a, T> Drop for BlockWriter<'a, T> {
+    fn drop(&mut self) {
+        unsafe { (self.drop)(self.ctx) }
+    }
+}
+
+/// Definition of a block writer fetcher.
+#[repr(C)]
+#[allow(clippy::type_complexity, missing_debug_implementations)]
+pub struct BlockWriterFetcher<'a, T> {
+    ctx: BlockWriterFetcherCtx<'a, T>,
+    drop: unsafe extern "C" fn(BlockWriterFetcherCtx<'a, T>),
+    call: unsafe extern "C" fn(BlockWriterFetcherCtx<'a, T>, usize) -> BlockWriter<'a, T>,
+    _phantom: PhantomData<dyn Fn(usize) -> BlockWriter<'a, T> + Sync + 'a>,
+}
+
+#[repr(C)]
+union BlockWriterFetcherCtx<'a, T> {
+    opaque: *mut (),
+    func: unsafe extern "C" fn(usize) -> BlockWriter<'a, T>,
+}
+
+impl<T> Copy for BlockWriterFetcherCtx<'_, T> {}
+
+impl<T> Clone for BlockWriterFetcherCtx<'_, T> {
+    fn clone(&self) -> Self {
+        unsafe { std::ptr::read(self) }
+    }
+}
+
+impl<'a, T> BlockWriterFetcher<'a, T> {
+    fn call(&self, index: usize) -> BlockWriter<'a, T> {
+        unsafe { (self.call)(self.ctx, index) }
+    }
+}
+
+impl<'a, T> Drop for BlockWriterFetcher<'a, T> {
+    fn drop(&mut self) {
+        unsafe { (self.drop)(self.ctx) }
+    }
+}
+
+unsafe impl<'a, T: Sync> Sync for BlockWriterFetcher<'a, T> {}
+
+/// Definition of a block writer fetcher builder.
+#[repr(C)]
+#[allow(clippy::type_complexity, missing_debug_implementations)]
+pub struct BlockWriterFetcherBuilder<'a, T> {
+    ctx: BlockWriterFetcherBuilderCtx<'a, T>,
+    drop: unsafe extern "C" fn(BlockWriterFetcherBuilderCtx<'a, T>),
+    call: unsafe extern "C" fn(
+        BlockWriterFetcherBuilderCtx<'a, T>,
+        CSlice<'_, usize>,
+    ) -> BlockWriterFetcher<'a, T>,
+    _phantom: PhantomData<dyn FnOnce(CSlice<'_, usize>) -> BlockWriterFetcher<'a, T> + 'a>,
+}
+
+#[repr(C)]
+union BlockWriterFetcherBuilderCtx<'a, T> {
+    opaque: *mut (),
+    func: unsafe extern "C" fn(CSlice<'_, usize>) -> BlockWriterFetcher<'a, T>,
+}
+
+impl<T> Copy for BlockWriterFetcherBuilderCtx<'_, T> {}
+
+impl<T> Clone for BlockWriterFetcherBuilderCtx<'_, T> {
+    fn clone(&self) -> Self {
+        unsafe { std::ptr::read(self) }
+    }
+}
+
+impl<'a, T> BlockWriterFetcherBuilder<'a, T> {
+    fn call(self, num_blocks: &[usize]) -> BlockWriterFetcher<'a, T> {
+        let this = ManuallyDrop::new(self);
+        unsafe { (this.call)(this.ctx, num_blocks.into()) }
+    }
+}
+
+impl<'a, T> Drop for BlockWriterFetcherBuilder<'a, T> {
+    fn drop(&mut self) {
+        unsafe { (self.drop)(self.ctx) }
+    }
+}
 
 /////////////////////////////// Encoder ///////////////////////////////
 
@@ -320,7 +575,6 @@ macro_rules! encoder_def {
     ($($T:ty);*) => {
         $(
             encoder_def! { $T, wavelet_rs_encoder_ $T }
-            /* encoder_vec_def! { $T } */
 
             #[cfg(feature = "ffi_vec")]
             encoder_def! { Vector<$T, 1>, wavelet_rs_encoder_vec_1_ $T }
@@ -492,5 +746,207 @@ macro_rules! encoder_def {
 }
 
 encoder_def! {
+    f32; f64
+}
+
+/////////////////////////////// Decoder ///////////////////////////////
+
+macro_rules! decoder_def {
+    ($($T:ty);*) => {
+        $(
+            decoder_def! { $T, wavelet_rs_decoder_ $T }
+
+            #[cfg(feature = "ffi_vec")]
+            decoder_def! { Vector<$T, 1>, wavelet_rs_decoder_vec_1_ $T }
+            #[cfg(feature = "ffi_vec")]
+            decoder_def! { Vector<$T, 2>, wavelet_rs_decoder_vec_2_ $T }
+            #[cfg(feature = "ffi_vec")]
+            decoder_def! { Vector<$T, 3>, wavelet_rs_decoder_vec_3_ $T }
+            #[cfg(feature = "ffi_vec")]
+            decoder_def! { Vector<$T, 4>, wavelet_rs_decoder_vec_4_ $T }
+
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 1>, 1>, wavelet_rs_decoder_mat_1x1_ $T }
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 2>, 1>, wavelet_rs_decoder_mat_1x2_ $T }
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 3>, 1>, wavelet_rs_decoder_mat_1x3_ $T }
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 4>, 1>, wavelet_rs_decoder_mat_1x4_ $T }
+
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 1>, 2>, wavelet_rs_decoder_mat_2x1_ $T }
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 2>, 2>, wavelet_rs_decoder_mat_2x2_ $T }
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 3>, 2>, wavelet_rs_decoder_mat_2x3_ $T }
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 4>, 2>, wavelet_rs_decoder_mat_2x4_ $T }
+
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 1>, 3>, wavelet_rs_decoder_mat_3x1_ $T }
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 2>, 3>, wavelet_rs_decoder_mat_3x2_ $T }
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 3>, 3>, wavelet_rs_decoder_mat_3x3_ $T }
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 4>, 3>, wavelet_rs_decoder_mat_3x4_ $T }
+
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 1>, 4>, wavelet_rs_decoder_mat_4x1_ $T }
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 2>, 4>, wavelet_rs_decoder_mat_4x2_ $T }
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 3>, 4>, wavelet_rs_decoder_mat_4x3_ $T }
+            #[cfg(feature = "ffi_mat")]
+            decoder_def! { Vector<Vector<$T, 4>, 4>, wavelet_rs_decoder_mat_4x4_ $T }
+        )*
+    };
+
+    ($T:ty, $($N:tt)*) => {
+        decoder_def! { impl_ $T, HaarWavelet, $($N)* _haar }
+        decoder_def! { impl_ $T, AverageFilter, $($N)* _average }
+    };
+
+    (impl_ $T:ty, $F:ty, $($N:tt)*) => {
+        paste! {
+            /// Constructs a new decoder.
+            #[no_mangle]
+            pub extern "C" fn [<$($N)* _new>](
+                input: *const std::os::raw::c_char,
+            ) -> Box<VolumeWaveletDecoder<$T, $F>> {
+                unsafe {
+                    let input = CStr::from_ptr(input.cast());
+                    let input = String::from_utf8_lossy(input.as_ref().to_bytes());
+                    Box::new(VolumeWaveletDecoder::new(&*input))
+                }
+            }
+
+            /// Deallocates and destructs an decoder.
+            #[no_mangle]
+            pub extern "C" fn [<$($N)* _free>](
+                _: Box<VolumeWaveletDecoder<$T, $F>>,
+            ) {}
+
+            /// Decodes the dataset.
+            pub extern "C" fn [<$($N)* _decode>](
+                decoder: NonNull<VolumeWaveletDecoder<$T, $F>>,
+                writer_fetcher: BlockWriterFetcherBuilder<'_, $T>,
+                roi: CSlice<'_, CRange<usize>>,
+                levels: CSlice<'_, u32>
+            ) {
+                let writer_fetcher = move |index: &[usize]| {
+                    let fetcher = writer_fetcher.call(index);
+                    move |index: usize| {
+                        let mut writer = fetcher.call(index);
+                        move |index: &[usize], val: $T| writer.call(index, val)
+                    }
+                };
+
+                let roi: Vec<Range<_>> = (*roi).iter().cloned().map(|r| r.into()).collect();
+                unsafe {
+                    decoder.as_ref().decode(writer_fetcher, &roi, &levels);
+                }
+            }
+
+            /// Applies a partial decoding to a partially decoded dataset.
+            pub extern "C" fn [<$($N)* _refine>](
+                decoder: NonNull<VolumeWaveletDecoder<$T, $F>>,
+                reader_fetcher: BlockReaderFetcherBuilder<'_, $T>,
+                writer_fetcher: BlockWriterFetcherBuilder<'_, $T>,
+                input_range: CSlice<'_, CRange<usize>>,
+                output_range: CSlice<'_, CRange<usize>>,
+                curr_levels: CSlice<'_, u32>,
+                refinements: CSlice<'_, u32>
+            ) {
+                let reader_fetcher = move |index: &[usize]| {
+                    let fetcher = reader_fetcher.call(index);
+                    move |index: usize| {
+                        let reader = fetcher.call(index);
+                        move |index: &[usize]| reader.call(index)
+                    }
+                };
+
+                let writer_fetcher = move |index: &[usize]| {
+                    let fetcher = writer_fetcher.call(index);
+                    move |index: usize| {
+                        let mut writer = fetcher.call(index);
+                        move |index: &[usize], val: $T| writer.call(index, val)
+                    }
+                };
+
+                let input_range: Vec<Range<_>> = (*input_range)
+                    .iter()
+                    .cloned()
+                    .map(|r| r.into())
+                    .collect();
+
+                let output_range: Vec<Range<_>> = (*output_range)
+                    .iter()
+                    .cloned()
+                    .map(|r| r.into())
+                    .collect();
+                unsafe {
+                    decoder.as_ref().refine(
+                        reader_fetcher,
+                        writer_fetcher,
+                        &input_range,
+                        &output_range,
+                        &curr_levels,
+                        &refinements
+                    );
+                }
+            }
+        }
+
+        decoder_def! { metadata $T, $F, u8, $($N)* }
+        decoder_def! { metadata $T, $F, u16, $($N)* }
+        decoder_def! { metadata $T, $F, u32, $($N)* }
+        decoder_def! { metadata $T, $F, u64, $($N)* }
+        decoder_def! { metadata $T, $F, i8, $($N)* }
+        decoder_def! { metadata $T, $F, i16, $($N)* }
+        decoder_def! { metadata $T, $F, i32, $($N)* }
+        decoder_def! { metadata $T, $F, i64, $($N)* }
+        decoder_def! { metadata $T, $F, f32, $($N)* }
+        decoder_def! { metadata $T, $F, f64, $($N)* }
+
+        decoder_def! { metadata_ $T, $F, CString, ($($N)*); string}
+    };
+
+    (metadata $T:ty, $F:ty, $U:ty, $($N:tt)*) => {
+        decoder_def! { metadata_ $T, $F, $U, ($($N)*); $U }
+
+        #[cfg(feature = "ffi_metadata_arr")]
+        decoder_def! { metadata_ $T, $F, CArray<$U, 1>, ($($N)*); $U _arr_1 }
+        #[cfg(feature = "ffi_metadata_arr")]
+        decoder_def! { metadata_ $T, $F, CArray<$U, 2>, ($($N)*); $U _arr_2 }
+        #[cfg(feature = "ffi_metadata_arr")]
+        decoder_def! { metadata_ $T, $F, CArray<$U, 3>, ($($N)*); $U _arr_3 }
+        #[cfg(feature = "ffi_metadata_arr")]
+        decoder_def! { metadata_ $T, $F, CArray<$U, 4>, ($($N)*); $U _arr_4 }
+
+        #[cfg(feature = "ffi_metadata_slice")]
+        decoder_def! { metadata_ $T, $F, OwnedCSlice<$U>, ($($N)*); $U _slice }
+    };
+
+    (metadata_ $T:ty, $F:ty, $U:ty, ( $($N:tt)*); $($M:tt)*) => {
+        paste! {
+            /// Fetches a value inserted into the metadata.
+            #[no_mangle]
+            pub extern "C" fn [<$($N)* _metadata_get_ $($M)*>](
+                decoder: NonNull<VolumeWaveletDecoder<$T, $F>>,
+                key: *const std::ffi::c_char,
+            ) -> COption<$U> {
+                unsafe {
+                    let key = CStr::from_ptr(key.cast());
+                    let key = String::from_utf8_lossy(key.as_ref().to_bytes());
+                    decoder.as_ref().get_metadata(&*key).into()
+                }
+            }
+        }
+    };
+}
+
+decoder_def! {
     f32; f64
 }

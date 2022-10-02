@@ -70,6 +70,15 @@ static_assert(std::numeric_limits<double>::is_iec559, "double must be a IEEE 754
 
 namespace wavelet {
 
+/// Definition of a noninclusive range.
+///
+/// @tparam T range element type.
+template <typename T>
+struct range {
+    T start;
+    T end;
+};
+
 /// Constant view over a borrowed contiguous memory region.
 ///
 /// @tparam T Element type.
@@ -90,7 +99,7 @@ public:
 
     /// Constructs a new empty slice.
     explicit slice() noexcept
-        : m_ptr { static_cast<const_pointer>(alignof(value_type)) }
+        : m_ptr { reinterpret_cast<const T*>(alignof(value_type)) }
         , m_len { 0 }
     {
     }
@@ -1326,86 +1335,240 @@ public:
     }
 };
 
-template <typename T>
-class volume_fetcher {
-    union CtxT {
-        typedef T (*F)(slice<std::size_t>);
+/// Marker for callables that can only be invoked once.
+struct FnOnce { };
 
-        void* opaque;
-        F func;
+/// Marker for callables that can only be invoked mutably.
+struct FnMut { };
+
+/// Marker for callables that can be invoked immutably.
+struct Fn { };
+
+template <typename T, typename Ret, typename... Args>
+class callable {
+public:
+    typedef Ret (*function_type)(Args...);
+
+private:
+    static_assert(std::is_same<T, FnOnce>::value
+            || std::is_same<T, FnMut>::value
+            || std::is_same<T, Fn>::value,
+        "invalid type parameter");
+
+    union ctx_t {
+        void* allocated;
+        function_type func_ptr;
     };
-    typedef void (*DropT)(CtxT);
-    typedef T (*CallT)(CtxT, slice<std::size_t>);
+    typedef void (*drop_func_t)(ctx_t);
+    typedef Ret (*call_func_t)(ctx_t, Args...);
 
-    CtxT m_ctx;
-    DropT m_drop;
-    CallT m_call;
+    static void empty_drop(ctx_t) { }
+    [[noreturn]] static Ret empty_call(ctx_t, Args...) { assert(false); }
+    static Ret fn_ptr_call(ctx_t ctx, Args... args) { return ctx.func_ptr(std::move(args)...); }
 
-    static void empty_drop(CtxT) { }
-    [[noreturn]] static T empty_call(CtxT, slice<std::size_t>) { assert(false); }
-    static T fn_ptr_call(CtxT ctx, slice<std::size_t> index) { return ctx.func(index); }
+    ctx_t m_ctx;
+    drop_func_t m_drop;
+    call_func_t m_call;
 
 public:
-    explicit volume_fetcher(T (*f)(slice<std::size_t>)) noexcept
-        : m_ctx { f }
+    /// Constructs a new instance using a function pointer.
+    ///
+    /// @param f callable function pointer.
+    explicit callable(function_type f) noexcept
+        : m_ctx { .func_ptr = f }
         , m_drop { empty_drop }
         , m_call { fn_ptr_call }
     {
     }
 
-    /// Constructs a new volume fetcher using the provided callable.
-    /// The provided callable must be thread-safe and be invocable multiple times.
+    /// Constructs a new instance using the provided callable.
     ///
     /// @tparam F Type of the callable.
     /// @param f instance of the callable.
-    template <typename F>
-    explicit volume_fetcher(F&& f)
-        : m_ctx { nullptr }
+    template <typename F, typename T2 = T>
+    explicit callable(F&& f, typename std::enable_if<std::is_same<T2, FnOnce>::value>::type* = nullptr)
+        : m_ctx { .allocated = nullptr }
         , m_drop { nullptr }
         , m_call { nullptr }
     {
         using F_ = typename std::remove_reference<typename std::remove_cv<F>::type>::type;
 
-        std::unique_ptr<F_> ptr { std::forward<F>(f) };
-        this->m_ctx.opaque = static_cast<void*>(ptr.release());
-        this->m_drop = +[](CtxT ctx) {
-            F_* ptr = static_cast<F_*>(ctx.opaque);
+        F_* ptr = new F_ { std::forward<F>(f) };
+        this->m_ctx.allocated = static_cast<void*>(ptr);
+        this->m_drop = +[](ctx_t ctx) {
+            F_* ptr = static_cast<F_*>(ctx.allocated);
             delete ptr;
         };
-        this->m_call = +[](CtxT ctx, slice<std::size_t> index) -> T {
-            const F_* ptr = static_cast<const F_*>(ctx.opaque);
-            return ptr(index);
+        this->m_call = +[](ctx_t ctx, Args... args) -> auto
+        {
+            F_* ptr = static_cast<F_*>(ctx.allocated);
+            auto res = (*ptr)(std::move(args)...);
+            delete ptr;
+            return res;
         };
     }
 
-    volume_fetcher(const volume_fetcher& other) = delete;
+    /// Constructs a new instance using the provided callable.
+    ///
+    /// @tparam F Type of the callable.
+    /// @param f instance of the callable.
+    template <typename F, typename T2 = T>
+    explicit callable(F&& f, typename std::enable_if<std::is_same<T2, FnMut>::value>::type* = nullptr)
+        : m_ctx { .allocated = nullptr }
+        , m_drop { nullptr }
+        , m_call { nullptr }
+    {
+        using F_ = typename std::remove_reference<typename std::remove_cv<F>::type>::type;
 
-    volume_fetcher(volume_fetcher&& other)
+        F_* ptr = new F_ { std::forward<F>(f) };
+        this->m_ctx.allocated = static_cast<void*>(ptr);
+        this->m_drop = +[](ctx_t ctx) {
+            F_* ptr = static_cast<F_*>(ctx.allocated);
+            delete ptr;
+        };
+        this->m_call = +[](ctx_t ctx, Args... args) -> auto
+        {
+            F_* ptr = static_cast<F_*>(ctx.allocated);
+            return (*ptr)(std::move(args)...);
+        };
+    }
+
+    /// Constructs a new instance using the provided callable.
+    ///
+    /// @tparam F Type of the callable.
+    /// @param f instance of the callable.
+    template <typename F, typename T2 = T>
+    explicit callable(F&& f, typename std::enable_if<std::is_same<T2, Fn>::value>::type* = nullptr)
+        : m_ctx { .allocated = nullptr }
+        , m_drop { nullptr }
+        , m_call { nullptr }
+    {
+        using F_ = typename std::remove_reference<typename std::remove_cv<F>::type>::type;
+
+        F_* ptr = new F_ { std::forward<F>(f) };
+        this->m_ctx.allocated = static_cast<void*>(ptr);
+        this->m_drop = +[](ctx_t ctx) {
+            F_* ptr = static_cast<F_*>(ctx.allocated);
+            delete ptr;
+        };
+        this->m_call = +[](ctx_t ctx, Args... args) -> auto
+        {
+            const F_* ptr = static_cast<const F_*>(ctx.allocated);
+            return (*ptr)(std::move(args)...);
+        };
+    }
+
+    callable(const callable& other) = delete;
+
+    callable(callable&& other) noexcept
         : m_ctx { other.m_ctx }
         , m_drop { std::exchange(other.m_drop, empty_drop) }
         , m_call { std::exchange(other.m_call, empty_call) }
     {
     }
 
-    ~volume_fetcher()
+    ~callable()
     {
         if (this->m_drop != empty_drop) {
             this->m_drop(this->m_ctx);
         }
+
+        // fix clang-tidy false positive.
+        this->m_ctx.~ctx_t();
     }
 
-    volume_fetcher& operator=(const volume_fetcher& rhs) = delete;
-    volume_fetcher& operator=(volume_fetcher&& rhs) = delete;
+    callable& operator=(const callable& rhs) = delete;
 
-    /// Invokes the callable and returns the element at the position `index`.
-    ///
-    /// @param index position of the element in the volume.
-    /// @return element at the position `index`.
-    T operator()(slice<std::size_t> index) const
+    callable& operator=(callable&& rhs) noexcept
     {
-        return this->m_call(this->m_ctx, index);
+        if (this != &rhs) {
+            std::swap(this->m_ctx, rhs.m_ctx);
+            std::swap(this->m_drop, rhs.m_drop);
+            std::swap(this->m_call, rhs.m_call);
+        }
+
+        return *this;
+    }
+
+    template <typename T2 = T>
+    typename std::enable_if<std::is_same<T2, FnOnce>::value, Ret>::type
+    operator()(Args&&... args)
+    {
+        auto res = this->m_call(this->m_ctx, std::forward<Args>(args)...);
+
+        // fix clang-tidy false positive.
+        this->m_ctx.~ctx_t();
+
+        this->m_ctx.allocated = nullptr;
+        this->m_drop = empty_drop;
+        this->m_call = empty_call;
+
+        return res;
+    }
+
+    template <typename T2 = T>
+    typename std::enable_if<std::is_same<T2, FnMut>::value
+            || std::is_same<T2, Fn>::value,
+        Ret>::type
+    operator()(Args&&... args)
+    {
+        return this->m_call(this->m_ctx, std::forward<Args>(args)...);
+    }
+
+    template <typename T2 = T>
+    typename std::enable_if<std::is_same<T2, Fn>::value, Ret>::type
+    operator()(Args&&... args) const
+    {
+        return this->m_call(this->m_ctx, std::forward<Args>(args)...);
     }
 };
+
+/// Callable reading an element from the provided position.
+/// The callable must be thread-safe.
+///
+/// @tparam T element type of the volume.
+template <typename T>
+using volume_fetcher = callable<Fn, T, slice<std::size_t>>;
+
+/// Callable reading an element from the provided position in the current block.
+///
+/// @tparam T element type of the volume.
+template <typename T>
+using block_reader = callable<Fn, T, slice<std::size_t>>;
+
+/// Callable returning a reader for a volume block.
+/// The callable must be thread-safe.
+///
+/// @tparam T element type of the volume.
+template <typename T>
+using block_reader_fetcher = callable<Fn, block_reader<T>, std::size_t>;
+
+/// Callable returning a fetcher for volume block readers.
+///
+/// @tparam T element type of the volume.
+template <typename T>
+using reader_fetcher = callable<FnOnce, block_reader_fetcher<T>, slice<std::size_t>>;
+
+/// Callable writing an element at the provided position in the current block.
+///
+/// @tparam T element type of the volume.
+template <typename T>
+using block_writer = callable<FnMut, void, slice<std::size_t>, T>;
+
+/// Callable returning a writer for a volume block.
+/// The callable must be thread-safe.
+///
+/// @tparam T element type of the volume.
+template <typename T>
+using block_writer_fetcher = callable<Fn, block_writer<T>, std::size_t>;
+
+/// Callable returning a fetcher for volume block writers.
+///
+/// @tparam T element type of the volume.
+template <typename T>
+using writer_fetcher = callable<FnOnce, block_writer_fetcher<T>, slice<std::size_t>>;
+
+///////////////// Encoder /////////////////
 
 template <typename T>
 class encoder {
@@ -1422,11 +1585,24 @@ public:
     /// @param num_base_dims number of dimmensions contained in each volume_fetcher.
     encoder(slice<std::size_t> dims, std::size_t num_base_dims) = delete;
     encoder(const encoder& other) = delete;
-    encoder(encoder&& other) = default;
+
+    encoder(encoder&& other) noexcept
+        : m_enc { std::exchange(other.m_enc, nullptr) }
+    {
+    }
+
     ~encoder() = delete;
 
     encoder& operator=(const encoder& other) = delete;
-    encoder& operator=(encoder&& other) = default;
+
+    encoder& operator=(encoder&& other) noexcept
+    {
+        if (this != &other) {
+            std::swap(this->m_enc, other.m_enc);
+        }
+
+        return *this;
+    }
 
     /// Inserts a volume_fetcher into the encoder at the position `index`.
     /// The position `index` must not be populated and be in the range [dims[num_base_dims],...].
@@ -1613,7 +1789,8 @@ ENCODER_EXTERN(double, f64)
     template <>                                                                                     \
     encoder<T>::~encoder()                                                                          \
     {                                                                                               \
-        wavelet_rs_encoder_##N##_free(this->m_enc);                                                 \
+        if (this->m_enc != nullptr)                                                                 \
+            wavelet_rs_encoder_##N##_free(this->m_enc);                                             \
     }                                                                                               \
     template <>                                                                                     \
     void encoder<T>::add_fetcher(slice<std::size_t> index, volume_fetcher<T> fetcher)               \
@@ -1683,6 +1860,229 @@ ENCODER_EXTERN(double, f64)
 
 ENCODER_SPEC(float, f32)
 ENCODER_SPEC(double, f64)
+
+///////////////// Decoder /////////////////
+
+namespace dec_priv_ {
+    class decoder_;
+
+    template <typename T, typename F>
+    struct decoder_impl {
+        static constexpr bool implemented = false;
+    };
+
+    template <typename T, typename F, typename U>
+    struct decoder_metadata_impl {
+        static constexpr bool implemented = false;
+    };
+
+#define DECODER_METADATA_EXTERN_(T, F, N, M, MN)                                                               \
+    static_assert(std::is_standard_layout<M>::value, #M " must be a standard-layout type");                    \
+    static_assert(std::is_standard_layout<option<M>>::value, "option<" #M "> must be a standard-layout type"); \
+    extern "C" option<M> wavelet_rs_decoder_##N##_metadata_get_##MN(decoder_*, const char*);                   \
+    template <>                                                                                                \
+    struct decoder_metadata_impl<T, F, M> {                                                                    \
+        static constexpr bool implemented = true;                                                              \
+        static constexpr auto get_fn = wavelet_rs_decoder_##N##_metadata_get_##MN;                             \
+    };
+
+#ifdef WAVELET_RS_IMPORT_MEATADATA_ARR
+#define DECODER_METADATA_ARRAY_EXTERN(T, F, N, M, MN)         \
+    DECODER_METADATA_EXTERN_(T, F, N, array_1<M>, MN##_arr_1) \
+    DECODER_METADATA_EXTERN_(T, F, N, array_2<M>, MN##_arr_2) \
+    DECODER_METADATA_EXTERN_(T, F, N, array_3<M>, MN##_arr_3) \
+    DECODER_METADATA_EXTERN_(T, F, N, array_4<M>, MN##_arr_4)
+#else
+#define DECODER_METADATA_ARRAY_EXTERN(T, F, N, M, MN)
+#endif // WAVELET_RS_IMPORT_MEATADATA_ARR
+
+#ifdef WAVELET_RS_IMPORT_MEATADATA_SLICE
+#define DECODER_METADATA_SLICE_EXTERN(T, F, N, M, MN) \
+    DECODER_METADATA_EXTERN_(T, F, N, owned_slice<M>, MN##_slice)
+#else
+#define DECODER_METADATA_SLICE_EXTERN(T, F, N, M, MN)
+#endif // WAVELET_RS_IMPORT_MEATADATA_SLICE
+
+#define DECODER_METADATA_EXTERN(T, F, N, M, MN)   \
+    DECODER_METADATA_EXTERN_(T, F, N, M, MN)      \
+    DECODER_METADATA_ARRAY_EXTERN(T, F, N, M, MN) \
+    DECODER_METADATA_SLICE_EXTERN(T, F, N, M, MN)
+
+#define DECODER_EXTERN_(T, F, N)                                                                                                          \
+    static_assert(std::is_standard_layout<reader_fetcher<T>>::value, "reader_fetcher<" #T "> must be a standard-layout type");            \
+    static_assert(std::is_standard_layout<writer_fetcher<T>>::value, "writer_fetcher<" #T "> must be a standard-layout type");            \
+    static_assert(std::is_standard_layout<slice<range<std::size_t>>>::value, "slice<range<std::size_t>> must be a standard-layout type"); \
+    extern "C" decoder_* wavelet_rs_decoder_##N##_new(const char*);                                                                       \
+    extern "C" void wavelet_rs_decoder_##N##_free(decoder_*);                                                                             \
+    extern "C" void wavelet_rs_decoder_##N##_decode(decoder_*,                                                                            \
+        writer_fetcher<T>, slice<range<std::size_t>>, slice<std::uint32_t>);                                                              \
+    extern "C" void wavelet_rs_decoder_##N##_refine(decoder_*,                                                                            \
+        reader_fetcher<T>, writer_fetcher<T>,                                                                                             \
+        slice<range<std::size_t>>, slice<range<std::size_t>>,                                                                             \
+        slice<std::uint32_t>, slice<std::uint32_t>);                                                                                      \
+    DECODER_METADATA_EXTERN(T, F, N, std::uint8_t, u8)                                                                                    \
+    DECODER_METADATA_EXTERN(T, F, N, std::uint16_t, u16)                                                                                  \
+    DECODER_METADATA_EXTERN(T, F, N, std::uint32_t, u32)                                                                                  \
+    DECODER_METADATA_EXTERN(T, F, N, std::uint64_t, u64)                                                                                  \
+    DECODER_METADATA_EXTERN(T, F, N, std::int8_t, i8)                                                                                     \
+    DECODER_METADATA_EXTERN(T, F, N, std::int16_t, i16)                                                                                   \
+    DECODER_METADATA_EXTERN(T, F, N, std::int32_t, i32)                                                                                   \
+    DECODER_METADATA_EXTERN(T, F, N, std::int64_t, i64)                                                                                   \
+    DECODER_METADATA_EXTERN(T, F, N, float, f32)                                                                                          \
+    DECODER_METADATA_EXTERN(T, F, N, double, f64)                                                                                         \
+    DECODER_METADATA_EXTERN(T, F, N, string, string)                                                                                      \
+    template <>                                                                                                                           \
+    struct decoder_impl<T, F> {                                                                                                           \
+        static constexpr bool implemented = true;                                                                                         \
+        static constexpr auto new_fn = wavelet_rs_decoder_##N##_new;                                                                      \
+        static constexpr auto free_fn = wavelet_rs_decoder_##N##_free;                                                                    \
+        static constexpr auto decode_fn = wavelet_rs_decoder_##N##_decode;                                                                \
+        static constexpr auto refine_fn = wavelet_rs_decoder_##N##_refine;                                                                \
+    };
+
+#ifdef WAVELET_RS_IMPORT_VEC
+#define DECODER_VEC_EXTERN(T, F, N)           \
+    DECODER_EXTERN_(array_1<T>, F, vec_1_##N) \
+    DECODER_EXTERN_(array_2<T>, F, vec_2_##N) \
+    DECODER_EXTERN_(array_3<T>, F, vec_3_##N) \
+    DECODER_EXTERN_(array_4<T>, F, vec_4_##N)
+#else
+#define DECODER_VEC_EXTERN(T, F, N)
+#endif // WAVELET_RS_IMPORT_VEC
+
+#ifdef WAVELET_RS_IMPORT_MAT
+#define DECODER_MATRIX_EXTERN(T, F, N)                   \
+    DECODER_EXTERN_(array_1<array_1<T>>, F, mat_1x1_##N) \
+    DECODER_EXTERN_(array_1<array_2<T>>, F, mat_1x2_##N) \
+    DECODER_EXTERN_(array_1<array_3<T>>, F, mat_1x3_##N) \
+    DECODER_EXTERN_(array_1<array_4<T>>, F, mat_1x4_##N) \
+    DECODER_EXTERN_(array_2<array_1<T>>, F, mat_2x1_##N) \
+    DECODER_EXTERN_(array_2<array_2<T>>, F, mat_2x2_##N) \
+    DECODER_EXTERN_(array_2<array_3<T>>, F, mat_2x3_##N) \
+    DECODER_EXTERN_(array_2<array_4<T>>, F, mat_2x4_##N) \
+    DECODER_EXTERN_(array_3<array_1<T>>, F, mat_3x1_##N) \
+    DECODER_EXTERN_(array_3<array_2<T>>, F, mat_3x2_##N) \
+    DECODER_EXTERN_(array_3<array_3<T>>, F, mat_3x3_##N) \
+    DECODER_EXTERN_(array_3<array_4<T>>, F, mat_3x4_##N) \
+    DECODER_EXTERN_(array_4<array_1<T>>, F, mat_4x1_##N) \
+    DECODER_EXTERN_(array_4<array_2<T>>, F, mat_4x2_##N) \
+    DECODER_EXTERN_(array_4<array_3<T>>, F, mat_4x3_##N) \
+    DECODER_EXTERN_(array_4<array_4<T>>, F, mat_4x4_##N)
+#else
+#define DECODER_MATRIX_EXTERN(T, F, N)
+#endif // WAVELET_RS_IMPORT_MAT
+
+#define DECODER_EXTERN(T, N)                          \
+    DECODER_EXTERN_(T, HaarWavelet, N##_haar)         \
+    DECODER_EXTERN_(T, AverageFilter, N##_average)    \
+    DECODER_VEC_EXTERN(T, HaarWavelet, N##_haar)      \
+    DECODER_VEC_EXTERN(T, AverageFilter, N##_average) \
+    DECODER_MATRIX_EXTERN(T, HaarWavelet, N##_haar)   \
+    DECODER_MATRIX_EXTERN(T, AverageFilter, N##_average)
+
+    // NOLINTBEGIN(*-return-type-c-linkage)
+    DECODER_EXTERN(float, f32)
+    DECODER_EXTERN(double, f64)
+    // NOLINTEND(*-return-type-c-linkage)
+}
+
+template <typename T, typename F>
+class decoder {
+    dec_priv_::decoder_* m_dec;
+
+    using decoder_ = dec_priv_::decoder_impl<T, F>;
+    static_assert(decoder_::implemented, "decoder is not implemented for the element, filter pair");
+
+    template <typename U>
+    using decoder_meta_ = dec_priv_::decoder_metadata_impl<T, F, U>;
+
+public:
+    /// Constructs a new decoder by opening the encoded binary.
+    ///
+    /// @param path path to the encoded binary file.
+    decoder(const char* path)
+        : m_dec { decoder_::new_fn(path) }
+    {
+    }
+
+    decoder(const decoder& other) = delete;
+
+    decoder(decoder&& other) noexcept
+        : m_dec { std::exchange(other.m_dec, nullptr) }
+    {
+    }
+
+    ~decoder()
+    {
+        if (this->m_dec != nullptr) {
+            decoder_::free_fn(this->m_dec);
+            this->m_dec = nullptr;
+        }
+    }
+
+    decoder& operator=(const decoder& other) = delete;
+
+    decoder& operator=(decoder&& other) noexcept
+    {
+        if (this != &other) {
+            std::swap(this->m_dec, other.m_dec);
+        }
+
+        return *this;
+    }
+
+    /// Fetches an element from the decoder metadata.
+    ///
+    /// @tparam U type of the element.
+    /// @param key key of the mapped element.
+    /// @return metadata element.
+    template <typename U>
+    option<U> metadata_get(const char* key) const
+    {
+        static_assert(decoder_meta_<U>::implemented,
+            "metadata_get is not implemented for the element, filter, metedata triplet");
+        return decoder_meta_<U>::get_fn(key);
+    }
+
+    /// Decodes the dataset to the required detail levels.
+    ///
+    /// @param writer writer for writing into the requested output volume.
+    /// @param roi region of interest for the decoding operation.
+    /// @param levels desired detail levels.
+    void decode(writer_fetcher<T> writer,
+        slice<range<std::size_t>> roi,
+        slice<std::uint32_t> levels) const
+    {
+        decoder_::decode_fn(this->m_dec,
+            std::move(writer),
+            std::move(roi),
+            std::move(levels));
+    }
+
+    /// Refines a partially decoded dataset by the specified detail levels.
+    ///
+    /// @param reader reader for reading from a partially decoded input volume.
+    /// @param writer writer for writing into the requested output volume.
+    /// @param input_range range of the original volume contained in the input volume.
+    /// @param output_range desired range of data to write back, must be a subrange of input_range.
+    /// @param curr_levels detail levels of the input volume.
+    /// @param refinements number of refinement levels to apply.
+    void refine(reader_fetcher<T> reader,
+        writer_fetcher<T> writer,
+        slice<range<std::size_t>> input_range,
+        slice<range<std::size_t>> output_range,
+        slice<std::uint32_t> curr_levels,
+        slice<std::uint32_t> refinements) const
+    {
+        decoder_::refine_fn(this->m_dec,
+            std::move(reader),
+            std::move(writer),
+            std::move(input_range),
+            std::move(output_range),
+            std::move(curr_levels),
+            std::move(refinements));
+    }
+};
 
 }
 
