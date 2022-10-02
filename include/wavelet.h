@@ -1,19 +1,78 @@
 #ifndef WAVELET_H
 #define WAVELET_H
 
+///////////////// Compatiblity checks /////////////////
+
+/// Check that the library was compiled with the required features.
+/// Features:
+///         - WAVELET_RS_FEAT_FFI ("ffi"): export ffi api.
+///         - WAVELET_RS_FEAT_FFI_VEC ("ffi_vec"): export vector encoders and decoders.
+///         - WAVELET_RS_FEAT_FFI_MAT ("ffi_mat"): export matrix encoders and decoders.
+///         - WAVELET_RS_FEAT_FFI_MEATADATA_ARR ("ffi_metadata_arr"): export reading/writing of arrays from/to the metadata.
+///         - WAVELET_RS_FEAT_FFI_MEATADATA_SLICE ("ffi_metadata_arr"): export reading/writing of slices from/to the metadata.
+///
+/// Import options:
+///         - WAVELET_RS_IMPORT_ALL: enable all imports.
+///         - WAVELET_RS_IMPORT_VEC: import vector encoder and decoder declarations.
+///         - WAVELET_RS_IMPORT_MAT: import matrix encoder and decoder declarations.
+///         - WAVELET_RS_IMPORT_MEATADATA_ARR: import array metadata declarations.
+///         - WAVELET_RS_IMPORT_MEATADATA_SLICE: import matrix metadata declarations.
+
+#define WAVELET_RS_FEAT_FFI
+
+#ifndef WAVELET_RS_FEAT_FFI
+#error "wavelet-rs must be compiled with the 'ffi' feature"
+#endif // !WAVELET_FEAT_FFI
+
+#ifdef WAVELET_RS_IMPORT_ALL
+#define WAVELET_RS_IMPORT_VEC
+#define WAVELET_RS_IMPORT_MAT
+#define WAVELET_RS_IMPORT_MEATADATA_ARR
+#define WAVELET_RS_IMPORT_MEATADATA_SLICE
+#endif // WAVELET_RS_IMPORT_ALL
+
+#if defined WAVELET_RS_IMPORT_VEC && !defined WAVELET_RS_FEAT_FFI_VEC
+#error "wavelet-rs was not compiled with the required 'ffi_vec' feature (required because of 'WAVELET_RS_IMPORT_VEC')"
+#endif // WAVELET_RS_IMPORT_VEC && !WAVELET_RS_FEAT_FFI_VEC
+
+#if defined WAVELET_RS_IMPORT_MAT && !defined WAVELET_RS_FEAT_FFI_MAT
+#error "wavelet-rs was not compiled with the required 'ffi_mat' feature (required because of 'WAVELET_RS_IMPORT_MAT')"
+#endif // WAVELET_RS_IMPORT_MAT && !WAVELET_RS_FEAT_FFI_MAT
+
+#if defined WAVELET_RS_IMPORT_MEATADATA_ARR && !defined WAVELET_RS_FEAT_FFI_MEATADATA_ARR
+#error "wavelet-rs was not compiled with the required 'ffi_metadata_arr' feature (required because of 'WAVELET_RS_IMPORT_MEATADATA_ARR')"
+#endif // WAVELET_RS_IMPORT_MEATADATA_ARR && !WAVELET_RS_FEAT_FFI_MEATADATA_ARR
+
+#if defined WAVELET_RS_IMPORT_MEATADATA_SLICE && !defined WAVELET_RS_FEAT_FFI_MEATADATA_SLICE
+#error "wavelet-rs was not compiled with the required 'ffi_metadata_arr' feature (required because of 'WAVELET_RS_IMPORT_MEATADATA_SLICE')"
+#endif // WAVELET_RS_IMPORT_MEATADATA_SLICE && !WAVELET_RS_FEAT_FFI_MEATADATA_SLICE
+
+///////////////// FFI API mapping /////////////////
+
 #include <algorithm>
 #include <array>
+#include <cassert>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
 
+static_assert(sizeof(float) * CHAR_BIT == 32, "float must have a width of 32 bits");
+static_assert(sizeof(double) * CHAR_BIT == 64, "double must have a width of 64 bits");
+static_assert(std::numeric_limits<float>::is_iec559, "float must be a IEEE 754 floating point type");
+static_assert(std::numeric_limits<double>::is_iec559, "double must be a IEEE 754 floating point type");
+
 namespace wavelet {
 
+/// Constant view over a borrowed contiguous memory region.
+///
+/// @tparam T Element type.
 template <typename T>
 class slice {
     // Invariant: m_ptr is invalid or m_len > 0.
@@ -72,6 +131,93 @@ public:
 
     slice& operator=(const slice& other) = default;
     slice& operator=(slice&& other) = default;
+
+    /// Checks that the elements of the two slices are equal.
+    /// Is equivalent to calling std::equal with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the two slices are equal, `false` otherwise.
+    template <typename U>
+    bool operator==(const slice<U>& other) const
+    {
+        return std::equal(this->begin(), this->end(), other.begin());
+    }
+
+    /// Checks that the elements of the two slices are equal.
+    /// Is equivalent to negating the call to std::equal with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the two slices are not equal, `false` otherwise.
+    template <typename U>
+    bool operator!=(const slice<U>& other) const
+    {
+        return !(*this == other);
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the contents of this are lexicographically less than
+    /// the contents of other, `false` otherwise.
+    template <typename U>
+    bool operator<(const slice<U>& other) const
+    {
+        return std::lexicographical_compare(
+            this->begin(), this->end(),
+            other.begin(), other.end());
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the contents of this are lexicographically less than
+    /// or equal to the contents of other, `false` otherwise.
+    template <typename U>
+    bool operator<=(const slice<U>& other) const
+    {
+        return std::lexicographical_compare(
+            this->begin(), this->end(),
+            other.begin(), other.end(),
+            [](const T& lhs, const T& rhs) { return lhs <= rhs; });
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the contents of this are lexicographically greater than
+    /// the contents of other, `false` otherwise.
+    template <typename U>
+    bool operator>(const slice<U>& other) const
+    {
+        return std::lexicographical_compare(
+            this->begin(), this->end(),
+            other.begin(), other.end(),
+            [](const T& lhs, const T& rhs) { return lhs > rhs; });
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the contents of this are lexicographically greater than
+    /// or equal to the contents of other, `false` otherwise.
+    template <typename U>
+    bool operator>=(const slice<U>& other) const
+    {
+        return std::lexicographical_compare(
+            this->begin(), this->end(),
+            other.begin(), other.end(),
+            [](const T& lhs, const T& rhs) { return lhs >= rhs; });
+    }
 
     /// Returns a reference to the element at specified location pos, with bounds checking.
     /// If pos is not within the range of the container, an exception of type std::out_of_range
@@ -160,7 +306,7 @@ public:
     /// @return Reverse iterator to the first element.
     const_reverse_iterator rbegin() const noexcept
     {
-        return std::reverse_iterator { this->end() };
+        return const_reverse_iterator { this->end() };
     }
 
     /// Returns a reverse iterator to the first element of the reversed array.
@@ -170,7 +316,7 @@ public:
     /// @return Reverse iterator to the first element.
     const_reverse_iterator crbegin() const noexcept
     {
-        return std::reverse_iterator { this->cend() };
+        return const_reverse_iterator { this->cend() };
     }
 
     /// Returns a reverse iterator to the element following the last element of the reversed array.
@@ -179,7 +325,7 @@ public:
     /// @return Reverse iterator to the element following the last element.
     const_reverse_iterator rend() const noexcept
     {
-        return std::reverse_iterator { this->begin() };
+        return const_reverse_iterator { this->begin() };
     }
 
     /// Returns a reverse iterator to the element following the last element of the reversed array.
@@ -188,7 +334,7 @@ public:
     /// @return Reverse iterator to the element following the last element.
     const_reverse_iterator crend() const noexcept
     {
-        return std::reverse_iterator { this->cbegin() };
+        return const_reverse_iterator { this->cbegin() };
     }
 
     /// Checks if the container has no elements, i.e. whether `begin() == end()`.
@@ -208,6 +354,9 @@ public:
     }
 };
 
+/// Owned view over a sontiguous memory region.
+///
+/// @tparam T Element type.
 template <typename T>
 class owned_slice {
     // Invariant: m_ptr is invalid or m_len > 0.
@@ -229,8 +378,12 @@ public:
 
     // Delete constructors/destructors which (de)allocate, as
     // we have no general way of implementing it.
+
+    /// Constructs a new slice by copying all elements of the provided slice.
+    ///
+    /// @param value slice to be copied into the new slice.
     explicit owned_slice(slice<T> s) = delete;
-    explicit ~owned_slice() = delete;
+    ~owned_slice() = delete;
 
     /// Constructs a new empty slice.
     explicit owned_slice()
@@ -281,6 +434,93 @@ public:
     owned_slice& operator=(const owned_slice& rhs) = default;
     owned_slice& operator=(owned_slice&& rhs) = default;
 
+    /// Checks that the elements of the two slices are equal.
+    /// Is equivalent to calling std::equal with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the two slices are equal, `false` otherwise.
+    template <typename U>
+    bool operator==(const owned_slice<U>& other) const
+    {
+        return std::equal(this->begin(), this->end(), other.begin());
+    }
+
+    /// Checks that the elements of the two slices are equal.
+    /// Is equivalent to negating the call to std::equal with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the two slices are not equal, `false` otherwise.
+    template <typename U>
+    bool operator!=(const owned_slice<U>& other) const
+    {
+        return !(*this == other);
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the contents of this are lexicographically less than
+    /// the contents of other, `false` otherwise.
+    template <typename U>
+    bool operator<(const owned_slice<U>& other) const
+    {
+        return std::lexicographical_compare(
+            this->begin(), this->end(),
+            other.begin(), other.end());
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the contents of this are lexicographically less than
+    /// or equal to the contents of other, `false` otherwise.
+    template <typename U>
+    bool operator<=(const owned_slice<U>& other) const
+    {
+        return std::lexicographical_compare(
+            this->begin(), this->end(),
+            other.begin(), other.end(),
+            [](const T& lhs, const T& rhs) { return lhs <= rhs; });
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the contents of this are lexicographically greater than
+    /// the contents of other, `false` otherwise.
+    template <typename U>
+    bool operator>(const owned_slice<U>& other) const
+    {
+        return std::lexicographical_compare(
+            this->begin(), this->end(),
+            other.begin(), other.end(),
+            [](const T& lhs, const T& rhs) { return lhs > rhs; });
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the contents of this are lexicographically greater than
+    /// or equal to the contents of other, `false` otherwise.
+    template <typename U>
+    bool operator>=(const owned_slice<U>& other) const
+    {
+        return std::lexicographical_compare(
+            this->begin(), this->end(),
+            other.begin(), other.end(),
+            [](const T& lhs, const T& rhs) { return lhs >= rhs; });
+    }
+
     /// Returns a reference to the element at specified location pos, with bounds checking.
     /// If pos is not within the range of the container, an exception of type std::out_of_range
     /// is thrown.
@@ -291,7 +531,7 @@ public:
     {
         if (pos >= this->m_len)
             throw std::out_of_range("slice access out of range");
-        return this[pos];
+        return (*this)[pos];
     }
 
     /// Returns a reference to the element at specified location pos, with bounds checking.
@@ -304,7 +544,7 @@ public:
     {
         if (pos >= this->m_len)
             throw std::out_of_range("slice access out of range");
-        return this[pos];
+        return (*this)[pos];
     }
 
     /// Returns a reference to the element at specified location pos.
@@ -430,7 +670,7 @@ public:
     /// @return Reverse iterator to the first element.
     reverse_iterator rbegin() noexcept
     {
-        return std::reverse_iterator { this->end() };
+        return reverse_iterator { this->end() };
     }
 
     /// Returns a reverse iterator to the first element of the reversed array.
@@ -440,7 +680,7 @@ public:
     /// @return Reverse iterator to the first element.
     const_reverse_iterator rbegin() const noexcept
     {
-        return std::reverse_iterator { this->end() };
+        return const_reverse_iterator { this->end() };
     }
 
     /// Returns a reverse iterator to the first element of the reversed array.
@@ -450,7 +690,7 @@ public:
     /// @return Reverse iterator to the first element.
     const_reverse_iterator crbegin() const noexcept
     {
-        return std::reverse_iterator { this->cend() };
+        return const_reverse_iterator { this->cend() };
     }
 
     /// Returns a reverse iterator to the element following the last element of the reversed array.
@@ -459,7 +699,7 @@ public:
     /// @return Reverse iterator to the element following the last element.
     reverse_iterator rend() noexcept
     {
-        return std::reverse_iterator { this->begin() };
+        return reverse_iterator { this->begin() };
     }
 
     /// Returns a reverse iterator to the element following the last element of the reversed array.
@@ -468,7 +708,7 @@ public:
     /// @return Reverse iterator to the element following the last element.
     const_reverse_iterator rend() const noexcept
     {
-        return std::reverse_iterator { this->begin() };
+        return const_reverse_iterator { this->begin() };
     }
 
     /// Returns a reverse iterator to the element following the last element of the reversed array.
@@ -477,7 +717,7 @@ public:
     /// @return Reverse iterator to the element following the last element.
     const_reverse_iterator crend() const noexcept
     {
-        return std::reverse_iterator { this->cbegin() };
+        return const_reverse_iterator { this->cbegin() };
     }
 
     /// Checks if the container has no elements, i.e. whether `begin() == end()`.
@@ -505,11 +745,20 @@ public:
     }
 };
 
-#define OWNED_SLICE_EXTERN(T, N)                         \
-    owned_slice<T> wavelet_rs_slice_##N##_new(slice<T>); \
+#define OWNED_SLICE_EXTERN(T, N)                                                                                         \
+    static_assert(std::is_standard_layout<slice<T>>::value, "slice<" #T "> must be a standard-layout type");             \
+    static_assert(std::is_standard_layout<owned_slice<T>>::value, "owned_slice<" #T "> must be a standard-layout type"); \
+    owned_slice<T> wavelet_rs_slice_##N##_new(slice<T>);                                                                 \
     void wavelet_rs_slice_##N##_free(owned_slice<T>);
 
 #define OWNED_SLICE_SPEC(T, N)                                 \
+    template <>                                                \
+    owned_slice<T>::~owned_slice()                             \
+    {                                                          \
+        if (this->m_ptr != reinterpret_cast<T*>(alignof(T))) { \
+            wavelet_rs_slice_##N##_free(std::move(*this));     \
+        }                                                      \
+    }                                                          \
     template <>                                                \
     owned_slice<T>::owned_slice(slice<T> s)                    \
         : m_ptr { reinterpret_cast<T*>(alignof(T)) }           \
@@ -517,17 +766,10 @@ public:
     {                                                          \
         auto tmp { wavelet_rs_slice_##N##_new(s) };            \
         std::swap(*this, tmp);                                 \
-    }                                                          \
-    template <>                                                \
-    owned_slice<T>::~owned_slice()                             \
-    {                                                          \
-        if (this->m_ptr != reinterpret_cast<T*>(alignof(T))) { \
-            wavelet_rs_slice_##N##_free(std::move(*this));     \
-        }                                                      \
     }
 
 extern "C" {
-OWNED_SLICE_EXTERN(bool, bool)
+// NOLINTBEGIN(*-return-type-c-linkage)
 OWNED_SLICE_EXTERN(char, c_char)
 OWNED_SLICE_EXTERN(std::uint8_t, u8)
 OWNED_SLICE_EXTERN(std::uint16_t, u16)
@@ -539,9 +781,9 @@ OWNED_SLICE_EXTERN(std::int32_t, i32)
 OWNED_SLICE_EXTERN(std::int64_t, i64)
 OWNED_SLICE_EXTERN(float, f32)
 OWNED_SLICE_EXTERN(double, f64)
+// NOLINTEND(*-return-type-c-linkage)
 }
 
-OWNED_SLICE_SPEC(bool, bool)
 OWNED_SLICE_SPEC(char, c_char)
 OWNED_SLICE_SPEC(std::uint8_t, u8)
 OWNED_SLICE_SPEC(std::uint16_t, u16)
@@ -554,6 +796,7 @@ OWNED_SLICE_SPEC(std::int64_t, i64)
 OWNED_SLICE_SPEC(float, f32)
 OWNED_SLICE_SPEC(double, f64)
 
+/// Owned string type.
 class string {
     owned_slice<char> m_buff;
 
@@ -587,6 +830,70 @@ public:
 
     string& operator=(const string& rhs) = default;
     string& operator=(string&& rhs) = default;
+
+    /// Checks that the elements of the two strings are equal.
+    /// Is equivalent to calling std::equal with the two strings.
+    ///
+    /// @param other other string.
+    /// @return `true` if the two strings are equal, `false` otherwise.
+    bool operator==(const string& other) const
+    {
+        return this->m_buff == other.m_buff;
+    }
+
+    /// Checks that the elements of the two strings are equal.
+    /// Is equivalent to negating the call to std::equal with the two strings.
+    ///
+    /// @param other other string.
+    /// @return `true` if the two strings are not equal, `false` otherwise.
+    bool operator!=(const string& other) const
+    {
+        return this->m_buff != other.m_buff;
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two strings.
+    ///
+    /// @param other other string.
+    /// @return `true` if the contents of this are lexicographically less than
+    /// the contents of other, `false` otherwise.
+    bool operator<(const string& other) const
+    {
+        return this->m_buff < other.m_buff;
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two strings.
+    ///
+    /// @param other other string.
+    /// @return `true` if the contents of this are lexicographically less than
+    /// or equal to the contents of other, `false` otherwise.
+    bool operator<=(const string& other) const
+    {
+        return this->m_buff <= other.m_buff;
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two strings.
+    ///
+    /// @param other other string.
+    /// @return `true` if the contents of this are lexicographically greater than
+    /// the contents of other, `false` otherwise.
+    bool operator>(const string& other) const
+    {
+        return this->m_buff > other.m_buff;
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two strings.
+    ///
+    /// @param other other string.
+    /// @return `true` if the contents of this are lexicographically greater than
+    /// or equal to the contents of other, `false` otherwise.
+    bool operator>=(const string& other) const
+    {
+        return this->m_buff >= other.m_buff;
+    }
 
     /// Returns a reference to the element at specified location pos, with bounds checking.
     /// If pos is not within the range of the container, an exception of type std::out_of_range
@@ -803,12 +1110,15 @@ public:
 template <typename T>
 class option {
     std::int8_t m_tag;
-    union {
+    union option_impl {
         T some;
+
+        option_impl() noexcept { }
+        ~option_impl() noexcept { }
     } m_data;
 
-    constexpr std::int8_t NONE_TAG = 1;
-    constexpr std::int8_t SOME_TAG = 1;
+    static constexpr std::int8_t NONE_TAG = 1;
+    static constexpr std::int8_t SOME_TAG = 1;
 
 public:
     typedef T value_type;
@@ -822,20 +1132,29 @@ public:
     /// Constructs an option with a value.
     ///
     /// @param value value to be contained in the option.
-    option(T value) noexcept(std::is_nothrow_move_constructible<T>::value)
+    option(T value) noexcept(
+        std::is_nothrow_move_constructible<T>::value)
         : m_tag { SOME_TAG }
     {
         new (&(this->m_data.some)) T { std::move(value) };
     }
 
-    option(const option& other) noexcept(std::is_nothrow_copy_constructible<T>::value)
+    /// Copy constructor.
+    ///
+    /// @param other other option.
+    option(const option& other) noexcept(
+        std::is_nothrow_copy_constructible<T>::value)
         : m_tag { other.m_tag }
+        , m_data {}
     {
         if (other.has_value()) {
             new (&(this->m_data.some)) T { *other };
         }
     }
 
+    /// Move constructor.
+    ///
+    /// @param other other option.
     option(option&& other) noexcept = default;
 
     ~option() noexcept(std::is_nothrow_destructible<T>::value)
@@ -845,7 +1164,13 @@ public:
         }
     }
 
-    option& operator=(const option& other) noexcept(std::is_nothrow_destructible<T>::value&& std::is_nothrow_copy_assignable<T>::value&& std::is_nothrow_copy_constructible<T>::value)
+    /// Copy assignment.
+    ///
+    /// @param other other option.
+    option& operator=(const option& other) noexcept(
+        std::is_nothrow_destructible<T>::value&&
+            std::is_nothrow_copy_assignable<T>::value&&
+                std::is_nothrow_copy_constructible<T>::value)
     {
         if (this != &other) {
             if (this->has_value()) {
@@ -866,7 +1191,12 @@ public:
         return *this;
     }
 
-    option& operator=(option&& other) noexcept(std::is_nothrow_destructible<T>::value&& std::is_nothrow_move_assignable<T>::value)
+    /// Move assignment.
+    ///
+    /// @param other other option.
+    option& operator=(option&& other) noexcept(
+        std::is_nothrow_destructible<T>::value&&
+            std::is_nothrow_move_assignable<T>::value)
     {
         if (this != &other) {
             if (this->has_value()) {
@@ -893,15 +1223,16 @@ public:
     /// @return pointer to the contained element.
     T* operator->() noexcept
     {
-        &this->m_data.some
+        return &this->m_data.some;
     }
 
     /// Returns a pointer to the contained value.
     /// Dereferencing the pointer of an empty option results in undefined behaviour.
     ///
     /// @return pointer to the contained element.
-    const T* operator->() const noexcept {
-        &this->m_data.some
+    const T* operator->() const noexcept
+    {
+        return &this->m_data.some;
     }
 
     /// Returns a reference to the contained value.
@@ -911,15 +1242,16 @@ public:
     T&
     operator*() & noexcept
     {
-        this->m_data.some
+        return this->m_data.some;
     }
 
     /// Returns a reference to the contained value.
     /// Accessing the element of an empty option results in undefined behaviour.
     ///
     /// @return reference to the contained element.
-    const T& operator*() const& noexcept {
-        this->m_data.some
+    const T& operator*() const& noexcept
+    {
+        return this->m_data.some;
     }
 
     /// Returns a reference to the contained value.
@@ -929,7 +1261,7 @@ public:
     T&&
     operator*() && noexcept
     {
-        std::move(this->m_data.some)
+        return std::move(this->m_data.some);
     }
 
     /// Returns a reference to the contained value.
@@ -938,7 +1270,7 @@ public:
     /// @return reference to the contained element.
     const T&& operator*() const&& noexcept
     {
-        std::move(this->m_data.some)
+        return std::move(this->m_data.some);
     }
 
     /// Returns whether the option contains a value
@@ -963,7 +1295,7 @@ public:
     T& value() & noexcept
     {
         assert(this->has_value());
-        this->m_data.some
+        return this->m_data.some;
     }
 
     /// Returns a reference to the contained value.
@@ -972,7 +1304,7 @@ public:
     const T& value() const& noexcept
     {
         assert(this->has_value());
-        this->m_data.some
+        return this->m_data.some;
     }
 
     /// Returns a reference to the contained value.
@@ -981,7 +1313,7 @@ public:
     T&& value() && noexcept
     {
         assert(this->has_value());
-        std::move(this->m_data.some)
+        return std::move(this->m_data.some);
     }
 
     /// Returns a reference to the contained value.
@@ -990,7 +1322,7 @@ public:
     const T&& value() const&& noexcept
     {
         assert(this->has_value());
-        std::move(this->m_data.some)
+        return std::move(this->m_data.some);
     }
 };
 
@@ -1010,10 +1342,19 @@ class volume_fetcher {
     CallT m_call;
 
     static void empty_drop(CtxT) { }
-    static void empty_call(CtxT, slice<std::size_t>) { }
+    [[noreturn]] static T empty_call(CtxT, slice<std::size_t>) { assert(false); }
+    static T fn_ptr_call(CtxT ctx, slice<std::size_t> index) { return ctx.func(index); }
 
 public:
+    explicit volume_fetcher(T (*f)(slice<std::size_t>)) noexcept
+        : m_ctx { f }
+        , m_drop { empty_drop }
+        , m_call { fn_ptr_call }
+    {
+    }
+
     /// Constructs a new volume fetcher using the provided callable.
+    /// The provided callable must be thread-safe and be invocable multiple times.
     ///
     /// @tparam F Type of the callable.
     /// @param f instance of the callable.
@@ -1023,28 +1364,18 @@ public:
         , m_drop { nullptr }
         , m_call { nullptr }
     {
-        constexpr bool is_fn_ptr = std::is_pointer<F>::value && std::is_function<typename std::remove_pointer<F>::type>::value;
+        using F_ = typename std::remove_reference<typename std::remove_cv<F>::type>::type;
 
-        if constexpr (is_fn_ptr) {
-            this->m_ctx.func = std::forward<F>(f);
-            this->m_drop = empty_drop;
-            this->m_call = +[](CtxT ctx, slice<std::size_t> index) -> T {
-                return ctx.func(index);
-            };
-        } else {
-            using F_ = typename std::remove_reference<typename std::remove_cv<F>::type>::type;
-
-            std::unique_ptr<F_> ptr { std::forward<F>(f) };
-            this->m_ctx.opaque = static_cast<void*>(ptr.release());
-            this->m_drop = +[](CtxT ctx) {
-                F_* ptr = static_cast<F_*>(ptr.opaque);
-                delete ptr;
-            };
-            this->m_call = +[](CtxT ctx, slice<std::size_t> index) -> T {
-                const F_* ptr = static_cast<const F_*>(ptr.opaque);
-                return ptr(index);
-            }
-        }
+        std::unique_ptr<F_> ptr { std::forward<F>(f) };
+        this->m_ctx.opaque = static_cast<void*>(ptr.release());
+        this->m_drop = +[](CtxT ctx) {
+            F_* ptr = static_cast<F_*>(ctx.opaque);
+            delete ptr;
+        };
+        this->m_call = +[](CtxT ctx, slice<std::size_t> index) -> T {
+            const F_* ptr = static_cast<const F_*>(ctx.opaque);
+            return ptr(index);
+        };
     }
 
     volume_fetcher(const volume_fetcher& other) = delete;
@@ -1066,6 +1397,10 @@ public:
     volume_fetcher& operator=(const volume_fetcher& rhs) = delete;
     volume_fetcher& operator=(volume_fetcher&& rhs) = delete;
 
+    /// Invokes the callable and returns the element at the position `index`.
+    ///
+    /// @param index position of the element in the volume.
+    /// @return element at the position `index`.
     T operator()(slice<std::size_t> index) const
     {
         return this->m_call(this->m_ctx, index);
@@ -1081,6 +1416,10 @@ private:
     encoder_impl* m_enc;
 
 public:
+    /// Constructs a new encoder spanning a volume with dimmensions `dims`.
+    ///
+    /// @param dims dimmensions of the volume to be encoded.
+    /// @param num_base_dims number of dimmensions contained in each volume_fetcher.
     encoder(slice<std::size_t> dims, std::size_t num_base_dims) = delete;
     encoder(const encoder& other) = delete;
     encoder(encoder&& other) = default;
@@ -1089,14 +1428,38 @@ public:
     encoder& operator=(const encoder& other) = delete;
     encoder& operator=(encoder&& other) = default;
 
+    /// Inserts a volume_fetcher into the encoder at the position `index`.
+    /// The position `index` must not be populated and be in the range [dims[num_base_dims],...].
+    ///
+    /// @param index position of the fetcher in the volume.
+    /// @param fetcher fetcher to be inserted.
     void add_fetcher(slice<std::size_t> index, volume_fetcher<T> fetcher) = delete;
 
+    /// Encodes the volume using the inserted fetchers and the specified filter.
+    /// The output will be written into the `output` directory. The caller must
+    /// ensure that `output` exists and is a writable directory. The selected
+    /// block size must tile the input volume exactly.
+    ///
+    /// @tparam Filter filter to use for the encoding.
+    /// @param output output directory.
+    /// @param block_size selected block size.
     template <typename Filter>
     void encode(const char* output, slice<std::size_t> block_size) const = delete;
 
+    /// Fetches an element from the encoder metadata.
+    ///
+    /// @tparam U type of the element.
+    /// @param key key of the mapped element.
+    /// @return metadata element.
     template <typename U>
     option<U> metadata_get(const char* key) const = delete;
 
+    /// Inserts an element into the encoder metadata.
+    ///
+    /// @tparam U type of the element.
+    /// @param key key where the element will be mapped to.
+    /// @param value element to insert into the metadata.
+    /// @return `true` if an old value was overwritten, `false` otherwise.
     template <typename U>
     bool metadata_insert(const char* key, U value) = delete;
 };
@@ -1113,7 +1476,13 @@ using array_3 = std::array<T, 3>;
 template <typename T>
 using array_4 = std::array<T, 4>;
 
-#ifdef ENABLE_METADATA_ARRAY
+#define ENCODER_METADATA_EXTERN_(T, N, M, MN)                                                                  \
+    static_assert(std::is_standard_layout<M>::value, #M " must be a standard-layout type");                    \
+    static_assert(std::is_standard_layout<option<M>>::value, "option<" #M "> must be a standard-layout type"); \
+    option<M> wavelet_rs_encoder_##N##_metadata_get_##MN(encoder<T>::encoder_impl*, const char*);              \
+    std::uint8_t wavelet_rs_encoder_##N##_metadata_insert_##MN(encoder<T>::encoder_impl*, const char*, M);
+
+#ifdef WAVELET_RS_IMPORT_MEATADATA_ARR
 #define ENCODER_METADATA_ARRAY_EXTERN(T, N, M, MN)         \
     ENCODER_METADATA_EXTERN_(T, N, array_1<M>, MN##_arr_1) \
     ENCODER_METADATA_EXTERN_(T, N, array_2<M>, MN##_arr_2) \
@@ -1121,44 +1490,41 @@ using array_4 = std::array<T, 4>;
     ENCODER_METADATA_EXTERN_(T, N, array_4<M>, MN##_arr_4)
 #else
 #define ENCODER_METADATA_ARRAY_EXTERN(T, N, M, MN)
-#endif // IMPORT_VEC_EXTERN
+#endif // WAVELET_RS_IMPORT_MEATADATA_ARR
 
-#ifdef ENABLE_METADATA_SLICE
+#ifdef WAVELET_RS_IMPORT_MEATADATA_SLICE
 #define ENCODER_METADATA_SLICE_EXTERN(T, N, M, MN) \
     ENCODER_METADATA_EXTERN_(T, N, owned_slice<M>, MN##_slice)
 #else
 #define ENCODER_METADATA_SLICE_EXTERN(T, N, M, MN)
-#endif // IMPORT_VEC_EXTERN
+#endif // WAVELET_RS_IMPORT_MEATADATA_SLICE
 
 #define ENCODER_METADATA_EXTERN(T, N, M, MN)   \
     ENCODER_METADATA_EXTERN_(T, N, M, MN)      \
     ENCODER_METADATA_ARRAY_EXTERN(T, N, M, MN) \
     ENCODER_METADATA_SLICE_EXTERN(T, N, M, MN)
 
-#define ENCODER_METADATA_EXTERN_(T, N, M, MN)                                                     \
-    option<M> wavelet_rs_encoder_##N##_metadata_get_##MN(encoder<T>::encoder_impl*, const char*); \
-    bool wavelet_rs_encoder_##N##_metadata_insert_##MN(encoder<T>::encoder_impl*, const char*, M);
-
-#define ENCODER_EXTERN_(T, N)                                                                                       \
-    encoder<T>::encoder_impl* wavelet_rs_encoder_##N##_new(slice<std::size_t>, std::size_t);                        \
-    void wavelet_rs_encoder_##N##_free(encoder<T>::encoder_impl*);                                                  \
-    void wavelet_rs_encoder_##N##_add_fetcher(encoder<T>::encoder_impl*, slice<std::size_t>, volume_fetcher<T>);    \
-    void wavelet_rs_encoder_##N##_encode_haar(const encoder<T>::encoder_impl*, const char*, slice<std::size_t>);    \
-    void wavelet_rs_encoder_##N##_encode_average(const encoder<T>::encoder_impl*, const char*, slice<std::size_t>); \
-    ENCODER_METADATA_EXTERN(T, N, bool, bool)                                                                       \
-    ENCODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                                                                 \
-    ENCODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                                                               \
-    ENCODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                                                               \
-    ENCODER_METADATA_EXTERN(T, N, std::uint64_t, u64)                                                               \
-    ENCODER_METADATA_EXTERN(T, N, std::int8_t, i8)                                                                  \
-    ENCODER_METADATA_EXTERN(T, N, std::int16_t, i16)                                                                \
-    ENCODER_METADATA_EXTERN(T, N, std::int32_t, i32)                                                                \
-    ENCODER_METADATA_EXTERN(T, N, std::int64_t, i64)                                                                \
-    ENCODER_METADATA_EXTERN(T, N, float, f32)                                                                       \
-    ENCODER_METADATA_EXTERN(T, N, double, f64)                                                                      \
+#define ENCODER_EXTERN_(T, N)                                                                                                  \
+    static_assert(std::is_standard_layout<slice<std::size_t>>::value, "slice<std::size_t> must be a standard-layout type");    \
+    static_assert(std::is_standard_layout<volume_fetcher<T>>::value, "volume_fetcher<" #T "> must be a standard-layout type"); \
+    encoder<T>::encoder_impl* wavelet_rs_encoder_##N##_new(slice<std::size_t>, std::size_t);                                   \
+    void wavelet_rs_encoder_##N##_free(encoder<T>::encoder_impl*);                                                             \
+    void wavelet_rs_encoder_##N##_add_fetcher(encoder<T>::encoder_impl*, slice<std::size_t>, volume_fetcher<T>);               \
+    void wavelet_rs_encoder_##N##_encode_haar(const encoder<T>::encoder_impl*, const char*, slice<std::size_t>);               \
+    void wavelet_rs_encoder_##N##_encode_average(const encoder<T>::encoder_impl*, const char*, slice<std::size_t>);            \
+    ENCODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                                                                            \
+    ENCODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                                                                          \
+    ENCODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                                                                          \
+    ENCODER_METADATA_EXTERN(T, N, std::uint64_t, u64)                                                                          \
+    ENCODER_METADATA_EXTERN(T, N, std::int8_t, i8)                                                                             \
+    ENCODER_METADATA_EXTERN(T, N, std::int16_t, i16)                                                                           \
+    ENCODER_METADATA_EXTERN(T, N, std::int32_t, i32)                                                                           \
+    ENCODER_METADATA_EXTERN(T, N, std::int64_t, i64)                                                                           \
+    ENCODER_METADATA_EXTERN(T, N, float, f32)                                                                                  \
+    ENCODER_METADATA_EXTERN(T, N, double, f64)                                                                                 \
     ENCODER_METADATA_EXTERN_(T, N, string, string)
 
-#ifdef IMPORT_VEC_EXTERN
+#ifdef WAVELET_RS_IMPORT_VEC
 #define ENCODER_VEC_EXTERN(T, N)           \
     ENCODER_EXTERN_(array_1<T>, vec_1_##N) \
     ENCODER_EXTERN_(array_2<T>, vec_2_##N) \
@@ -1166,9 +1532,9 @@ using array_4 = std::array<T, 4>;
     ENCODER_EXTERN_(array_4<T>, vec_4_##N)
 #else
 #define ENCODER_VEC_EXTERN(T, N)
-#endif // IMPORT_VEC_EXTERN
+#endif // WAVELET_RS_IMPORT_VEC
 
-#ifdef IMPORT_MATRIX_EXTERN
+#ifdef WAVELET_RS_IMPORT_MAT
 #define ENCODER_MATRIX_EXTERN(T, N)                   \
     ENCODER_EXTERN_(array_1<array_1<T>>, mat_1x1_##N) \
     ENCODER_EXTERN_(array_1<array_2<T>>, mat_1x2_##N) \
@@ -1188,7 +1554,7 @@ using array_4 = std::array<T, 4>;
     ENCODER_EXTERN_(array_4<array_4<T>>, mat_4x4_##N)
 #else
 #define ENCODER_MATRIX_EXTERN(T, N)
-#endif // IMPORT_MATRIX_EXTERN
+#endif // WAVELET_RS_IMPORT_MAT
 
 #define ENCODER_EXTERN(T, N) \
     ENCODER_EXTERN_(T, N)    \
@@ -1196,8 +1562,10 @@ using array_4 = std::array<T, 4>;
     ENCODER_MATRIX_EXTERN(T, N)
 
 extern "C" {
+// NOLINTBEGIN(*-return-type-c-linkage)
 ENCODER_EXTERN(float, f32)
 ENCODER_EXTERN(double, f64)
+// NOLINTEND(*-return-type-c-linkage)
 }
 
 #define ENCODER_METADATA_SPEC_(T, N, M, MN)                                                       \
@@ -1214,7 +1582,7 @@ ENCODER_EXTERN(double, f64)
         return wavelet_rs_encoder_##N##_metadata_insert_##MN(this->m_enc, key, std::move(value)); \
     }
 
-#ifdef ENABLE_METADATA_ARRAY
+#ifdef WAVELET_RS_IMPORT_MEATADATA_ARR
 #define ENCODER_METADATA_ARRAY_SPEC(T, N, M, MN)         \
     ENCODER_METADATA_SPEC_(T, N, array_1<M>, MN##_arr_1) \
     ENCODER_METADATA_SPEC_(T, N, array_2<M>, MN##_arr_2) \
@@ -1222,14 +1590,14 @@ ENCODER_EXTERN(double, f64)
     ENCODER_METADATA_SPEC_(T, N, array_4<M>, MN##_arr_4)
 #else
 #define ENCODER_METADATA_ARRAY_SPEC(T, N, M, MN)
-#endif // IMPORT_VEC_EXTERN
+#endif // WAVELET_RS_IMPORT_MEATADATA_ARR
 
-#ifdef ENABLE_METADATA_SLICE
+#ifdef WAVELET_RS_IMPORT_MEATADATA_SLICE
 #define ENCODER_METADATA_SLICE_SPEC(T, N, M, MN) \
     ENCODER_METADATA_SPEC_(T, N, owned_slice<M>, MN##_slice)
 #else
 #define ENCODER_METADATA_SLICE_SPEC(T, N, M, MN)
-#endif // IMPORT_VEC_EXTERN
+#endif // WAVELET_RS_IMPORT_MEATADATA_SLICE
 
 #define ENCODER_METADATA_SPEC(T, N, M, MN)   \
     ENCODER_METADATA_SPEC_(T, N, M, MN)      \
@@ -1264,7 +1632,6 @@ ENCODER_EXTERN(double, f64)
     {                                                                                               \
         wavelet_rs_encoder_##N##_encode_average(this->m_enc, output, std::move(block_size));        \
     }                                                                                               \
-    ENCODER_METADATA_SPEC(T, N, bool, bool)                                                         \
     ENCODER_METADATA_SPEC(T, N, std::uint8_t, u8)                                                   \
     ENCODER_METADATA_SPEC(T, N, std::uint16_t, u16)                                                 \
     ENCODER_METADATA_SPEC(T, N, std::uint32_t, u32)                                                 \
@@ -1277,7 +1644,7 @@ ENCODER_EXTERN(double, f64)
     ENCODER_METADATA_SPEC(T, N, double, f64)                                                        \
     ENCODER_METADATA_SPEC_(T, N, string, string)
 
-#ifdef IMPORT_VEC_EXTERN
+#ifdef WAVELET_RS_IMPORT_VEC
 #define ENCODER_VEC_SPEC_(T, N)          \
     ENCODER_SPEC_(array_1<T>, vec_1_##N) \
     ENCODER_SPEC_(array_2<T>, vec_2_##N) \
@@ -1285,9 +1652,9 @@ ENCODER_EXTERN(double, f64)
     ENCODER_SPEC_(array_4<T>, vec_4_##N)
 #else
 #define ENCODER_VEC_SPEC_(T, N)
-#endif // IMPORT_VEC_EXTERN
+#endif // WAVELET_RS_IMPORT_VEC
 
-#ifdef IMPORT_MATRIX_EXTERN
+#ifdef WAVELET_RS_IMPORT_MAT
 #define ENCODER_MATRIX_SPEC_(T, N)                  \
     ENCODER_SPEC_(array_1<array_1<T>>, mat_1x1_##N) \
     ENCODER_SPEC_(array_1<array_2<T>>, mat_1x2_##N) \
@@ -1307,7 +1674,7 @@ ENCODER_EXTERN(double, f64)
     ENCODER_SPEC_(array_4<array_4<T>>, mat_4x4_##N)
 #else
 #define ENCODER_MATRIX_SPEC_(T, N)
-#endif // IMPORT_MATRIX_EXTERN
+#endif // WAVELET_RS_IMPORT_MAT
 
 #define ENCODER_SPEC(T, N)  \
     ENCODER_SPEC_(T, N)     \

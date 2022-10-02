@@ -8,9 +8,11 @@
 #![feature(slice_ptr_get)]
 #![feature(int_log)]
 
+#[cfg(feature = "ffi")]
+pub mod ffi;
+
 pub mod decoder;
 pub mod encoder;
-pub mod ffi;
 pub mod filter;
 pub mod range;
 pub mod stream;

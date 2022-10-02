@@ -2,6 +2,7 @@
 
 use std::{
     ffi::{c_char, CStr},
+    fmt::Debug,
     marker::PhantomData,
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
@@ -14,8 +15,10 @@ use crate::{
     encoder::VolumeWaveletEncoder,
     filter::{AverageFilter, HaarWavelet},
     stream::{Deserializable, Serializable},
-    vector::Vector,
 };
+
+#[cfg(any(feature = "ffi_vec", feature = "ffi_mat"))]
+use crate::vector::Vector;
 
 /// C compatible array type.
 #[repr(C)]
@@ -49,7 +52,6 @@ impl<T: Deserializable, const N: usize> Deserializable for CArray<T, N> {
 
 /// C compatible slice type.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CSlice<'a, T> {
     ptr: *const T,
     len: usize,
@@ -61,6 +63,44 @@ impl<'a, T> Deref for CSlice<'a, T> {
 
     fn deref(&self) -> &Self::Target {
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl<'a, T> Copy for CSlice<'a, T> {}
+
+impl<'a, T> Clone for CSlice<'a, T> {
+    fn clone(&self) -> Self {
+        Self {
+            ptr: self.ptr,
+            len: self.len,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'a, T: Debug> Debug for CSlice<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&**self, f)
+    }
+}
+
+impl<'a, T: PartialEq> PartialEq for CSlice<'a, T> {
+    fn eq(&self, other: &Self) -> bool {
+        PartialEq::eq(&**self, &**other)
+    }
+}
+
+impl<'a, T: Eq> Eq for CSlice<'a, T> {}
+
+impl<'a, T: PartialOrd> PartialOrd for CSlice<'a, T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        PartialOrd::partial_cmp(&**self, &**other)
+    }
+}
+
+impl<'a, T: Ord> Ord for CSlice<'a, T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        Ord::cmp(&**self, &**other)
     }
 }
 
@@ -82,7 +122,6 @@ impl<'a, T> From<CSlice<'a, T>> for &'a [T] {
 
 /// C compatible owned slice type.
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OwnedCSlice<T> {
     ptr: *mut T,
     len: usize,
@@ -99,6 +138,32 @@ impl<T> Deref for OwnedCSlice<T> {
 impl<T> DerefMut for OwnedCSlice<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+impl<T: Debug> Debug for OwnedCSlice<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&**self, f)
+    }
+}
+
+impl<T: PartialEq> PartialEq for OwnedCSlice<T> {
+    fn eq(&self, other: &Self) -> bool {
+        PartialEq::eq(&**self, &**other)
+    }
+}
+
+impl<T: Eq> Eq for OwnedCSlice<T> {}
+
+impl<T: PartialOrd> PartialOrd for OwnedCSlice<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        PartialOrd::partial_cmp(&**self, &**other)
+    }
+}
+
+impl<T: Ord> Ord for OwnedCSlice<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        Ord::cmp(&**self, &**other)
     }
 }
 
@@ -159,7 +224,7 @@ macro_rules! owned_c_slice_def {
 }
 
 owned_c_slice_def! {
-    bool; u8; u16; u32; u64; i8; i16; i32; i64; f32; f64; c_char
+    u8; u16; u32; u64; i8; i16; i32; i64; f32; f64; c_char
 }
 
 /// C compatible owned string.
@@ -255,29 +320,51 @@ macro_rules! encoder_def {
     ($($T:ty);*) => {
         $(
             encoder_def! { $T, wavelet_rs_encoder_ $T }
+            /* encoder_vec_def! { $T } */
+
+            #[cfg(feature = "ffi_vec")]
             encoder_def! { Vector<$T, 1>, wavelet_rs_encoder_vec_1_ $T }
+            #[cfg(feature = "ffi_vec")]
             encoder_def! { Vector<$T, 2>, wavelet_rs_encoder_vec_2_ $T }
+            #[cfg(feature = "ffi_vec")]
             encoder_def! { Vector<$T, 3>, wavelet_rs_encoder_vec_3_ $T }
+            #[cfg(feature = "ffi_vec")]
             encoder_def! { Vector<$T, 4>, wavelet_rs_encoder_vec_4_ $T }
 
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 1>, 1>, wavelet_rs_encoder_mat_1x1_ $T }
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 2>, 1>, wavelet_rs_encoder_mat_1x2_ $T }
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 3>, 1>, wavelet_rs_encoder_mat_1x3_ $T }
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 4>, 1>, wavelet_rs_encoder_mat_1x4_ $T }
 
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 1>, 2>, wavelet_rs_encoder_mat_2x1_ $T }
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 2>, 2>, wavelet_rs_encoder_mat_2x2_ $T }
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 3>, 2>, wavelet_rs_encoder_mat_2x3_ $T }
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 4>, 2>, wavelet_rs_encoder_mat_2x4_ $T }
 
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 1>, 3>, wavelet_rs_encoder_mat_3x1_ $T }
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 2>, 3>, wavelet_rs_encoder_mat_3x2_ $T }
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 3>, 3>, wavelet_rs_encoder_mat_3x3_ $T }
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 4>, 3>, wavelet_rs_encoder_mat_3x4_ $T }
 
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 1>, 4>, wavelet_rs_encoder_mat_4x1_ $T }
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 2>, 4>, wavelet_rs_encoder_mat_4x2_ $T }
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 3>, 4>, wavelet_rs_encoder_mat_4x3_ $T }
+            #[cfg(feature = "ffi_mat")]
             encoder_def! { Vector<Vector<$T, 4>, 4>, wavelet_rs_encoder_mat_4x4_ $T }
         )*
     };
@@ -342,85 +429,66 @@ macro_rules! encoder_def {
             }
         }
 
-        encoder_def! { metadata_get $T, bool, $($N)* }
-        encoder_def! { metadata_get $T, u8, $($N)* }
-        encoder_def! { metadata_get $T, u16, $($N)* }
-        encoder_def! { metadata_get $T, u32, $($N)* }
-        encoder_def! { metadata_get $T, u64, $($N)* }
-        encoder_def! { metadata_get $T, i8, $($N)* }
-        encoder_def! { metadata_get $T, i16, $($N)* }
-        encoder_def! { metadata_get $T, i32, $($N)* }
-        encoder_def! { metadata_get $T, i64, $($N)* }
-        encoder_def! { metadata_get $T, f32, $($N)* }
-        encoder_def! { metadata_get $T, f64, $($N)* }
-        encoder_def! { metadata_get_ $T, CString, $($N)* _metadata_get_string}
+        encoder_def! { metadata $T, u8, $($N)* }
+        encoder_def! { metadata $T, u16, $($N)* }
+        encoder_def! { metadata $T, u32, $($N)* }
+        encoder_def! { metadata $T, u64, $($N)* }
+        encoder_def! { metadata $T, i8, $($N)* }
+        encoder_def! { metadata $T, i16, $($N)* }
+        encoder_def! { metadata $T, i32, $($N)* }
+        encoder_def! { metadata $T, i64, $($N)* }
+        encoder_def! { metadata $T, f32, $($N)* }
+        encoder_def! { metadata $T, f64, $($N)* }
 
-        encoder_def! { metadata_insert $T, bool, $($N)* }
-        encoder_def! { metadata_insert $T, u8, $($N)* }
-        encoder_def! { metadata_insert $T, u16, $($N)* }
-        encoder_def! { metadata_insert $T, u32, $($N)* }
-        encoder_def! { metadata_insert $T, u64, $($N)* }
-        encoder_def! { metadata_insert $T, i8, $($N)* }
-        encoder_def! { metadata_insert $T, i16, $($N)* }
-        encoder_def! { metadata_insert $T, i32, $($N)* }
-        encoder_def! { metadata_insert $T, i64, $($N)* }
-        encoder_def! { metadata_insert $T, f32, $($N)* }
-        encoder_def! { metadata_insert $T, f64, $($N)* }
-        encoder_def! { metadata_insert_ $T, CString, $($N)* _metadata_insert_string}
+        encoder_def! { metadata_ $T, CString, ($($N)*); string}
     };
 
-    (metadata_get $T:ty, $R:ty, $($N:tt)*) => {
-        encoder_def! { metadata_get_ $T, $R, $($N)* _metadata_get_ $R }
-        encoder_def! { metadata_get_ $T, CArray<$R, 1>, $($N)* _metadata_get_ $R _arr_1 }
-        encoder_def! { metadata_get_ $T, CArray<$R, 2>, $($N)* _metadata_get_ $R _arr_2 }
-        encoder_def! { metadata_get_ $T, CArray<$R, 3>, $($N)* _metadata_get_ $R _arr_3 }
-        encoder_def! { metadata_get_ $T, CArray<$R, 4>, $($N)* _metadata_get_ $R _arr_4 }
-        encoder_def! { metadata_get_ $T, OwnedCSlice<$R>, $($N)* _metadata_get_ $R _slice }
+    (metadata $T:ty, $U:ty, $($N:tt)*) => {
+        encoder_def! { metadata_ $T, $U, ($($N)*); $U }
+
+        #[cfg(feature = "ffi_metadata_arr")]
+        encoder_def! { metadata_ $T, CArray<$U, 1>, ($($N)*); $U _arr_1 }
+        #[cfg(feature = "ffi_metadata_arr")]
+        encoder_def! { metadata_ $T, CArray<$U, 2>, ($($N)*); $U _arr_2 }
+        #[cfg(feature = "ffi_metadata_arr")]
+        encoder_def! { metadata_ $T, CArray<$U, 3>, ($($N)*); $U _arr_3 }
+        #[cfg(feature = "ffi_metadata_arr")]
+        encoder_def! { metadata_ $T, CArray<$U, 4>, ($($N)*); $U _arr_4 }
+
+        #[cfg(feature = "ffi_metadata_slice")]
+        encoder_def! { metadata_ $T, OwnedCSlice<$U>, ($($N)*); $U _slice }
     };
 
-    (metadata_get_ $T:ty, $R:ty, $($N:tt)*) => {
+    (metadata_ $T:ty, $U:ty, ( $($N:tt)*); $($M:tt)*) => {
         paste! {
             /// Fetches a value inserted into the metadata.
             #[no_mangle]
-            pub extern "C" fn [<$($N)*>](
+            pub extern "C" fn [<$($N)* _metadata_get_ $($M)*>](
                 encoder: NonNull<VolumeWaveletEncoder<'_, $T>>,
                 key: *const std::ffi::c_char,
-            ) -> COption<$R> {
+            ) -> COption<$U> {
                 unsafe {
                     let key = CStr::from_ptr(key.cast());
                     let key = String::from_utf8_lossy(key.as_ref().to_bytes());
                     encoder.as_ref().get_metadata(&*key).into()
                 }
             }
-        }
-    };
 
-    (metadata_insert $T:ty, $V:ty, $($N:tt)*) => {
-        encoder_def! { metadata_insert_ $T, $V, $($N)* _metadata_insert_ $V }
-        encoder_def! { metadata_insert_ $T, CArray<$V, 1>, $($N)* _metadata_insert_ $V _arr_1 }
-        encoder_def! { metadata_insert_ $T, CArray<$V, 2>, $($N)* _metadata_insert_ $V _arr_2 }
-        encoder_def! { metadata_insert_ $T, CArray<$V, 3>, $($N)* _metadata_insert_ $V _arr_3 }
-        encoder_def! { metadata_insert_ $T, CArray<$V, 4>, $($N)* _metadata_insert_ $V _arr_4 }
-        encoder_def! { metadata_insert_ $T, OwnedCSlice<$V>, $($N)* _metadata_insert_ $V _slice }
-    };
-
-    (metadata_insert_ $T:ty, $V:ty, $($N:tt)*) => {
-        paste! {
             /// Inserts some metadata which will be included into the encoded dataset.
             #[no_mangle]
-            pub extern "C" fn [<$($N)*>](
+            pub extern "C" fn [<$($N)* _metadata_insert_ $($M)*>](
                 mut encoder: NonNull<VolumeWaveletEncoder<'_, $T>>,
                 key: *const std::ffi::c_char,
-                value: $V
-            ) -> bool {
+                value: $U
+            ) -> u8 {
                 unsafe {
                     let key = CStr::from_ptr(key.cast());
                     let key = String::from_utf8_lossy(key.as_ref().to_bytes()).into_owned();
-                    encoder.as_mut().insert_metadata(key, value)
+                    encoder.as_mut().insert_metadata(key, value) as u8
                 }
             }
         }
-    }
+    };
 }
 
 encoder_def! {

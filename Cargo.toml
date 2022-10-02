@@ -5,13 +5,21 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["ffi"]
+ffi = ["paste"]
+ffi_vec = ["ffi"]
+ffi_mat = ["ffi"]
+ffi_metadata_arr = ["ffi"]
+ffi_metadata_slice = ["ffi"]
+
 [dependencies]
 zstd =  "0.11"
-paste = "1.0.9"
 rayon = "1.5.3"
 alloca = "0.3.3"
 thiserror = "1.0"
 num-traits = "0.2.15"
+paste = { version = "1.0.9",  optional = true }
 
 [dev-dependencies]
 image = "0.24.3"
