@@ -363,6 +363,43 @@ public:
     }
 };
 
+namespace slice_priv_ {
+    template <typename T>
+    struct own_slice_ {
+        T* ptr;
+        std::size_t len;
+    };
+
+    template <typename T>
+    struct own_slice_impl {
+        static constexpr bool implemented = false;
+    };
+
+#define OWNED_SLICE_EXTERN(T, N)                                     \
+    extern "C" own_slice_<T> wavelet_rs_slice_##N##_new(slice<T>);   \
+    extern "C" void wavelet_rs_slice_##N##_free(own_slice_<T>);      \
+    template <>                                                      \
+    struct own_slice_impl<T> {                                       \
+        static constexpr bool implemented = true;                    \
+        static constexpr auto new_fn = wavelet_rs_slice_##N##_new;   \
+        static constexpr auto free_fn = wavelet_rs_slice_##N##_free; \
+    };
+
+    // NOLINTBEGIN(*-return-type-c-linkage)
+    OWNED_SLICE_EXTERN(char, c_char)
+    OWNED_SLICE_EXTERN(std::uint8_t, u8)
+    OWNED_SLICE_EXTERN(std::uint16_t, u16)
+    OWNED_SLICE_EXTERN(std::uint32_t, u32)
+    OWNED_SLICE_EXTERN(std::uint64_t, u64)
+    OWNED_SLICE_EXTERN(std::int8_t, i8)
+    OWNED_SLICE_EXTERN(std::int16_t, i16)
+    OWNED_SLICE_EXTERN(std::int32_t, i32)
+    OWNED_SLICE_EXTERN(std::int64_t, i64)
+    OWNED_SLICE_EXTERN(float, f32)
+    OWNED_SLICE_EXTERN(double, f64)
+    // NOLINTEND(*-return-type-c-linkage)
+}
+
 /// Owned view over a sontiguous memory region.
 ///
 /// @tparam T Element type.
@@ -371,6 +408,9 @@ class owned_slice {
     // Invariant: m_ptr is invalid or m_len > 0.
     T* m_ptr;
     std::size_t m_len;
+
+    using own_slice_ = slice_priv_::own_slice_impl<T>;
+    static_assert(own_slice_::implemented, "owned_slice is not implemented for the element");
 
 public:
     typedef T value_type;
@@ -385,19 +425,25 @@ public:
     typedef std::reverse_iterator<iterator> reverse_iterator;
     typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
 
-    // Delete constructors/destructors which (de)allocate, as
-    // we have no general way of implementing it.
-
-    /// Constructs a new slice by copying all elements of the provided slice.
-    ///
-    /// @param value slice to be copied into the new slice.
-    explicit owned_slice(slice<T> s) = delete;
-    ~owned_slice() = delete;
-
     /// Constructs a new empty slice.
     explicit owned_slice()
         : owned_slice { slice<T> {} }
     {
+    }
+
+    /// Constructs a new slice by copying all elements of the provided slice.
+    ///
+    /// @param value slice to be copied into the new slice.
+    explicit owned_slice(slice<T> s)
+        : m_ptr { reinterpret_cast<T*>(alignof(T)) }
+        , m_len { 0 }
+    {
+        static_assert(std::is_standard_layout<T>::value, "invalid layout");
+        static_assert(std::is_standard_layout<slice<T>>::value, "invalid layout");
+
+        auto slice = own_slice_::new_fn(std::move(s));
+        this->m_ptr = slice.ptr;
+        this->m_len = slice.len;
     }
 
     /// Constructs a new slice containing only one value.
@@ -438,10 +484,44 @@ public:
     {
     }
 
-    owned_slice(owned_slice&& other) noexcept = default;
+    ~owned_slice()
+    {
+        if (this->m_len != 0) {
+            own_slice_::free_fn(slice_priv_::own_slice_<T> { this->m_ptr, this->m_len });
+            this->m_ptr = reinterpret_cast<T*>(alignof(T));
+            this->m_len = 0;
+        }
+    }
 
-    owned_slice& operator=(const owned_slice& rhs) = default;
-    owned_slice& operator=(owned_slice&& rhs) = default;
+    owned_slice(owned_slice&& other) noexcept
+        : m_ptr { std::exchange(other.m_ptr, reinterpret_cast<T*>(alignof(T))) }
+        , m_len { std::exchange(other.m_len, 0) }
+    {
+    }
+
+    owned_slice& operator=(const owned_slice& rhs)
+    {
+        if (this != &rhs) {
+            if (this->m_len == rhs.m_len) {
+                std::copy(rhs.begin(), rhs.end(), this->begin());
+            } else {
+                this->~owned_slice();
+                new (this) owned_slice { slice<T> { rhs.m_ptr, rhs.m_len } };
+            }
+        }
+
+        return *this;
+    }
+
+    owned_slice& operator=(owned_slice&& rhs) noexcept
+    {
+        if (this != &rhs) {
+            std::swap(this->m_ptr, rhs->m_ptr);
+            std::swap(this->m_len, rhs->m_len);
+        }
+
+        return *this;
+    }
 
     /// Checks that the elements of the two slices are equal.
     /// Is equivalent to calling std::equal with the two slices.
@@ -753,57 +833,6 @@ public:
         std::fill(this->begin(), this->end(), value);
     }
 };
-
-#define OWNED_SLICE_EXTERN(T, N)                                                                                         \
-    static_assert(std::is_standard_layout<slice<T>>::value, "slice<" #T "> must be a standard-layout type");             \
-    static_assert(std::is_standard_layout<owned_slice<T>>::value, "owned_slice<" #T "> must be a standard-layout type"); \
-    owned_slice<T> wavelet_rs_slice_##N##_new(slice<T>);                                                                 \
-    void wavelet_rs_slice_##N##_free(owned_slice<T>);
-
-#define OWNED_SLICE_SPEC(T, N)                                 \
-    template <>                                                \
-    owned_slice<T>::~owned_slice()                             \
-    {                                                          \
-        if (this->m_ptr != reinterpret_cast<T*>(alignof(T))) { \
-            wavelet_rs_slice_##N##_free(std::move(*this));     \
-        }                                                      \
-    }                                                          \
-    template <>                                                \
-    owned_slice<T>::owned_slice(slice<T> s)                    \
-        : m_ptr { reinterpret_cast<T*>(alignof(T)) }           \
-        , m_len { 0 }                                          \
-    {                                                          \
-        auto tmp { wavelet_rs_slice_##N##_new(s) };            \
-        std::swap(*this, tmp);                                 \
-    }
-
-extern "C" {
-// NOLINTBEGIN(*-return-type-c-linkage)
-OWNED_SLICE_EXTERN(char, c_char)
-OWNED_SLICE_EXTERN(std::uint8_t, u8)
-OWNED_SLICE_EXTERN(std::uint16_t, u16)
-OWNED_SLICE_EXTERN(std::uint32_t, u32)
-OWNED_SLICE_EXTERN(std::uint64_t, u64)
-OWNED_SLICE_EXTERN(std::int8_t, i8)
-OWNED_SLICE_EXTERN(std::int16_t, i16)
-OWNED_SLICE_EXTERN(std::int32_t, i32)
-OWNED_SLICE_EXTERN(std::int64_t, i64)
-OWNED_SLICE_EXTERN(float, f32)
-OWNED_SLICE_EXTERN(double, f64)
-// NOLINTEND(*-return-type-c-linkage)
-}
-
-OWNED_SLICE_SPEC(char, c_char)
-OWNED_SLICE_SPEC(std::uint8_t, u8)
-OWNED_SLICE_SPEC(std::uint16_t, u16)
-OWNED_SLICE_SPEC(std::uint32_t, u32)
-OWNED_SLICE_SPEC(std::uint64_t, u64)
-OWNED_SLICE_SPEC(std::int8_t, i8)
-OWNED_SLICE_SPEC(std::int16_t, i16)
-OWNED_SLICE_SPEC(std::int32_t, i32)
-OWNED_SLICE_SPEC(std::int64_t, i64)
-OWNED_SLICE_SPEC(float, f32)
-OWNED_SLICE_SPEC(double, f64)
 
 /// Owned string type.
 class string {
@@ -1568,80 +1597,15 @@ using block_writer_fetcher = callable<Fn, block_writer<T>, std::size_t>;
 template <typename T>
 using writer_fetcher = callable<FnOnce, block_writer_fetcher<T>, slice<std::size_t>>;
 
+namespace filters {
+    /// Marker type for the haar wavelet.
+    struct haar_wavelet;
+
+    /// Marker type for the average filter.
+    struct average_filter;
+}
+
 ///////////////// Encoder /////////////////
-
-template <typename T>
-class encoder {
-public:
-    class encoder_impl;
-
-private:
-    encoder_impl* m_enc;
-
-public:
-    /// Constructs a new encoder spanning a volume with dimmensions `dims`.
-    ///
-    /// @param dims dimmensions of the volume to be encoded.
-    /// @param num_base_dims number of dimmensions contained in each volume_fetcher.
-    encoder(slice<std::size_t> dims, std::size_t num_base_dims) = delete;
-    encoder(const encoder& other) = delete;
-
-    encoder(encoder&& other) noexcept
-        : m_enc { std::exchange(other.m_enc, nullptr) }
-    {
-    }
-
-    ~encoder() = delete;
-
-    encoder& operator=(const encoder& other) = delete;
-
-    encoder& operator=(encoder&& other) noexcept
-    {
-        if (this != &other) {
-            std::swap(this->m_enc, other.m_enc);
-        }
-
-        return *this;
-    }
-
-    /// Inserts a volume_fetcher into the encoder at the position `index`.
-    /// The position `index` must not be populated and be in the range [dims[num_base_dims],...].
-    ///
-    /// @param index position of the fetcher in the volume.
-    /// @param fetcher fetcher to be inserted.
-    void add_fetcher(slice<std::size_t> index, volume_fetcher<T> fetcher) = delete;
-
-    /// Encodes the volume using the inserted fetchers and the specified filter.
-    /// The output will be written into the `output` directory. The caller must
-    /// ensure that `output` exists and is a writable directory. The selected
-    /// block size must tile the input volume exactly.
-    ///
-    /// @tparam Filter filter to use for the encoding.
-    /// @param output output directory.
-    /// @param block_size selected block size.
-    template <typename Filter>
-    void encode(const char* output, slice<std::size_t> block_size) const = delete;
-
-    /// Fetches an element from the encoder metadata.
-    ///
-    /// @tparam U type of the element.
-    /// @param key key of the mapped element.
-    /// @return metadata element.
-    template <typename U>
-    option<U> metadata_get(const char* key) const = delete;
-
-    /// Inserts an element into the encoder metadata.
-    ///
-    /// @tparam U type of the element.
-    /// @param key key where the element will be mapped to.
-    /// @param value element to insert into the metadata.
-    /// @return `true` if an old value was overwritten, `false` otherwise.
-    template <typename U>
-    bool metadata_insert(const char* key, U value) = delete;
-};
-
-struct HaarWavelet;
-struct AverageFilter;
 
 template <typename T>
 using array_1 = std::array<T, 1>;
@@ -1652,11 +1616,33 @@ using array_3 = std::array<T, 3>;
 template <typename T>
 using array_4 = std::array<T, 4>;
 
-#define ENCODER_METADATA_EXTERN_(T, N, M, MN)                                                                  \
-    static_assert(std::is_standard_layout<M>::value, #M " must be a standard-layout type");                    \
-    static_assert(std::is_standard_layout<option<M>>::value, "option<" #M "> must be a standard-layout type"); \
-    option<M> wavelet_rs_encoder_##N##_metadata_get_##MN(encoder<T>::encoder_impl*, const char*);              \
-    std::uint8_t wavelet_rs_encoder_##N##_metadata_insert_##MN(encoder<T>::encoder_impl*, const char*, M);
+namespace enc_priv_ {
+    class encoder_;
+
+    template <typename T>
+    struct encoder_impl {
+        static constexpr bool implemented = false;
+    };
+
+    template <typename T, typename F>
+    struct encoder_enc_impl {
+        static constexpr bool implemented = false;
+    };
+
+    template <typename T, typename U>
+    struct encoder_metadata_impl {
+        static constexpr bool implemented = false;
+    };
+
+#define ENCODER_METADATA_EXTERN_(T, N, M, MN)                                                         \
+    extern "C" option<M> wavelet_rs_encoder_##N##_metadata_get_##MN(encoder_*, const char*);          \
+    extern "C" std::uint8_t wavelet_rs_encoder_##N##_metadata_insert_##MN(encoder_*, const char*, M); \
+    template <>                                                                                       \
+    struct encoder_metadata_impl<T, M> {                                                              \
+        static constexpr bool implemented = true;                                                     \
+        static constexpr auto get_fn = wavelet_rs_encoder_##N##_metadata_get_##MN;                    \
+        static constexpr auto insert_fn = wavelet_rs_encoder_##N##_metadata_insert_##MN;              \
+    };
 
 #ifdef WAVELET_RS_IMPORT_MEATADATA_ARR
 #define ENCODER_METADATA_ARRAY_EXTERN(T, N, M, MN)         \
@@ -1680,25 +1666,40 @@ using array_4 = std::array<T, 4>;
     ENCODER_METADATA_ARRAY_EXTERN(T, N, M, MN) \
     ENCODER_METADATA_SLICE_EXTERN(T, N, M, MN)
 
-#define ENCODER_EXTERN_(T, N)                                                                                                  \
-    static_assert(std::is_standard_layout<slice<std::size_t>>::value, "slice<std::size_t> must be a standard-layout type");    \
-    static_assert(std::is_standard_layout<volume_fetcher<T>>::value, "volume_fetcher<" #T "> must be a standard-layout type"); \
-    encoder<T>::encoder_impl* wavelet_rs_encoder_##N##_new(slice<std::size_t>, std::size_t);                                   \
-    void wavelet_rs_encoder_##N##_free(encoder<T>::encoder_impl*);                                                             \
-    void wavelet_rs_encoder_##N##_add_fetcher(encoder<T>::encoder_impl*, slice<std::size_t>, volume_fetcher<T>);               \
-    void wavelet_rs_encoder_##N##_encode_haar(const encoder<T>::encoder_impl*, const char*, slice<std::size_t>);               \
-    void wavelet_rs_encoder_##N##_encode_average(const encoder<T>::encoder_impl*, const char*, slice<std::size_t>);            \
-    ENCODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                                                                            \
-    ENCODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                                                                          \
-    ENCODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                                                                          \
-    ENCODER_METADATA_EXTERN(T, N, std::uint64_t, u64)                                                                          \
-    ENCODER_METADATA_EXTERN(T, N, std::int8_t, i8)                                                                             \
-    ENCODER_METADATA_EXTERN(T, N, std::int16_t, i16)                                                                           \
-    ENCODER_METADATA_EXTERN(T, N, std::int32_t, i32)                                                                           \
-    ENCODER_METADATA_EXTERN(T, N, std::int64_t, i64)                                                                           \
-    ENCODER_METADATA_EXTERN(T, N, float, f32)                                                                                  \
-    ENCODER_METADATA_EXTERN(T, N, double, f64)                                                                                 \
-    ENCODER_METADATA_EXTERN_(T, N, string, string)
+#define ENCODER_EXTERN_(T, N)                                                                                  \
+    extern "C" encoder_* wavelet_rs_encoder_##N##_new(slice<std::size_t>, std::size_t);                        \
+    extern "C" void wavelet_rs_encoder_##N##_free(encoder_*);                                                  \
+    extern "C" void wavelet_rs_encoder_##N##_add_fetcher(encoder_*, slice<std::size_t>, volume_fetcher<T>);    \
+    extern "C" void wavelet_rs_encoder_##N##_encode_haar(const encoder_*, const char*, slice<std::size_t>);    \
+    extern "C" void wavelet_rs_encoder_##N##_encode_average(const encoder_*, const char*, slice<std::size_t>); \
+    ENCODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                                                            \
+    ENCODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                                                          \
+    ENCODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                                                          \
+    ENCODER_METADATA_EXTERN(T, N, std::uint64_t, u64)                                                          \
+    ENCODER_METADATA_EXTERN(T, N, std::int8_t, i8)                                                             \
+    ENCODER_METADATA_EXTERN(T, N, std::int16_t, i16)                                                           \
+    ENCODER_METADATA_EXTERN(T, N, std::int32_t, i32)                                                           \
+    ENCODER_METADATA_EXTERN(T, N, std::int64_t, i64)                                                           \
+    ENCODER_METADATA_EXTERN(T, N, float, f32)                                                                  \
+    ENCODER_METADATA_EXTERN(T, N, double, f64)                                                                 \
+    ENCODER_METADATA_EXTERN_(T, N, string, string)                                                             \
+    template <>                                                                                                \
+    struct encoder_impl<T> {                                                                                   \
+        static constexpr bool implemented = true;                                                              \
+        static constexpr auto new_fn = wavelet_rs_encoder_##N##_new;                                           \
+        static constexpr auto free_fn = wavelet_rs_encoder_##N##_free;                                         \
+        static constexpr auto add_fetcher_fn = wavelet_rs_encoder_##N##_add_fetcher;                           \
+    };                                                                                                         \
+    template <>                                                                                                \
+    struct encoder_enc_impl<T, filters::haar_wavelet> {                                                        \
+        static constexpr bool implemented = true;                                                              \
+        static constexpr auto encode_fn = wavelet_rs_encoder_##N##_encode_haar;                                \
+    };                                                                                                         \
+    template <>                                                                                                \
+    struct encoder_enc_impl<T, filters::average_filter> {                                                      \
+        static constexpr bool implemented = true;                                                              \
+        static constexpr auto encode_fn = wavelet_rs_encoder_##N##_encode_average;                             \
+    };
 
 #ifdef WAVELET_RS_IMPORT_VEC
 #define ENCODER_VEC_EXTERN(T, N)           \
@@ -1737,129 +1738,124 @@ using array_4 = std::array<T, 4>;
     ENCODER_VEC_EXTERN(T, N) \
     ENCODER_MATRIX_EXTERN(T, N)
 
-extern "C" {
-// NOLINTBEGIN(*-return-type-c-linkage)
-ENCODER_EXTERN(float, f32)
-ENCODER_EXTERN(double, f64)
-// NOLINTEND(*-return-type-c-linkage)
+    // NOLINTBEGIN(*-return-type-c-linkage)
+    ENCODER_EXTERN(float, f32)
+    ENCODER_EXTERN(double, f64)
+    // NOLINTEND(*-return-type-c-linkage)
 }
 
-#define ENCODER_METADATA_SPEC_(T, N, M, MN)                                                       \
-    template <>                                                                                   \
-    template <>                                                                                   \
-    option<M> encoder<T>::metadata_get<M>(const char* key) const                                  \
-    {                                                                                             \
-        return wavelet_rs_encoder_##N##_metadata_get_##MN(this->m_enc, key);                      \
-    }                                                                                             \
-    template <>                                                                                   \
-    template <>                                                                                   \
-    bool encoder<T>::metadata_insert<M>(const char* key, M value)                                 \
-    {                                                                                             \
-        return wavelet_rs_encoder_##N##_metadata_insert_##MN(this->m_enc, key, std::move(value)); \
+template <typename T>
+class encoder {
+    enc_priv_::encoder_* m_enc;
+
+    using encoder_ = enc_priv_::encoder_impl<T>;
+    static_assert(encoder_::implemented, "encoder is not implemented for the element");
+
+    template <typename F>
+    using encoder_enc_ = enc_priv_::encoder_enc_impl<T, F>;
+
+    template <typename U>
+    using encoder_meta_ = enc_priv_::encoder_metadata_impl<T, U>;
+
+public:
+    /// Constructs a new encoder spanning a volume with dimmensions `dims`.
+    ///
+    /// @param dims dimmensions of the volume to be encoded.
+    /// @param num_base_dims number of dimmensions contained in each volume_fetcher.
+    encoder(slice<std::size_t> dims, std::size_t num_base_dims)
+        : m_enc { encoder_::new_fn(std::move(dims), num_base_dims) }
+    {
     }
 
-#ifdef WAVELET_RS_IMPORT_MEATADATA_ARR
-#define ENCODER_METADATA_ARRAY_SPEC(T, N, M, MN)         \
-    ENCODER_METADATA_SPEC_(T, N, array_1<M>, MN##_arr_1) \
-    ENCODER_METADATA_SPEC_(T, N, array_2<M>, MN##_arr_2) \
-    ENCODER_METADATA_SPEC_(T, N, array_3<M>, MN##_arr_3) \
-    ENCODER_METADATA_SPEC_(T, N, array_4<M>, MN##_arr_4)
-#else
-#define ENCODER_METADATA_ARRAY_SPEC(T, N, M, MN)
-#endif // WAVELET_RS_IMPORT_MEATADATA_ARR
+    encoder(const encoder& other) = delete;
 
-#ifdef WAVELET_RS_IMPORT_MEATADATA_SLICE
-#define ENCODER_METADATA_SLICE_SPEC(T, N, M, MN) \
-    ENCODER_METADATA_SPEC_(T, N, owned_slice<M>, MN##_slice)
-#else
-#define ENCODER_METADATA_SLICE_SPEC(T, N, M, MN)
-#endif // WAVELET_RS_IMPORT_MEATADATA_SLICE
+    encoder(encoder&& other) noexcept
+        : m_enc { std::exchange(other.m_enc, nullptr) }
+    {
+    }
 
-#define ENCODER_METADATA_SPEC(T, N, M, MN)   \
-    ENCODER_METADATA_SPEC_(T, N, M, MN)      \
-    ENCODER_METADATA_ARRAY_SPEC(T, N, M, MN) \
-    ENCODER_METADATA_SLICE_SPEC(T, N, M, MN)
+    ~encoder()
+    {
+        if (this->m_enc != nullptr) {
+            encoder_::free_fn(this->m_enc);
+            this->m_enc = nullptr;
+        }
+    }
 
-#define ENCODER_SPEC_(T, N)                                                                         \
-    template <>                                                                                     \
-    encoder<T>::encoder(slice<std::size_t> dims, std::size_t num_base_dims)                         \
-        : m_enc { wavelet_rs_encoder_##N##_new(dims, num_base_dims) }                               \
-    {                                                                                               \
-    }                                                                                               \
-    template <>                                                                                     \
-    encoder<T>::~encoder()                                                                          \
-    {                                                                                               \
-        if (this->m_enc != nullptr)                                                                 \
-            wavelet_rs_encoder_##N##_free(this->m_enc);                                             \
-    }                                                                                               \
-    template <>                                                                                     \
-    void encoder<T>::add_fetcher(slice<std::size_t> index, volume_fetcher<T> fetcher)               \
-    {                                                                                               \
-        wavelet_rs_encoder_##N##_add_fetcher(this->m_enc, index, std::move(fetcher));               \
-    }                                                                                               \
-    template <>                                                                                     \
-    template <>                                                                                     \
-    void encoder<T>::encode<HaarWavelet>(const char* output, slice<std::size_t> block_size) const   \
-    {                                                                                               \
-        wavelet_rs_encoder_##N##_encode_haar(this->m_enc, output, std::move(block_size));           \
-    }                                                                                               \
-    template <>                                                                                     \
-    template <>                                                                                     \
-    void encoder<T>::encode<AverageFilter>(const char* output, slice<std::size_t> block_size) const \
-    {                                                                                               \
-        wavelet_rs_encoder_##N##_encode_average(this->m_enc, output, std::move(block_size));        \
-    }                                                                                               \
-    ENCODER_METADATA_SPEC(T, N, std::uint8_t, u8)                                                   \
-    ENCODER_METADATA_SPEC(T, N, std::uint16_t, u16)                                                 \
-    ENCODER_METADATA_SPEC(T, N, std::uint32_t, u32)                                                 \
-    ENCODER_METADATA_SPEC(T, N, std::uint64_t, u64)                                                 \
-    ENCODER_METADATA_SPEC(T, N, std::int8_t, i8)                                                    \
-    ENCODER_METADATA_SPEC(T, N, std::int16_t, i16)                                                  \
-    ENCODER_METADATA_SPEC(T, N, std::int32_t, i32)                                                  \
-    ENCODER_METADATA_SPEC(T, N, std::int64_t, i64)                                                  \
-    ENCODER_METADATA_SPEC(T, N, float, f32)                                                         \
-    ENCODER_METADATA_SPEC(T, N, double, f64)                                                        \
-    ENCODER_METADATA_SPEC_(T, N, string, string)
+    encoder& operator=(const encoder& other) = delete;
 
-#ifdef WAVELET_RS_IMPORT_VEC
-#define ENCODER_VEC_SPEC_(T, N)          \
-    ENCODER_SPEC_(array_1<T>, vec_1_##N) \
-    ENCODER_SPEC_(array_2<T>, vec_2_##N) \
-    ENCODER_SPEC_(array_3<T>, vec_3_##N) \
-    ENCODER_SPEC_(array_4<T>, vec_4_##N)
-#else
-#define ENCODER_VEC_SPEC_(T, N)
-#endif // WAVELET_RS_IMPORT_VEC
+    encoder& operator=(encoder&& other) noexcept
+    {
+        if (this != &other) {
+            std::swap(this->m_enc, other.m_enc);
+        }
 
-#ifdef WAVELET_RS_IMPORT_MAT
-#define ENCODER_MATRIX_SPEC_(T, N)                  \
-    ENCODER_SPEC_(array_1<array_1<T>>, mat_1x1_##N) \
-    ENCODER_SPEC_(array_1<array_2<T>>, mat_1x2_##N) \
-    ENCODER_SPEC_(array_1<array_3<T>>, mat_1x3_##N) \
-    ENCODER_SPEC_(array_1<array_4<T>>, mat_1x4_##N) \
-    ENCODER_SPEC_(array_2<array_1<T>>, mat_2x1_##N) \
-    ENCODER_SPEC_(array_2<array_2<T>>, mat_2x2_##N) \
-    ENCODER_SPEC_(array_2<array_3<T>>, mat_2x3_##N) \
-    ENCODER_SPEC_(array_2<array_4<T>>, mat_2x4_##N) \
-    ENCODER_SPEC_(array_3<array_1<T>>, mat_3x1_##N) \
-    ENCODER_SPEC_(array_3<array_2<T>>, mat_3x2_##N) \
-    ENCODER_SPEC_(array_3<array_3<T>>, mat_3x3_##N) \
-    ENCODER_SPEC_(array_3<array_4<T>>, mat_3x4_##N) \
-    ENCODER_SPEC_(array_4<array_1<T>>, mat_4x1_##N) \
-    ENCODER_SPEC_(array_4<array_2<T>>, mat_4x2_##N) \
-    ENCODER_SPEC_(array_4<array_3<T>>, mat_4x3_##N) \
-    ENCODER_SPEC_(array_4<array_4<T>>, mat_4x4_##N)
-#else
-#define ENCODER_MATRIX_SPEC_(T, N)
-#endif // WAVELET_RS_IMPORT_MAT
+        return *this;
+    }
 
-#define ENCODER_SPEC(T, N)  \
-    ENCODER_SPEC_(T, N)     \
-    ENCODER_VEC_SPEC_(T, N) \
-    ENCODER_MATRIX_SPEC_(T, N)
+    /// Inserts a volume_fetcher into the encoder at the position `index`.
+    /// The position `index` must not be populated and be in the range [dims[num_base_dims],...].
+    ///
+    /// @param index position of the fetcher in the volume.
+    /// @param fetcher fetcher to be inserted.
+    void add_fetcher(slice<std::size_t> index, volume_fetcher<T> fetcher)
+    {
+        static_assert(std::is_standard_layout<slice<std::size_t>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<volume_fetcher<T>>::value, "invalid layout");
 
-ENCODER_SPEC(float, f32)
-ENCODER_SPEC(double, f64)
+        encoder_::add_fetcher_fn(std::move(index), std::move(fetcher));
+    }
+
+    /// Encodes the volume using the inserted fetchers and the specified filter.
+    /// The output will be written into the `output` directory. The caller must
+    /// ensure that `output` exists and is a writable directory. The selected
+    /// block size must tile the input volume exactly.
+    ///
+    /// @tparam Filter filter to use for the encoding.
+    /// @param output output directory.
+    /// @param block_size selected block size.
+    template <typename Filter>
+    void encode(const char* output, slice<std::size_t> block_size) const
+    {
+        static_assert(std::is_standard_layout<slice<std::size_t>>::value, "invalid layout");
+        static_assert(encoder_enc_<Filter>::implemented,
+            "encode is not implemented for the element, filter pair");
+
+        encoder_enc_<Filter>::encode_fn(output, std::move(block_size));
+    }
+
+    /// Fetches an element from the encoder metadata.
+    ///
+    /// @tparam U type of the element.
+    /// @param key key of the mapped element.
+    /// @return metadata element.
+    template <typename U>
+    option<U> metadata_get(const char* key) const
+    {
+        static_assert(std::is_standard_layout<U>::value, "invalid layout");
+        static_assert(std::is_standard_layout<option<U>>::value, "invalid layout");
+        static_assert(encoder_meta_<U>::implemented,
+            "metadata_get is not implemented for the element, metadata pair");
+
+        return encoder_meta_<U>::get_fn(key);
+    }
+
+    /// Inserts an element into the encoder metadata.
+    ///
+    /// @tparam U type of the element.
+    /// @param key key where the element will be mapped to.
+    /// @param value element to insert into the metadata.
+    /// @return `true` if an old value was overwritten, `false` otherwise.
+    template <typename U>
+    bool metadata_insert(const char* key, U value)
+    {
+        static_assert(std::is_standard_layout<U>::value, "invalid layout");
+        static_assert(encoder_meta_<U>::implemented,
+            "metadata_insert is not implemented for the element, metadata pair");
+
+        return encoder_meta_<U>::insert_fn(key, std::move(value));
+    }
+};
 
 ///////////////// Decoder /////////////////
 
@@ -1876,14 +1872,12 @@ namespace dec_priv_ {
         static constexpr bool implemented = false;
     };
 
-#define DECODER_METADATA_EXTERN_(T, F, N, M, MN)                                                               \
-    static_assert(std::is_standard_layout<M>::value, #M " must be a standard-layout type");                    \
-    static_assert(std::is_standard_layout<option<M>>::value, "option<" #M "> must be a standard-layout type"); \
-    extern "C" option<M> wavelet_rs_decoder_##N##_metadata_get_##MN(decoder_*, const char*);                   \
-    template <>                                                                                                \
-    struct decoder_metadata_impl<T, F, M> {                                                                    \
-        static constexpr bool implemented = true;                                                              \
-        static constexpr auto get_fn = wavelet_rs_decoder_##N##_metadata_get_##MN;                             \
+#define DECODER_METADATA_EXTERN_(T, F, N, M, MN)                                                   \
+    extern "C" option<M> wavelet_rs_decoder_##N##_metadata_get_##MN(const decoder_*, const char*); \
+    template <>                                                                                    \
+    struct decoder_metadata_impl<T, F, M> {                                                        \
+        static constexpr bool implemented = true;                                                  \
+        static constexpr auto get_fn = wavelet_rs_decoder_##N##_metadata_get_##MN;                 \
     };
 
 #ifdef WAVELET_RS_IMPORT_MEATADATA_ARR
@@ -1908,36 +1902,33 @@ namespace dec_priv_ {
     DECODER_METADATA_ARRAY_EXTERN(T, F, N, M, MN) \
     DECODER_METADATA_SLICE_EXTERN(T, F, N, M, MN)
 
-#define DECODER_EXTERN_(T, F, N)                                                                                                          \
-    static_assert(std::is_standard_layout<reader_fetcher<T>>::value, "reader_fetcher<" #T "> must be a standard-layout type");            \
-    static_assert(std::is_standard_layout<writer_fetcher<T>>::value, "writer_fetcher<" #T "> must be a standard-layout type");            \
-    static_assert(std::is_standard_layout<slice<range<std::size_t>>>::value, "slice<range<std::size_t>> must be a standard-layout type"); \
-    extern "C" decoder_* wavelet_rs_decoder_##N##_new(const char*);                                                                       \
-    extern "C" void wavelet_rs_decoder_##N##_free(decoder_*);                                                                             \
-    extern "C" void wavelet_rs_decoder_##N##_decode(decoder_*,                                                                            \
-        writer_fetcher<T>, slice<range<std::size_t>>, slice<std::uint32_t>);                                                              \
-    extern "C" void wavelet_rs_decoder_##N##_refine(decoder_*,                                                                            \
-        reader_fetcher<T>, writer_fetcher<T>,                                                                                             \
-        slice<range<std::size_t>>, slice<range<std::size_t>>,                                                                             \
-        slice<std::uint32_t>, slice<std::uint32_t>);                                                                                      \
-    DECODER_METADATA_EXTERN(T, F, N, std::uint8_t, u8)                                                                                    \
-    DECODER_METADATA_EXTERN(T, F, N, std::uint16_t, u16)                                                                                  \
-    DECODER_METADATA_EXTERN(T, F, N, std::uint32_t, u32)                                                                                  \
-    DECODER_METADATA_EXTERN(T, F, N, std::uint64_t, u64)                                                                                  \
-    DECODER_METADATA_EXTERN(T, F, N, std::int8_t, i8)                                                                                     \
-    DECODER_METADATA_EXTERN(T, F, N, std::int16_t, i16)                                                                                   \
-    DECODER_METADATA_EXTERN(T, F, N, std::int32_t, i32)                                                                                   \
-    DECODER_METADATA_EXTERN(T, F, N, std::int64_t, i64)                                                                                   \
-    DECODER_METADATA_EXTERN(T, F, N, float, f32)                                                                                          \
-    DECODER_METADATA_EXTERN(T, F, N, double, f64)                                                                                         \
-    DECODER_METADATA_EXTERN(T, F, N, string, string)                                                                                      \
-    template <>                                                                                                                           \
-    struct decoder_impl<T, F> {                                                                                                           \
-        static constexpr bool implemented = true;                                                                                         \
-        static constexpr auto new_fn = wavelet_rs_decoder_##N##_new;                                                                      \
-        static constexpr auto free_fn = wavelet_rs_decoder_##N##_free;                                                                    \
-        static constexpr auto decode_fn = wavelet_rs_decoder_##N##_decode;                                                                \
-        static constexpr auto refine_fn = wavelet_rs_decoder_##N##_refine;                                                                \
+#define DECODER_EXTERN_(T, F, N)                                             \
+    extern "C" decoder_* wavelet_rs_decoder_##N##_new(const char*);          \
+    extern "C" void wavelet_rs_decoder_##N##_free(decoder_*);                \
+    extern "C" void wavelet_rs_decoder_##N##_decode(const decoder_*,         \
+        writer_fetcher<T>, slice<range<std::size_t>>, slice<std::uint32_t>); \
+    extern "C" void wavelet_rs_decoder_##N##_refine(const decoder_*,         \
+        reader_fetcher<T>, writer_fetcher<T>,                                \
+        slice<range<std::size_t>>, slice<range<std::size_t>>,                \
+        slice<std::uint32_t>, slice<std::uint32_t>);                         \
+    DECODER_METADATA_EXTERN(T, F, N, std::uint8_t, u8)                       \
+    DECODER_METADATA_EXTERN(T, F, N, std::uint16_t, u16)                     \
+    DECODER_METADATA_EXTERN(T, F, N, std::uint32_t, u32)                     \
+    DECODER_METADATA_EXTERN(T, F, N, std::uint64_t, u64)                     \
+    DECODER_METADATA_EXTERN(T, F, N, std::int8_t, i8)                        \
+    DECODER_METADATA_EXTERN(T, F, N, std::int16_t, i16)                      \
+    DECODER_METADATA_EXTERN(T, F, N, std::int32_t, i32)                      \
+    DECODER_METADATA_EXTERN(T, F, N, std::int64_t, i64)                      \
+    DECODER_METADATA_EXTERN(T, F, N, float, f32)                             \
+    DECODER_METADATA_EXTERN(T, F, N, double, f64)                            \
+    DECODER_METADATA_EXTERN(T, F, N, string, string)                         \
+    template <>                                                              \
+    struct decoder_impl<T, F> {                                              \
+        static constexpr bool implemented = true;                            \
+        static constexpr auto new_fn = wavelet_rs_decoder_##N##_new;         \
+        static constexpr auto free_fn = wavelet_rs_decoder_##N##_free;       \
+        static constexpr auto decode_fn = wavelet_rs_decoder_##N##_decode;   \
+        static constexpr auto refine_fn = wavelet_rs_decoder_##N##_refine;   \
     };
 
 #ifdef WAVELET_RS_IMPORT_VEC
@@ -1972,13 +1963,13 @@ namespace dec_priv_ {
 #define DECODER_MATRIX_EXTERN(T, F, N)
 #endif // WAVELET_RS_IMPORT_MAT
 
-#define DECODER_EXTERN(T, N)                          \
-    DECODER_EXTERN_(T, HaarWavelet, N##_haar)         \
-    DECODER_EXTERN_(T, AverageFilter, N##_average)    \
-    DECODER_VEC_EXTERN(T, HaarWavelet, N##_haar)      \
-    DECODER_VEC_EXTERN(T, AverageFilter, N##_average) \
-    DECODER_MATRIX_EXTERN(T, HaarWavelet, N##_haar)   \
-    DECODER_MATRIX_EXTERN(T, AverageFilter, N##_average)
+#define DECODER_EXTERN(T, N)                                    \
+    DECODER_EXTERN_(T, filters::haar_wavelet, N##_haar)         \
+    DECODER_EXTERN_(T, filters::average_filter, N##_average)    \
+    DECODER_VEC_EXTERN(T, filters::haar_wavelet, N##_haar)      \
+    DECODER_VEC_EXTERN(T, filters::average_filter, N##_average) \
+    DECODER_MATRIX_EXTERN(T, filters::haar_wavelet, N##_haar)   \
+    DECODER_MATRIX_EXTERN(T, filters::average_filter, N##_average)
 
     // NOLINTBEGIN(*-return-type-c-linkage)
     DECODER_EXTERN(float, f32)
@@ -2039,8 +2030,11 @@ public:
     template <typename U>
     option<U> metadata_get(const char* key) const
     {
+        static_assert(std::is_standard_layout<U>::value, "invalid layout");
+        static_assert(std::is_standard_layout<option<U>>::value, "invalid layout");
+
         static_assert(decoder_meta_<U>::implemented,
-            "metadata_get is not implemented for the element, filter, metedata triplet");
+            "metadata_get is not implemented for the element, filter, metadata triplet");
         return decoder_meta_<U>::get_fn(key);
     }
 
@@ -2053,6 +2047,10 @@ public:
         slice<range<std::size_t>> roi,
         slice<std::uint32_t> levels) const
     {
+        static_assert(std::is_standard_layout<writer_fetcher<T>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<slice<range<std::size_t>>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<slice<std::uint32_t>>::value, "invalid layout");
+
         decoder_::decode_fn(this->m_dec,
             std::move(writer),
             std::move(roi),
@@ -2074,6 +2072,11 @@ public:
         slice<std::uint32_t> curr_levels,
         slice<std::uint32_t> refinements) const
     {
+        static_assert(std::is_standard_layout<reader_fetcher<T>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<writer_fetcher<T>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<slice<range<std::size_t>>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<slice<std::uint32_t>>::value, "invalid layout");
+
         decoder_::refine_fn(this->m_dec,
             std::move(reader),
             std::move(writer),
