@@ -4,9 +4,8 @@ use std::{
     ffi::{c_char, CStr},
     fmt::Debug,
     marker::PhantomData,
-    mem::ManuallyDrop,
+    mem::{ManuallyDrop, MaybeUninit},
     ops::{Deref, DerefMut, Range},
-    ptr::NonNull,
 };
 
 use paste::paste;
@@ -206,6 +205,7 @@ impl<T> From<Box<[T]>> for OwnedCSlice<T> {
 
 impl<T> From<OwnedCSlice<T>> for Box<[T]> {
     fn from(x: OwnedCSlice<T>) -> Self {
+        let x = ManuallyDrop::new(x);
         unsafe { Box::from_raw(std::slice::from_raw_parts_mut(x.ptr, x.len)) }
     }
 }
@@ -627,11 +627,11 @@ macro_rules! encoder_def {
         paste! {
             /// Constructs a new encoder.
             #[no_mangle]
-            pub extern "C" fn [<$($N)* _new>](
-                dims: CSlice<'_, usize>,
+            pub unsafe extern "C" fn [<$($N)* _new>](
+                dims: *const CSlice<'_, usize>,
                 num_base_dims: usize,
             ) -> Box<VolumeWaveletEncoder<'static, $T>> {
-                Box::new(VolumeWaveletEncoder::new(&dims, num_base_dims))
+                Box::new(VolumeWaveletEncoder::new(&*dims, num_base_dims))
             }
 
             /// Deallocates and destructs an encoder.
@@ -642,44 +642,38 @@ macro_rules! encoder_def {
 
             /// Adds a volume fetcher to the encoder.
             #[no_mangle]
-            pub extern "C" fn [<$($N)* _add_fetcher>]<'a, 'b: 'a>(
-                mut encoder: NonNull<VolumeWaveletEncoder<'a, $T>>,
-                index: CSlice<'_, usize>,
-                fetcher: VolumeFetcher<'b, $T>,
+            pub unsafe extern "C" fn [<$($N)* _add_fetcher>]<'a, 'b: 'a>(
+                encoder: *mut VolumeWaveletEncoder<'a, $T>,
+                index: *const CSlice<'_, usize>,
+                fetcher: *const MaybeUninit<VolumeFetcher<'b, $T>>,
             ) {
+                let fetcher = (*fetcher).assume_init_read();
                 let f = move |index: &[usize]| fetcher.call(index);
-
-                unsafe {
-                    encoder.as_mut().add_fetcher(&index, f);
-                }
+                (*encoder).add_fetcher(&*index, f);
             }
 
             /// Encodes the dataset with the specified block size and the haar wavelet.
             #[no_mangle]
-            pub extern "C" fn [<$($N)* _encode_haar>](
-                encoder: NonNull<VolumeWaveletEncoder<'_, $T>>,
+            pub unsafe extern "C" fn [<$($N)* _encode_haar>](
+                encoder: *const VolumeWaveletEncoder<'_, $T>,
                 output: *const std::os::raw::c_char,
-                block_size: CSlice<'_, usize>,
+                block_size: *const CSlice<'_, usize>,
             ) {
-                unsafe {
-                    let output = CStr::from_ptr(output.cast());
-                    let output = String::from_utf8_lossy(output.as_ref().to_bytes()).into_owned();
-                    encoder.as_ref().encode(output, &block_size, HaarWavelet)
-                }
+                let output = CStr::from_ptr(output.cast());
+                let output = String::from_utf8_lossy(output.as_ref().to_bytes()).into_owned();
+                (*encoder).encode(output, &*block_size, HaarWavelet)
             }
 
             /// Encodes the dataset with the specified block size and the average filter.
             #[no_mangle]
-            pub extern "C" fn [<$($N)* _encode_average>](
-                encoder: NonNull<VolumeWaveletEncoder<'_, $T>>,
+            pub unsafe extern "C" fn [<$($N)* _encode_average>](
+                encoder: *const VolumeWaveletEncoder<'_, $T>,
                 output: *const std::os::raw::c_char,
-                block_size: CSlice<'_, usize>,
+                block_size: *const CSlice<'_, usize>,
             ) {
-                unsafe {
-                    let output = CStr::from_ptr(output.cast());
-                    let output = String::from_utf8_lossy(output.as_ref().to_bytes()).into_owned();
-                    encoder.as_ref().encode(output, &block_size, AverageFilter)
-                }
+                let output = CStr::from_ptr(output.cast());
+                let output = String::from_utf8_lossy(output.as_ref().to_bytes()).into_owned();
+                (*encoder).encode(output, &*block_size, AverageFilter)
             }
         }
 
@@ -717,29 +711,28 @@ macro_rules! encoder_def {
         paste! {
             /// Fetches a value inserted into the metadata.
             #[no_mangle]
-            pub extern "C" fn [<$($N)* _metadata_get_ $($M)*>](
-                encoder: NonNull<VolumeWaveletEncoder<'_, $T>>,
+            pub unsafe extern "C" fn [<$($N)* _metadata_get_ $($M)*>](
+                encoder: *const VolumeWaveletEncoder<'_, $T>,
                 key: *const std::ffi::c_char,
-            ) -> COption<$U> {
-                unsafe {
-                    let key = CStr::from_ptr(key.cast());
-                    let key = String::from_utf8_lossy(key.as_ref().to_bytes());
-                    encoder.as_ref().get_metadata(&*key).into()
-                }
+                out: *mut MaybeUninit<COption<$U>>
+            ) {
+                let key = CStr::from_ptr(key.cast());
+                let key = String::from_utf8_lossy(key.as_ref().to_bytes());
+                let res = (*encoder).get_metadata(&*key).into();
+                (*out).write(res);
             }
 
             /// Inserts some metadata which will be included into the encoded dataset.
             #[no_mangle]
-            pub extern "C" fn [<$($N)* _metadata_insert_ $($M)*>](
-                mut encoder: NonNull<VolumeWaveletEncoder<'_, $T>>,
+            pub unsafe extern "C" fn [<$($N)* _metadata_insert_ $($M)*>](
+                encoder: *mut VolumeWaveletEncoder<'_, $T>,
                 key: *const std::ffi::c_char,
-                value: $U
+                value: *const MaybeUninit<$U>
             ) -> u8 {
-                unsafe {
-                    let key = CStr::from_ptr(key.cast());
-                    let key = String::from_utf8_lossy(key.as_ref().to_bytes()).into_owned();
-                    encoder.as_mut().insert_metadata(key, value) as u8
-                }
+                let key = CStr::from_ptr(key.cast());
+                let key = String::from_utf8_lossy(key.as_ref().to_bytes()).into_owned();
+                let value = (*value).assume_init_read();
+                (*encoder).insert_metadata(key, value) as u8
             }
         }
     };
@@ -812,14 +805,12 @@ macro_rules! decoder_def {
         paste! {
             /// Constructs a new decoder.
             #[no_mangle]
-            pub extern "C" fn [<$($N)* _new>](
+            pub unsafe extern "C" fn [<$($N)* _new>](
                 input: *const std::os::raw::c_char,
             ) -> Box<VolumeWaveletDecoder<$T, $F>> {
-                unsafe {
-                    let input = CStr::from_ptr(input.cast());
-                    let input = String::from_utf8_lossy(input.as_ref().to_bytes());
-                    Box::new(VolumeWaveletDecoder::new(&*input))
-                }
+                let input = CStr::from_ptr(input.cast());
+                let input = String::from_utf8_lossy(input.as_ref().to_bytes());
+                Box::new(VolumeWaveletDecoder::new(&*input))
             }
 
             /// Deallocates and destructs an decoder.
@@ -829,12 +820,14 @@ macro_rules! decoder_def {
             ) {}
 
             /// Decodes the dataset.
-            pub extern "C" fn [<$($N)* _decode>](
-                decoder: NonNull<VolumeWaveletDecoder<$T, $F>>,
-                writer_fetcher: BlockWriterFetcherBuilder<'_, $T>,
-                roi: CSlice<'_, CRange<usize>>,
-                levels: CSlice<'_, u32>
+            #[no_mangle]
+            pub unsafe extern "C" fn [<$($N)* _decode>](
+                decoder: *const VolumeWaveletDecoder<$T, $F>,
+                writer_fetcher: *const MaybeUninit<BlockWriterFetcherBuilder<'_, $T>>,
+                roi: *const CSlice<'_, CRange<usize>>,
+                levels: *const CSlice<'_, u32>
             ) {
+                let writer_fetcher = (*writer_fetcher).assume_init_read();
                 let writer_fetcher = move |index: &[usize]| {
                     let fetcher = writer_fetcher.call(index);
                     move |index: usize| {
@@ -844,21 +837,22 @@ macro_rules! decoder_def {
                 };
 
                 let roi: Vec<Range<_>> = (*roi).iter().cloned().map(|r| r.into()).collect();
-                unsafe {
-                    decoder.as_ref().decode(writer_fetcher, &roi, &levels);
-                }
+                (*decoder).decode(writer_fetcher, &roi, &*levels);
             }
 
             /// Applies a partial decoding to a partially decoded dataset.
-            pub extern "C" fn [<$($N)* _refine>](
-                decoder: NonNull<VolumeWaveletDecoder<$T, $F>>,
-                reader_fetcher: BlockReaderFetcherBuilder<'_, $T>,
-                writer_fetcher: BlockWriterFetcherBuilder<'_, $T>,
-                input_range: CSlice<'_, CRange<usize>>,
-                output_range: CSlice<'_, CRange<usize>>,
-                curr_levels: CSlice<'_, u32>,
-                refinements: CSlice<'_, u32>
+            #[no_mangle]
+            pub unsafe extern "C" fn [<$($N)* _refine>](
+                decoder: *const VolumeWaveletDecoder<$T, $F>,
+                reader_fetcher: *const MaybeUninit<BlockReaderFetcherBuilder<'_, $T>>,
+                writer_fetcher: *const MaybeUninit<BlockWriterFetcherBuilder<'_, $T>>,
+                input_range: *const CSlice<'_, CRange<usize>>,
+                output_range: *const CSlice<'_, CRange<usize>>,
+                curr_levels: *const CSlice<'_, u32>,
+                refinements: *const CSlice<'_, u32>
             ) {
+                let reader_fetcher = (*reader_fetcher).assume_init_read();
+                let writer_fetcher = (*writer_fetcher).assume_init_read();
                 let reader_fetcher = move |index: &[usize]| {
                     let fetcher = reader_fetcher.call(index);
                     move |index: usize| {
@@ -886,16 +880,14 @@ macro_rules! decoder_def {
                     .cloned()
                     .map(|r| r.into())
                     .collect();
-                unsafe {
-                    decoder.as_ref().refine(
-                        reader_fetcher,
-                        writer_fetcher,
-                        &input_range,
-                        &output_range,
-                        &curr_levels,
-                        &refinements
-                    );
-                }
+                (*decoder).refine(
+                    reader_fetcher,
+                    writer_fetcher,
+                    &input_range,
+                    &output_range,
+                    &*curr_levels,
+                    &*refinements
+                );
             }
         }
 
@@ -933,15 +925,15 @@ macro_rules! decoder_def {
         paste! {
             /// Fetches a value inserted into the metadata.
             #[no_mangle]
-            pub extern "C" fn [<$($N)* _metadata_get_ $($M)*>](
-                decoder: NonNull<VolumeWaveletDecoder<$T, $F>>,
+            pub unsafe extern "C" fn [<$($N)* _metadata_get_ $($M)*>](
+                decoder: *const VolumeWaveletDecoder<$T, $F>,
                 key: *const std::ffi::c_char,
-            ) -> COption<$U> {
-                unsafe {
-                    let key = CStr::from_ptr(key.cast());
-                    let key = String::from_utf8_lossy(key.as_ref().to_bytes());
-                    decoder.as_ref().get_metadata(&*key).into()
-                }
+                res: *mut MaybeUninit<COption<$U>>
+            ) {
+                let key = CStr::from_ptr(key.cast());
+                let key = String::from_utf8_lossy(key.as_ref().to_bytes());
+                let x = (*decoder).get_metadata(&*key).into();
+                (*res).write(x);
             }
         }
     };

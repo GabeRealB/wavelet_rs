@@ -172,6 +172,10 @@ where
         let block_counts_range: Vec<_> = block_counts.iter().map(|&c| 0..c).collect();
         let block_range: Vec<_> = block_size.iter().map(|&b| 0..b).collect();
 
+        if !output.as_ref().exists() {
+            std::fs::create_dir(output.as_ref()).unwrap();
+        }
+
         let (sx, rx) = std::sync::mpsc::sync_channel(block_counts.iter().product());
         for_each_range_par_enumerate(block_counts_range.iter().cloned(), |i, block_idx| {
             let block_offset: Vec<_> = block_idx
