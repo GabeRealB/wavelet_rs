@@ -110,27 +110,31 @@ struct range {
     T end;
 };
 
-/// Constant view over a borrowed contiguous memory region.
+/// View over a borrowed contiguous memory region.
 ///
 /// @tparam T Element type.
 template <typename T>
 class slice {
     // Invariant: m_ptr is invalid or m_len > 0.
-    const T* m_ptr;
+    T* m_ptr;
     std::size_t m_len;
 
 public:
     typedef T value_type;
     typedef std::size_t size_type;
     typedef std::ptrdiff_t difference_type;
+    typedef value_type& reference;
     typedef const value_type& const_reference;
+    typedef value_type* pointer;
     typedef const value_type* const_pointer;
+    typedef value_type* iterator;
     typedef const value_type* const_iterator;
+    typedef std::reverse_iterator<iterator> reverse_iterator;
     typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
 
     /// Constructs a new empty slice.
     explicit slice() noexcept
-        : m_ptr { reinterpret_cast<const T*>(alignof(value_type)) }
+        : m_ptr { reinterpret_cast<T*>(alignof(value_type)) }
         , m_len { 0 }
     {
     }
@@ -138,7 +142,7 @@ public:
     /// Constructs a new slice containing one element.
     ///
     /// @param value value the slice points to.
-    explicit slice(const T& value) noexcept
+    explicit slice(T& value) noexcept
         : m_ptr { &value }
         , m_len { 1 }
     {
@@ -149,7 +153,7 @@ public:
     ///
     /// @param ptr start of the array.
     /// @param size length of the array.
-    explicit slice(const T* ptr, size_type size) noexcept
+    explicit slice(T* ptr, size_type size) noexcept
         : m_ptr { ptr }
         , m_len { size }
     {
@@ -160,7 +164,7 @@ public:
     /// @tparam N size of the array.
     /// @param array array the slice points to.
     template <std::size_t N>
-    explicit slice(const std::array<T, N>& array) noexcept
+    explicit slice(std::array<T, N>& array) noexcept
         : m_ptr { array.data() }
         , m_len { array.size() }
     {
@@ -171,6 +175,11 @@ public:
 
     slice& operator=(const slice& other) = default;
     slice& operator=(slice&& other) = default;
+
+    operator slice<const T>() const noexcept
+    {
+        return slice<const T> { this->data(), this->size() };
+    }
 
     /// Checks that the elements of the two slices are equal.
     /// Is equivalent to calling std::equal with the two slices.
@@ -252,385 +261,6 @@ public:
     /// or equal to the contents of other, `false` otherwise.
     template <typename U>
     bool operator>=(const slice<U>& other) const
-    {
-        return std::lexicographical_compare(
-            this->begin(), this->end(),
-            other.begin(), other.end(),
-            [](const T& lhs, const T& rhs) { return lhs >= rhs; });
-    }
-
-    /// Returns a reference to the element at specified location pos, with bounds checking.
-    /// If pos is not within the range of the container, an exception of type std::out_of_range
-    /// is thrown.
-    ///
-    /// @param pos position of the element to return.
-    /// @return Reference to the requested element.
-    const_reference at(size_type pos) const
-    {
-        if (pos >= this->m_len)
-            throw std::out_of_range("slice access out of range");
-        return this[pos];
-    }
-
-    /// Returns a reference to the element at specified location pos.
-    /// No bounds checking is performed.
-    ///
-    /// @param pos position of the element to return.
-    /// @return Reference to the requested element.
-    const_reference operator[](size_type pos) const
-    {
-        return this->m_ptr[pos];
-    }
-
-    /// Returns a reference to the first element in the container.
-    /// @return Calling front on an empty container is undefined.
-    const_reference front() const
-    {
-        return *this->begin();
-    }
-
-    /// Returns a reference to the last element in the container.
-    /// @return Calling back on an empty container is undefined.
-    const_reference back() const
-    {
-        return *std::prev(this->end());
-    }
-
-    /// Returns pointer to the underlying array serving as element storage.
-    /// @return Pointer to the underlying element storage.
-    const T* data() const noexcept
-    {
-        return this->m_ptr;
-    }
-
-    /// Returns an iterator to the first element of the array.
-    /// If the array is empty, the returned iterator will be equal to end().
-    ///
-    /// @return Iterator to the first element.
-    const_iterator begin() const noexcept
-    {
-        return const_iterator { this->m_ptr };
-    }
-
-    /// Returns an iterator to the first element of the array.
-    /// If the array is empty, the returned iterator will be equal to end().
-    ///
-    /// @return Iterator to the first element.
-    const_iterator cbegin() const noexcept
-    {
-        return const_iterator { this->m_ptr };
-    }
-
-    /// Returns an iterator past the last element of the array.
-    /// This element acts as a placeholder; attempting to access it results in undefined behavior.
-    ///
-    /// @return Iterator to the element following the last element.
-    const_iterator end() const noexcept
-    {
-        return const_iterator { this->m_ptr + this->m_len };
-    }
-
-    /// Returns an iterator past the last element of the array.
-    /// This element acts as a placeholder; attempting to access it results in undefined behavior.
-    ///
-    /// @return Iterator to the element following the last element.
-    const_iterator cend() const noexcept
-    {
-        return const_iterator { this->m_ptr + this->m_len };
-    }
-
-    /// Returns a reverse iterator to the first element of the reversed array.
-    /// It corresponds to the last element of the non-reversed array. If the array is empty,
-    /// the returned iterator is equal to rend().
-    ///
-    /// @return Reverse iterator to the first element.
-    const_reverse_iterator rbegin() const noexcept
-    {
-        return const_reverse_iterator { this->end() };
-    }
-
-    /// Returns a reverse iterator to the first element of the reversed array.
-    /// It corresponds to the last element of the non-reversed array. If the array is empty,
-    /// the returned iterator is equal to rend().
-    ///
-    /// @return Reverse iterator to the first element.
-    const_reverse_iterator crbegin() const noexcept
-    {
-        return const_reverse_iterator { this->cend() };
-    }
-
-    /// Returns a reverse iterator to the element following the last element of the reversed array.
-    /// It corresponds to the element preceding the first element of the non-reversed array.
-    ///
-    /// @return Reverse iterator to the element following the last element.
-    const_reverse_iterator rend() const noexcept
-    {
-        return const_reverse_iterator { this->begin() };
-    }
-
-    /// Returns a reverse iterator to the element following the last element of the reversed array.
-    /// It corresponds to the element preceding the first element of the non-reversed array.
-    ///
-    /// @return Reverse iterator to the element following the last element.
-    const_reverse_iterator crend() const noexcept
-    {
-        return const_reverse_iterator { this->cbegin() };
-    }
-
-    /// Checks if the container has no elements, i.e. whether `begin() == end()`.
-    ///
-    /// @return `true` if the container is empty, `false` otherwise.
-    [[nodiscard]] bool empty() const noexcept
-    {
-        return this->begin() == this->end();
-    }
-
-    /// Returns the number of elements in the container, i.e. `std::distance(begin(), end())`.
-    ///
-    /// @return The number of elements in the container.
-    [[nodiscard]] size_type size() const noexcept
-    {
-        return std::distance(this->begin(), this->end());
-    }
-};
-
-namespace slice_priv_ {
-    struct own_slice_ {
-        void* ptr;
-        std::size_t len;
-    };
-
-    template <typename T>
-    struct own_slice_impl {
-        static constexpr bool implemented = false;
-    };
-
-#define OWNED_SLICE_EXTERN(T, N)                                     \
-    extern "C" own_slice_ wavelet_rs_slice_##N##_new(slice<T>);      \
-    extern "C" void wavelet_rs_slice_##N##_free(own_slice_);         \
-    template <>                                                      \
-    struct own_slice_impl<T> {                                       \
-        static constexpr bool implemented = true;                    \
-        static constexpr auto new_fn = wavelet_rs_slice_##N##_new;   \
-        static constexpr auto free_fn = wavelet_rs_slice_##N##_free; \
-    };
-
-    OWNED_SLICE_EXTERN(char, c_char)
-    OWNED_SLICE_EXTERN(std::uint8_t, u8)
-    OWNED_SLICE_EXTERN(std::uint16_t, u16)
-    OWNED_SLICE_EXTERN(std::uint32_t, u32)
-    OWNED_SLICE_EXTERN(std::uint64_t, u64)
-    OWNED_SLICE_EXTERN(std::int8_t, i8)
-    OWNED_SLICE_EXTERN(std::int16_t, i16)
-    OWNED_SLICE_EXTERN(std::int32_t, i32)
-    OWNED_SLICE_EXTERN(std::int64_t, i64)
-    OWNED_SLICE_EXTERN(float, f32)
-    OWNED_SLICE_EXTERN(double, f64)
-}
-
-/// Owned view over a sontiguous memory region.
-///
-/// @tparam T Element type.
-template <typename T>
-class owned_slice {
-    // Invariant: m_ptr is invalid or m_len > 0.
-    T* m_ptr;
-    std::size_t m_len;
-
-    using own_slice_ = slice_priv_::own_slice_impl<T>;
-    static_assert(own_slice_::implemented, "owned_slice is not implemented for the element");
-
-public:
-    typedef T value_type;
-    typedef std::size_t size_type;
-    typedef std::ptrdiff_t difference_type;
-    typedef value_type& reference;
-    typedef const value_type& const_reference;
-    typedef value_type* pointer;
-    typedef const value_type* const_pointer;
-    typedef value_type* iterator;
-    typedef const value_type* const_iterator;
-    typedef std::reverse_iterator<iterator> reverse_iterator;
-    typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
-
-    /// Constructs a new empty slice.
-    explicit owned_slice()
-        : owned_slice { slice<T> {} }
-    {
-    }
-
-    /// Constructs a new slice by copying all elements of the provided slice.
-    ///
-    /// @param value slice to be copied into the new slice.
-    explicit owned_slice(slice<T> s)
-        : m_ptr { reinterpret_cast<T*>(alignof(T)) }
-        , m_len { 0 }
-    {
-        static_assert(std::is_standard_layout<T>::value, "invalid layout");
-        static_assert(std::is_standard_layout<slice<T>>::value, "invalid layout");
-
-        auto slice = own_slice_::new_fn(std::move(s));
-        this->m_ptr = static_cast<T*>(slice.ptr);
-        this->m_len = slice.len;
-    }
-
-    /// Constructs a new slice containing only one value.
-    ///
-    /// @param value Value contained.
-    explicit owned_slice(const T& value)
-        : owned_slice { slice<T> { value } }
-    {
-    }
-
-    /// Constructs a new slice from a pointer and a length.
-    /// The pointer must be properly aligned and valid in the range [ptr; ptr+size].
-    ///
-    /// @param ptr start of the array.
-    /// @param size length of the array.
-    explicit owned_slice(const T* ptr, size_type size)
-        : owned_slice { slice<T> { ptr, size } }
-    {
-    }
-
-    /// @brief Constructs a new slice from an array.
-    ///
-    /// @tparam N size of the array.
-    /// @param array array the slice points to.
-    template <std::size_t N>
-    explicit owned_slice(const T& array)
-        : owned_slice {
-            slice<T> { array }
-        }
-    {
-    }
-
-    /// Copies another slice.
-    ///
-    /// @param other other slice.
-    owned_slice(const owned_slice& other)
-        : owned_slice { slice<T> { other.data(), other.size() } }
-    {
-    }
-
-    ~owned_slice()
-    {
-        if (this->m_len != 0) {
-            own_slice_::free_fn(slice_priv_::own_slice_ { static_cast<void*>(this->m_ptr), this->m_len });
-            this->m_ptr = reinterpret_cast<T*>(alignof(T));
-            this->m_len = 0;
-        }
-    }
-
-    owned_slice(owned_slice&& other) noexcept
-        : m_ptr { priv_::exchange(other.m_ptr, reinterpret_cast<T*>(alignof(T))) }
-        , m_len { priv_::exchange(other.m_len, 0) }
-    {
-    }
-
-    owned_slice& operator=(const owned_slice& rhs)
-    {
-        if (this != &rhs) {
-            if (this->m_len == rhs.m_len) {
-                std::copy(rhs.begin(), rhs.end(), this->begin());
-            } else {
-                this->~owned_slice();
-                new (this) owned_slice { slice<T> { rhs.m_ptr, rhs.m_len } };
-            }
-        }
-
-        return *this;
-    }
-
-    owned_slice& operator=(owned_slice&& rhs) noexcept
-    {
-        if (this != &rhs) {
-            std::swap(this->m_ptr, rhs->m_ptr);
-            std::swap(this->m_len, rhs->m_len);
-        }
-
-        return *this;
-    }
-
-    /// Checks that the elements of the two slices are equal.
-    /// Is equivalent to calling std::equal with the two slices.
-    ///
-    /// @tparam U other element type.
-    /// @param other other slice.
-    /// @return `true` if the two slices are equal, `false` otherwise.
-    template <typename U>
-    bool operator==(const owned_slice<U>& other) const
-    {
-        return std::equal(this->begin(), this->end(), other.begin());
-    }
-
-    /// Checks that the elements of the two slices are equal.
-    /// Is equivalent to negating the call to std::equal with the two slices.
-    ///
-    /// @tparam U other element type.
-    /// @param other other slice.
-    /// @return `true` if the two slices are not equal, `false` otherwise.
-    template <typename U>
-    bool operator!=(const owned_slice<U>& other) const
-    {
-        return !(*this == other);
-    }
-
-    /// Compares the contents of lhs and rhs lexicographically.
-    /// Is equivalent to calling std::lexicographical_compare with the two slices.
-    ///
-    /// @tparam U other element type.
-    /// @param other other slice.
-    /// @return `true` if the contents of this are lexicographically less than
-    /// the contents of other, `false` otherwise.
-    template <typename U>
-    bool operator<(const owned_slice<U>& other) const
-    {
-        return std::lexicographical_compare(
-            this->begin(), this->end(),
-            other.begin(), other.end());
-    }
-
-    /// Compares the contents of lhs and rhs lexicographically.
-    /// Is equivalent to calling std::lexicographical_compare with the two slices.
-    ///
-    /// @tparam U other element type.
-    /// @param other other slice.
-    /// @return `true` if the contents of this are lexicographically less than
-    /// or equal to the contents of other, `false` otherwise.
-    template <typename U>
-    bool operator<=(const owned_slice<U>& other) const
-    {
-        return std::lexicographical_compare(
-            this->begin(), this->end(),
-            other.begin(), other.end(),
-            [](const T& lhs, const T& rhs) { return lhs <= rhs; });
-    }
-
-    /// Compares the contents of lhs and rhs lexicographically.
-    /// Is equivalent to calling std::lexicographical_compare with the two slices.
-    ///
-    /// @tparam U other element type.
-    /// @param other other slice.
-    /// @return `true` if the contents of this are lexicographically greater than
-    /// the contents of other, `false` otherwise.
-    template <typename U>
-    bool operator>(const owned_slice<U>& other) const
-    {
-        return std::lexicographical_compare(
-            this->begin(), this->end(),
-            other.begin(), other.end(),
-            [](const T& lhs, const T& rhs) { return lhs > rhs; });
-    }
-
-    /// Compares the contents of lhs and rhs lexicographically.
-    /// Is equivalent to calling std::lexicographical_compare with the two slices.
-    ///
-    /// @tparam U other element type.
-    /// @param other other slice.
-    /// @return `true` if the contents of this are lexicographically greater than
-    /// or equal to the contents of other, `false` otherwise.
-    template <typename U>
-    bool operator>=(const owned_slice<U>& other) const
     {
         return std::lexicographical_compare(
             this->begin(), this->end(),
@@ -862,27 +492,483 @@ public:
     }
 };
 
+namespace slice_priv_ {
+    struct own_slice_ {
+        void* ptr;
+        std::size_t len;
+    };
+
+    template <typename T>
+    struct own_slice_impl {
+        static constexpr bool implemented = false;
+    };
+
+#define OWNED_SLICE_EXTERN(T, N)                                      \
+    extern "C" own_slice_ wavelet_rs_slice_##N##_new(slice<const T>); \
+    extern "C" void wavelet_rs_slice_##N##_free(own_slice_);          \
+    template <>                                                       \
+    struct own_slice_impl<T> {                                        \
+        static constexpr bool implemented = true;                     \
+        static constexpr auto new_fn = wavelet_rs_slice_##N##_new;    \
+        static constexpr auto free_fn = wavelet_rs_slice_##N##_free;  \
+    };
+
+    OWNED_SLICE_EXTERN(char, c_char)
+    OWNED_SLICE_EXTERN(std::uint8_t, u8)
+    OWNED_SLICE_EXTERN(std::uint16_t, u16)
+    OWNED_SLICE_EXTERN(std::uint32_t, u32)
+    OWNED_SLICE_EXTERN(std::uint64_t, u64)
+    OWNED_SLICE_EXTERN(std::int8_t, i8)
+    OWNED_SLICE_EXTERN(std::int16_t, i16)
+    OWNED_SLICE_EXTERN(std::int32_t, i32)
+    OWNED_SLICE_EXTERN(std::int64_t, i64)
+    OWNED_SLICE_EXTERN(float, f32)
+    OWNED_SLICE_EXTERN(double, f64)
+}
+
+/// Owned view over a sontiguous memory region.
+///
+/// @tparam T Element type.
+template <typename T>
+class owned_slice {
+    slice<T> m_slice;
+
+    using own_slice_ = slice_priv_::own_slice_impl<T>;
+    static_assert(own_slice_::implemented, "owned_slice is not implemented for the element");
+
+public:
+    typedef typename slice<T>::value_type value_type;
+    typedef typename slice<T>::size_type size_type;
+    typedef typename slice<T>::difference_type difference_type;
+    typedef typename slice<T>::reference reference;
+    typedef typename slice<T>::const_reference const_reference;
+    typedef typename slice<T>::pointer pointer;
+    typedef typename slice<T>::const_pointer const_pointer;
+    typedef typename slice<T>::iterator iterator;
+    typedef typename slice<T>::const_iterator const_iterator;
+    typedef typename slice<T>::reverse_iterator reverse_iterator;
+    typedef typename slice<T>::const_reverse_iterator const_reverse_iterator;
+
+    /// Constructs a new empty slice.
+    explicit owned_slice()
+        : owned_slice { slice<T> {} }
+    {
+    }
+
+    /// Constructs a new slice by copying all elements of the provided slice.
+    ///
+    /// @param value slice to be copied into the new slice.
+    explicit owned_slice(slice<const T> s)
+        : m_slice {}
+    {
+        static_assert(std::is_standard_layout<T>::value, "invalid layout");
+        static_assert(std::is_standard_layout<slice<T>>::value, "invalid layout");
+
+        auto tmp_sl = own_slice_::new_fn(std::move(s));
+        this->m_slice = slice<T> { static_cast<T*>(tmp_sl.ptr), tmp_sl.len };
+    }
+
+    /// Constructs a new slice containing only one value.
+    ///
+    /// @param value Value contained.
+    explicit owned_slice(const T& value)
+        : owned_slice { slice<const T> { value } }
+    {
+    }
+
+    /// Constructs a new slice from a pointer and a length.
+    /// The pointer must be properly aligned and valid in the range [ptr; ptr+size].
+    ///
+    /// @param ptr start of the array.
+    /// @param size length of the array.
+    explicit owned_slice(const T* ptr, size_type size)
+        : owned_slice { slice<const T> { ptr, size } }
+    {
+    }
+
+    /// @brief Constructs a new slice from an array.
+    ///
+    /// @tparam N size of the array.
+    /// @param array array the slice points to.
+    template <std::size_t N>
+    explicit owned_slice(const std::array<T, N>& array)
+        : owned_slice {
+            slice<const T> { array }
+        }
+    {
+    }
+
+    /// Copies another slice.
+    ///
+    /// @param other other slice.
+    owned_slice(const owned_slice& other)
+        : owned_slice { static_cast<slice<const T>>(other) }
+    {
+    }
+
+    ~owned_slice()
+    {
+        if (this->m_slice.size() != 0) {
+            own_slice_::free_fn(slice_priv_::own_slice_ { static_cast<void*>(this->data()), this->size() });
+            this->m_slice = slice<T> {};
+        }
+    }
+
+    owned_slice(owned_slice&& other) noexcept
+        : m_slice { priv_::exchange(other.m_slice, slice<T> {}) }
+    {
+    }
+
+    owned_slice& operator=(const owned_slice& rhs)
+    {
+        if (this != &rhs) {
+            if (this->m_slice.size() == rhs.m_slice.size()) {
+                std::copy(rhs.begin(), rhs.end(), this->begin());
+            } else {
+                this->~owned_slice();
+                new (this) owned_slice { static_cast<slice<const T>>(rhs) };
+            }
+        }
+
+        return *this;
+    }
+
+    owned_slice& operator=(owned_slice&& rhs) noexcept
+    {
+        if (this != &rhs) {
+            std::swap(this->m_slice, rhs->m_slice);
+        }
+
+        return *this;
+    }
+
+    explicit operator slice<T>() noexcept
+    {
+        return this->m_slice;
+    }
+
+    explicit operator slice<const T>() const noexcept
+    {
+        return this->m_slice;
+    }
+
+    /// Checks that the elements of the two slices are equal.
+    /// Is equivalent to calling std::equal with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the two slices are equal, `false` otherwise.
+    template <typename U>
+    bool operator==(const owned_slice<U>& other) const
+    {
+        return this->m_slice == other.m_slice;
+    }
+
+    /// Checks that the elements of the two slices are equal.
+    /// Is equivalent to negating the call to std::equal with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the two slices are not equal, `false` otherwise.
+    template <typename U>
+    bool operator!=(const owned_slice<U>& other) const
+    {
+        return this->m_slice != other.m_slice;
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the contents of this are lexicographically less than
+    /// the contents of other, `false` otherwise.
+    template <typename U>
+    bool operator<(const owned_slice<U>& other) const
+    {
+        return this->m_slice < other.m_slice;
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the contents of this are lexicographically less than
+    /// or equal to the contents of other, `false` otherwise.
+    template <typename U>
+    bool operator<=(const owned_slice<U>& other) const
+    {
+        return this->m_slice <= other.m_slice;
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the contents of this are lexicographically greater than
+    /// the contents of other, `false` otherwise.
+    template <typename U>
+    bool operator>(const owned_slice<U>& other) const
+    {
+        return this->m_slice > other.m_slice;
+    }
+
+    /// Compares the contents of lhs and rhs lexicographically.
+    /// Is equivalent to calling std::lexicographical_compare with the two slices.
+    ///
+    /// @tparam U other element type.
+    /// @param other other slice.
+    /// @return `true` if the contents of this are lexicographically greater than
+    /// or equal to the contents of other, `false` otherwise.
+    template <typename U>
+    bool operator>=(const owned_slice<U>& other) const
+    {
+        return this->m_slice >= other.m_slice;
+    }
+
+    /// Returns a reference to the element at specified location pos, with bounds checking.
+    /// If pos is not within the range of the container, an exception of type std::out_of_range
+    /// is thrown.
+    ///
+    /// @param pos position of the element to return.
+    /// @return Reference to the requested element.
+    reference at(size_type pos)
+    {
+        return this->m_slice.at(pos);
+    }
+
+    /// Returns a reference to the element at specified location pos, with bounds checking.
+    /// If pos is not within the range of the container, an exception of type std::out_of_range
+    /// is thrown.
+    ///
+    /// @param pos position of the element to return.
+    /// @return Reference to the requested element.
+    const_reference at(size_type pos) const
+    {
+        return this->m_slice.at(pos);
+    }
+
+    /// Returns a reference to the element at specified location pos.
+    /// No bounds checking is performed.
+    ///
+    /// @param pos position of the element to return.
+    /// @return Reference to the requested element.
+    reference operator[](size_type pos)
+    {
+        return this->m_slice[pos];
+    }
+
+    /// Returns a reference to the element at specified location pos.
+    /// No bounds checking is performed.
+    ///
+    /// @param pos position of the element to return.
+    /// @return Reference to the requested element.
+    const_reference operator[](size_type pos) const
+    {
+        return this->m_slice[pos];
+    }
+
+    /// Returns a reference to the first element in the container.
+    /// @return Calling front on an empty container is undefined.
+    reference front()
+    {
+        return this->m_slice.front();
+    }
+
+    /// Returns a reference to the first element in the container.
+    /// @return Calling front on an empty container is undefined.
+    const_reference front() const
+    {
+        return this->m_slice.front();
+    }
+
+    /// Returns a reference to the last element in the container.
+    /// @return Calling back on an empty container is undefined.
+    reference back()
+    {
+        return this->m_slice.back();
+    }
+
+    /// Returns a reference to the last element in the container.
+    /// @return Calling back on an empty container is undefined.
+    const_reference back() const
+    {
+        return this->m_slice.back();
+    }
+
+    /// Returns pointer to the underlying array serving as element storage.
+    /// @return Pointer to the underlying element storage.
+    T* data() noexcept
+    {
+        return this->m_slice.data();
+    }
+
+    /// Returns pointer to the underlying array serving as element storage.
+    /// @return Pointer to the underlying element storage.
+    const T* data() const noexcept
+    {
+        return this->m_slice.data();
+    }
+
+    /// Returns an iterator to the first element of the array.
+    /// If the array is empty, the returned iterator will be equal to end().
+    ///
+    /// @return Iterator to the first element.
+    iterator begin() noexcept
+    {
+        return this->m_slice.begin();
+    }
+
+    /// Returns an iterator to the first element of the array.
+    /// If the array is empty, the returned iterator will be equal to end().
+    ///
+    /// @return Iterator to the first element.
+    const_iterator begin() const noexcept
+    {
+        return this->m_slice.begin();
+    }
+
+    /// Returns an iterator to the first element of the array.
+    /// If the array is empty, the returned iterator will be equal to end().
+    ///
+    /// @return Iterator to the first element.
+    const_iterator cbegin() const noexcept
+    {
+        return this->m_slice.cbegin();
+    }
+
+    /// Returns an iterator past the last element of the array.
+    /// This element acts as a placeholder; attempting to access it results in undefined behavior.
+    ///
+    /// @return Iterator to the element following the last element.
+    iterator end() noexcept
+    {
+        return this->m_slice.end();
+    }
+
+    /// Returns an iterator past the last element of the array.
+    /// This element acts as a placeholder; attempting to access it results in undefined behavior.
+    ///
+    /// @return Iterator to the element following the last element.
+    const_iterator end() const noexcept
+    {
+        return this->m_slice.end();
+    }
+
+    /// Returns an iterator past the last element of the array.
+    /// This element acts as a placeholder; attempting to access it results in undefined behavior.
+    ///
+    /// @return Iterator to the element following the last element.
+    const_iterator cend() const noexcept
+    {
+        return this->m_slice.cend();
+    }
+
+    /// Returns a reverse iterator to the first element of the reversed array.
+    /// It corresponds to the last element of the non-reversed array. If the array is empty,
+    /// the returned iterator is equal to rend().
+    ///
+    /// @return Reverse iterator to the first element.
+    reverse_iterator rbegin() noexcept
+    {
+        return this->m_slice.rbegin();
+    }
+
+    /// Returns a reverse iterator to the first element of the reversed array.
+    /// It corresponds to the last element of the non-reversed array. If the array is empty,
+    /// the returned iterator is equal to rend().
+    ///
+    /// @return Reverse iterator to the first element.
+    const_reverse_iterator rbegin() const noexcept
+    {
+        return this->m_slice.rbegin();
+    }
+
+    /// Returns a reverse iterator to the first element of the reversed array.
+    /// It corresponds to the last element of the non-reversed array. If the array is empty,
+    /// the returned iterator is equal to rend().
+    ///
+    /// @return Reverse iterator to the first element.
+    const_reverse_iterator crbegin() const noexcept
+    {
+        return this->m_slice.crbegin();
+    }
+
+    /// Returns a reverse iterator to the element following the last element of the reversed array.
+    /// It corresponds to the element preceding the first element of the non-reversed array.
+    ///
+    /// @return Reverse iterator to the element following the last element.
+    reverse_iterator rend() noexcept
+    {
+        return this->m_slice.rend();
+    }
+
+    /// Returns a reverse iterator to the element following the last element of the reversed array.
+    /// It corresponds to the element preceding the first element of the non-reversed array.
+    ///
+    /// @return Reverse iterator to the element following the last element.
+    const_reverse_iterator rend() const noexcept
+    {
+        return this->m_slice.rend();
+    }
+
+    /// Returns a reverse iterator to the element following the last element of the reversed array.
+    /// It corresponds to the element preceding the first element of the non-reversed array.
+    ///
+    /// @return Reverse iterator to the element following the last element.
+    const_reverse_iterator crend() const noexcept
+    {
+        return this->m_slice.crend();
+    }
+
+    /// Checks if the container has no elements, i.e. whether `begin() == end()`.
+    ///
+    /// @return `true` if the container is empty, `false` otherwise.
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return this->m_slice.empty();
+    }
+
+    /// Returns the number of elements in the container, i.e. `std::distance(begin(), end())`.
+    ///
+    /// @return The number of elements in the container.
+    [[nodiscard]] size_type size() const noexcept
+    {
+        return this->m_slice.size();
+    }
+
+    /// Assigns the `value` to all elements in the container.
+    ///
+    /// @param value the value to assign to the elements
+    void fill(const T& value)
+    {
+        this->m_slice.fill(value);
+    }
+};
+
 /// Owned string type.
 class string {
     owned_slice<char> m_buff;
 
 public:
     typedef char CharT;
-    typedef owned_slice<char>::value_type value_type;
-    typedef owned_slice<char>::size_type size_type;
-    typedef owned_slice<char>::difference_type difference_type;
-    typedef owned_slice<char>::reference reference;
-    typedef owned_slice<char>::const_reference const_reference;
-    typedef owned_slice<char>::pointer pointer;
-    typedef owned_slice<char>::const_pointer const_pointer;
-    typedef owned_slice<char>::iterator iterator;
-    typedef owned_slice<char>::const_iterator const_iterator;
-    typedef owned_slice<char>::reverse_iterator reverse_iterator;
-    typedef owned_slice<char>::const_reverse_iterator const_reverse_iterator;
+    typedef typename owned_slice<char>::value_type value_type;
+    typedef typename owned_slice<char>::size_type size_type;
+    typedef typename owned_slice<char>::difference_type difference_type;
+    typedef typename owned_slice<char>::reference reference;
+    typedef typename owned_slice<char>::const_reference const_reference;
+    typedef typename owned_slice<char>::pointer pointer;
+    typedef typename owned_slice<char>::const_pointer const_pointer;
+    typedef typename owned_slice<char>::iterator iterator;
+    typedef typename owned_slice<char>::const_iterator const_iterator;
+    typedef typename owned_slice<char>::reverse_iterator reverse_iterator;
+    typedef typename owned_slice<char>::const_reverse_iterator const_reverse_iterator;
 
     explicit string() = default;
     explicit string(const CharT* s, size_type count)
-        : m_buff { slice<char> { s, count } }
+        : m_buff { slice<const char> { s, count } }
     {
     }
     explicit string(const CharT* s)
@@ -1582,13 +1668,13 @@ public:
 ///
 /// @tparam T element type of the volume.
 template <typename T>
-using volume_fetcher = callable<Fn, T, slice<std::size_t>>;
+using volume_fetcher = callable<Fn, T, slice<const std::size_t>>;
 
 /// Callable reading an element from the provided position in the current block.
 ///
 /// @tparam T element type of the volume.
 template <typename T>
-using block_reader = callable<Fn, T, slice<std::size_t>>;
+using block_reader = callable<Fn, T, slice<const std::size_t>>;
 
 /// Callable returning a reader for a volume block.
 /// The callable must be thread-safe.
@@ -1601,13 +1687,13 @@ using block_reader_fetcher = callable<Fn, block_reader<T>, std::size_t>;
 ///
 /// @tparam T element type of the volume.
 template <typename T>
-using reader_fetcher = callable<FnOnce, block_reader_fetcher<T>, slice<std::size_t>>;
+using reader_fetcher = callable<FnOnce, block_reader_fetcher<T>, slice<const std::size_t>>;
 
 /// Callable writing an element at the provided position in the current block.
 ///
 /// @tparam T element type of the volume.
 template <typename T>
-using block_writer = callable<FnMut, void, slice<std::size_t>, T>;
+using block_writer = callable<FnMut, void, slice<const std::size_t>, T>;
 
 /// Callable returning a writer for a volume block.
 /// The callable must be thread-safe.
@@ -1620,7 +1706,7 @@ using block_writer_fetcher = callable<Fn, block_writer<T>, std::size_t>;
 ///
 /// @tparam T element type of the volume.
 template <typename T>
-using writer_fetcher = callable<FnOnce, block_writer_fetcher<T>, slice<std::size_t>>;
+using writer_fetcher = callable<FnOnce, block_writer_fetcher<T>, slice<const std::size_t>>;
 
 namespace filters {
     /// Marker type for the haar wavelet.
@@ -1693,15 +1779,15 @@ namespace enc_priv_ {
 
 #define ENCODER_EXTERN_(T, N)                                                        \
     extern "C" encoder_* wavelet_rs_encoder_##N##_new(                               \
-        const slice<std::size_t>*, std::size_t);                                     \
+        const slice<const std::size_t>*, std::size_t);                               \
     extern "C" void wavelet_rs_encoder_##N##_free(encoder_*);                        \
     extern "C" void wavelet_rs_encoder_##N##_add_fetcher(encoder_*,                  \
-        const slice<std::size_t>*,                                                   \
+        const slice<const std::size_t>*,                                             \
         const priv_::maybe_uninit<volume_fetcher<T>>*);                              \
     extern "C" void wavelet_rs_encoder_##N##_encode_haar(const encoder_*,            \
-        const char*, const slice<std::size_t>*);                                     \
+        const char*, const slice<const std::size_t>*);                               \
     extern "C" void wavelet_rs_encoder_##N##_encode_average(const encoder_*,         \
-        const char*, const slice<std::size_t>*);                                     \
+        const char*, const slice<const std::size_t>*);                               \
     ENCODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                                  \
     ENCODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                                \
     ENCODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                                \
@@ -1790,7 +1876,7 @@ public:
     ///
     /// @param dims dimmensions of the volume to be encoded.
     /// @param num_base_dims number of dimmensions contained in each volume_fetcher.
-    encoder(slice<std::size_t> dims, std::size_t num_base_dims)
+    encoder(slice<const std::size_t> dims, std::size_t num_base_dims)
         : m_enc { encoder_::new_fn(&dims, num_base_dims) }
     {
     }
@@ -1826,9 +1912,9 @@ public:
     ///
     /// @param index position of the fetcher in the volume.
     /// @param fetcher fetcher to be inserted.
-    void add_fetcher(slice<std::size_t> index, volume_fetcher<T>&& fetcher)
+    void add_fetcher(slice<const std::size_t> index, volume_fetcher<T>&& fetcher)
     {
-        static_assert(std::is_standard_layout<slice<std::size_t>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<slice<const std::size_t>>::value, "invalid layout");
         static_assert(std::is_standard_layout<priv_::maybe_uninit<volume_fetcher<T>>>::value, "invalid layout");
 
         priv_::maybe_uninit<volume_fetcher<T>> f { std::move(fetcher) };
@@ -1844,9 +1930,9 @@ public:
     /// @param output output directory.
     /// @param block_size selected block size.
     template <typename Filter>
-    void encode(const char* output, slice<std::size_t> block_size) const
+    void encode(const char* output, slice<const std::size_t> block_size) const
     {
-        static_assert(std::is_standard_layout<slice<std::size_t>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<slice<const std::size_t>>::value, "invalid layout");
         static_assert(encoder_enc_<Filter>::implemented,
             "encode is not implemented for the element, filter pair");
 
@@ -1938,15 +2024,15 @@ namespace dec_priv_ {
     extern "C" void wavelet_rs_decoder_##N##_free(decoder_*);              \
     extern "C" void wavelet_rs_decoder_##N##_decode(const decoder_*,       \
         const priv_::maybe_uninit<writer_fetcher<T>>*,                     \
-        const slice<range<std::size_t>>*,                                  \
-        const slice<std::uint32_t>*);                                      \
+        const slice<const range<std::size_t>>*,                            \
+        const slice<const std::uint32_t>*);                                \
     extern "C" void wavelet_rs_decoder_##N##_refine(const decoder_*,       \
         const priv_::maybe_uninit<reader_fetcher<T>>*,                     \
         const priv_::maybe_uninit<writer_fetcher<T>>*,                     \
-        const slice<range<std::size_t>>*,                                  \
-        const slice<range<std::size_t>>*,                                  \
-        const slice<std::uint32_t>*,                                       \
-        const slice<std::uint32_t>*);                                      \
+        const slice<const range<std::size_t>>*,                            \
+        const slice<const range<std::size_t>>*,                            \
+        const slice<const std::uint32_t>*,                                 \
+        const slice<const std::uint32_t>*);                                \
     DECODER_METADATA_EXTERN(T, F, N, std::uint8_t, u8)                     \
     DECODER_METADATA_EXTERN(T, F, N, std::uint16_t, u16)                   \
     DECODER_METADATA_EXTERN(T, F, N, std::uint32_t, u32)                   \
@@ -2079,12 +2165,12 @@ public:
     /// @param roi region of interest for the decoding operation.
     /// @param levels desired detail levels.
     void decode(writer_fetcher<T>&& writer,
-        slice<range<std::size_t>> roi,
-        slice<std::uint32_t> levels) const
+        slice<const range<std::size_t>> roi,
+        slice<const std::uint32_t> levels) const
     {
         static_assert(std::is_standard_layout<priv_::maybe_uninit<writer_fetcher<T>>>::value, "invalid layout");
-        static_assert(std::is_standard_layout<slice<range<std::size_t>>>::value, "invalid layout");
-        static_assert(std::is_standard_layout<slice<std::uint32_t>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<slice<const range<std::size_t>>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<slice<const std::uint32_t>>::value, "invalid layout");
 
         priv_::maybe_uninit<writer_fetcher<T>> w { std::forward<writer_fetcher<T>>(writer) };
         decoder_::decode_fn(this->m_dec, &w, &roi, &levels);
@@ -2100,15 +2186,15 @@ public:
     /// @param refinements number of refinement levels to apply.
     void refine(reader_fetcher<T>&& reader,
         writer_fetcher<T>&& writer,
-        slice<range<std::size_t>> input_range,
-        slice<range<std::size_t>> output_range,
-        slice<std::uint32_t> curr_levels,
-        slice<std::uint32_t> refinements) const
+        slice<const range<std::size_t>> input_range,
+        slice<const range<std::size_t>> output_range,
+        slice<const std::uint32_t> curr_levels,
+        slice<const std::uint32_t> refinements) const
     {
         static_assert(std::is_standard_layout<priv_::maybe_uninit<reader_fetcher<T>>>::value, "invalid layout");
         static_assert(std::is_standard_layout<priv_::maybe_uninit<writer_fetcher<T>>>::value, "invalid layout");
-        static_assert(std::is_standard_layout<slice<range<std::size_t>>>::value, "invalid layout");
-        static_assert(std::is_standard_layout<slice<std::uint32_t>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<slice<const range<std::size_t>>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<slice<const std::uint32_t>>::value, "invalid layout");
 
         priv_::maybe_uninit<reader_fetcher<T>> r { std::forward<reader_fetcher<T>>(reader) };
         priv_::maybe_uninit<writer_fetcher<T>> w { std::forward<writer_fetcher<T>>(writer) };

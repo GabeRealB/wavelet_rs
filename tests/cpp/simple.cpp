@@ -20,17 +20,17 @@ int main()
     };
 
     // construct the encoder with the dimensions of the dataset.
-    wavelet::slice<std::size_t> dims_slice { dims.data(), dims.size() };
+    wavelet::slice<std::size_t> dims_slice { dims };
     wavelet::encoder<float> enc { dims_slice, num_base_dims };
 
     // the fetcher is a simple lambda, reading a value out of the vector.
     // the vector is only read, therefore the lambda is thread-safe.
     wavelet::volume_fetcher<float> fetcher {
-        [&input](wavelet::slice<std::size_t> pos) { return input[pos[0]]; }
+        [&input](wavelet::slice<const std::size_t> pos) { return input[pos[0]]; }
     };
 
     // insert the constructed fetcher into the encoder at position [0].
-    enc.add_fetcher(wavelet::slice<std::size_t> { 0 }, std::move(fetcher));
+    enc.add_fetcher(wavelet::slice<const std::size_t> { 0 }, std::move(fetcher));
 
     // write some example metadata.
     constexpr const char* example_string = "some example string";
@@ -45,8 +45,8 @@ int main()
 
     // encode the data with a block size of 32x1 and the average filter.
     std::array<std::size_t, num_base_dims + 1> block_size { 32, 1 };
-    enc.encode<wavelet::filters::average_filter>("encode_cpp",
-        wavelet::slice<std::size_t> { block_size.data(), block_size.size() });
+    wavelet::slice<std::size_t> block_size_slice { block_size };
+    enc.encode<wavelet::filters::average_filter>("encode_cpp", block_size_slice);
 
     // construct a decoder by opening the newly encoded file.
     wavelet::decoder<float, wavelet::filters::average_filter> dec { "encode_cpp/output.bin" };
@@ -70,7 +70,7 @@ int main()
     // the writer will only be called once and does not need to be
     // thread-safe.
     wavelet::writer_fetcher<float> writer {
-        [&output](wavelet::slice<std::size_t> block_counts) -> wavelet::block_writer_fetcher<float> {
+        [&output](wavelet::slice<const std::size_t> block_counts) -> wavelet::block_writer_fetcher<float> {
             // the volume is one dimensional, therefore we
             // only require the offset to the start of the
             // requested block.
@@ -87,7 +87,7 @@ int main()
                 [block_offsets, &output](std::size_t block) -> wavelet::block_writer<float> {
                     auto block_offset = block_offsets[block];
                     return wavelet::block_writer<float> {
-                        [block_offset, &output](wavelet::slice<std::size_t> pos, float value) {
+                        [block_offset, &output](wavelet::slice<const std::size_t> pos, float value) {
                             output[pos[0] + block_offset] = value;
                         }
                     };
