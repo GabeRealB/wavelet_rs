@@ -48,8 +48,15 @@ int main()
     wavelet::slice<std::size_t> block_size_slice { block_size };
     enc.encode<wavelet::filters::average_filter>("encode_cpp", block_size_slice);
 
+    wavelet::decoder_info dec_info = wavelet::get_decoder_info("encode_cpp/output.bin");
+    assert(dec_info.e_type == wavelet::elem_type::F32);
+    assert(dec_info.f_type == wavelet::filter_type::Average);
+    assert(static_cast<wavelet::slice<std::size_t>>(dec_info.dims) == dims_slice);
+
     // construct a decoder by opening the newly encoded file.
     wavelet::decoder<float, wavelet::filters::average_filter> dec { "encode_cpp/output.bin" };
+
+    assert(dec.dims() == dims_slice);
 
     // metadata added to the encoder are available to the decoder.
     auto i_meta_dec = dec.metadata_get<int>("invalid key");

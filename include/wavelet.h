@@ -1478,6 +1478,84 @@ public:
     }
 };
 
+/// Element types exposed by the ffi api.
+enum class elem_type : std::int32_t {
+    F32 = 0,
+
+#ifdef WAVELET_RS_IMPORT_VEC
+    F32Vec1 = 1,
+    F32Vec2,
+    F32Vec3,
+    F32Vec4,
+#endif // WAVELET_RS_IMPORT_VEC
+
+#ifdef WAVELET_RS_IMPORT_MAT
+    F32Mat1x1 = 11,
+    F32Mat1x2,
+    F32Mat1x3,
+    F32Mat1x4,
+
+    F32Mat2x1,
+    F32Mat2x2,
+    F32Mat2x3,
+    F32Mat2x4,
+
+    F32Mat3x1,
+    F32Mat3x2,
+    F32Mat3x3,
+    F32Mat3x4,
+
+    F32Mat4x1,
+    F32Mat4x2,
+    F32Mat4x3,
+    F32Mat4x4,
+#endif // WAVELET_RS_IMPORT_MAT
+
+    F64 = 40,
+
+#ifdef WAVELET_RS_IMPORT_VEC
+    F64Vec1 = 41,
+    F64Vec2,
+    F64Vec3,
+    F64Vec4,
+#endif // WAVELET_RS_IMPORT_VEC
+
+#ifdef WAVELET_RS_IMPORT_MAT
+    F64Mat1x1 = 51,
+    F64Mat1x2,
+    F64Mat1x3,
+    F64Mat1x4,
+
+    F64Mat2x1,
+    F64Mat2x2,
+    F64Mat2x3,
+    F64Mat2x4,
+
+    F64Mat3x1,
+    F64Mat3x2,
+    F64Mat3x3,
+    F64Mat3x4,
+
+    F64Mat4x1,
+    F64Mat4x2,
+    F64Mat4x3,
+    F64Mat4x4,
+#endif // WAVELET_RS_IMPORT_MAT
+};
+
+/// Filter types exposed by the ffi api.
+enum class filter_type : std::int8_t {
+    Haar = 0,
+    Average = 1
+};
+
+/// Info pertaining to a decoder.
+struct decoder_info {
+    elem_type e_type;
+    filter_type f_type;
+    owned_slice<std::size_t> dims;
+};
+
 /// Marker for callables that can only be invoked once.
 struct FnOnce { };
 
@@ -2022,6 +2100,8 @@ namespace dec_priv_ {
 #define DECODER_EXTERN_(T, F, N)                                           \
     extern "C" decoder_* wavelet_rs_decoder_##N##_new(const char*);        \
     extern "C" void wavelet_rs_decoder_##N##_free(decoder_*);              \
+    extern "C" void wavelet_rs_decoder_##N##_dims(const decoder_*,         \
+        priv_::maybe_uninit<slice<const std::size_t>>*);                   \
     extern "C" void wavelet_rs_decoder_##N##_decode(const decoder_*,       \
         const priv_::maybe_uninit<writer_fetcher<T>>*,                     \
         const slice<const range<std::size_t>>*,                            \
@@ -2049,6 +2129,7 @@ namespace dec_priv_ {
         static constexpr bool implemented = true;                          \
         static constexpr auto new_fn = wavelet_rs_decoder_##N##_new;       \
         static constexpr auto free_fn = wavelet_rs_decoder_##N##_free;     \
+        static constexpr auto dims_fn = wavelet_rs_decoder_##N##_dims;     \
         static constexpr auto decode_fn = wavelet_rs_decoder_##N##_decode; \
         static constexpr auto refine_fn = wavelet_rs_decoder_##N##_refine; \
     };
@@ -2095,6 +2176,8 @@ namespace dec_priv_ {
 
     DECODER_EXTERN(float, f32)
     DECODER_EXTERN(double, f64)
+
+    extern "C" void get_decoder_info(const char*, priv_::maybe_uninit<decoder_info>*);
 }
 
 template <typename T, typename F>
@@ -2140,6 +2223,18 @@ public:
         }
 
         return *this;
+    }
+
+    /// Fetches the dimensions of the encoded dataset.
+    ///
+    /// @return Dimensions of the encoded dataset.
+    slice<const std::size_t> dims() const
+    {
+        static_assert(std::is_standard_layout<priv_::maybe_uninit<slice<const std::size_t>>>::value, "invalid layout");
+
+        priv_::maybe_uninit<slice<const std::size_t>> res {};
+        decoder_::dims_fn(this->m_dec, &res);
+        return res.get();
     }
 
     /// Fetches an element from the decoder metadata.
@@ -2202,6 +2297,16 @@ public:
             &output_range, &curr_levels, &refinements);
     }
 };
+
+/// Returns some info pertaining to the encoded data located at `path`.
+decoder_info get_decoder_info(const char* path)
+{
+    static_assert(std::is_standard_layout<priv_::maybe_uninit<decoder_info>>::value, "invalid layout");
+
+    priv_::maybe_uninit<decoder_info> res {};
+    dec_priv_::get_decoder_info(path, &res);
+    return res.get();
+}
 
 }
 

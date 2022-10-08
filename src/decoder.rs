@@ -84,6 +84,11 @@ where
         self.metadata.get(key)
     }
 
+    /// Fetches the dimensions of the encoded dataset.
+    pub fn dims(&self) -> &[usize] {
+        &self.dims
+    }
+
     /// Applies a partial decoding to a partially decoded dataset.
     pub fn refine<BR, R, BW, W>(
         &self,

@@ -167,6 +167,13 @@ impl<T> DerefMut for OwnedCSlice<T> {
     }
 }
 
+impl<T: Clone> Clone for OwnedCSlice<T> {
+    fn clone(&self) -> Self {
+        let vec: Vec<_> = (**self).into();
+        vec.into_boxed_slice().into()
+    }
+}
+
 impl<T: Debug> Debug for OwnedCSlice<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(&**self, f)
@@ -300,6 +307,225 @@ impl<T> From<COption<T>> for Option<T> {
             COption::Some(x) => Some(x),
         }
     }
+}
+
+/// Element types exposed by the ffi api.
+#[repr(i32)]
+#[allow(missing_docs)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ElemType {
+    F32 = 0,
+
+    #[cfg(feature = "ffi_vec")]
+    F32Vec1 = 1,
+    #[cfg(feature = "ffi_vec")]
+    F32Vec2,
+    #[cfg(feature = "ffi_vec")]
+    F32Vec3,
+    #[cfg(feature = "ffi_vec")]
+    F32Vec4,
+
+    #[cfg(feature = "ffi_mat")]
+    F32Mat1x1 = 11,
+    #[cfg(feature = "ffi_mat")]
+    F32Mat1x2,
+    #[cfg(feature = "ffi_mat")]
+    F32Mat1x3,
+    #[cfg(feature = "ffi_mat")]
+    F32Mat1x4,
+
+    #[cfg(feature = "ffi_mat")]
+    F32Mat2x1,
+    #[cfg(feature = "ffi_mat")]
+    F32Mat2x2,
+    #[cfg(feature = "ffi_mat")]
+    F32Mat2x3,
+    #[cfg(feature = "ffi_mat")]
+    F32Mat2x4,
+
+    #[cfg(feature = "ffi_mat")]
+    F32Mat3x1,
+    #[cfg(feature = "ffi_mat")]
+    F32Mat3x2,
+    #[cfg(feature = "ffi_mat")]
+    F32Mat3x3,
+    #[cfg(feature = "ffi_mat")]
+    F32Mat3x4,
+
+    #[cfg(feature = "ffi_mat")]
+    F32Mat4x1,
+    #[cfg(feature = "ffi_mat")]
+    F32Mat4x2,
+    #[cfg(feature = "ffi_mat")]
+    F32Mat4x3,
+    #[cfg(feature = "ffi_mat")]
+    F32Mat4x4,
+
+    F64 = 40,
+
+    #[cfg(feature = "ffi_vec")]
+    F64Vec1 = 41,
+    #[cfg(feature = "ffi_vec")]
+    F64Vec2,
+    #[cfg(feature = "ffi_vec")]
+    F64Vec3,
+    #[cfg(feature = "ffi_vec")]
+    F64Vec4,
+
+    #[cfg(feature = "ffi_mat")]
+    F64Mat1x1 = 51,
+    #[cfg(feature = "ffi_mat")]
+    F64Mat1x2,
+    #[cfg(feature = "ffi_mat")]
+    F64Mat1x3,
+    #[cfg(feature = "ffi_mat")]
+    F64Mat1x4,
+
+    #[cfg(feature = "ffi_mat")]
+    F64Mat2x1,
+    #[cfg(feature = "ffi_mat")]
+    F64Mat2x2,
+    #[cfg(feature = "ffi_mat")]
+    F64Mat2x3,
+    #[cfg(feature = "ffi_mat")]
+    F64Mat2x4,
+
+    #[cfg(feature = "ffi_mat")]
+    F64Mat3x1,
+    #[cfg(feature = "ffi_mat")]
+    F64Mat3x2,
+    #[cfg(feature = "ffi_mat")]
+    F64Mat3x3,
+    #[cfg(feature = "ffi_mat")]
+    F64Mat3x4,
+
+    #[cfg(feature = "ffi_mat")]
+    F64Mat4x1,
+    #[cfg(feature = "ffi_mat")]
+    F64Mat4x2,
+    #[cfg(feature = "ffi_mat")]
+    F64Mat4x3,
+    #[cfg(feature = "ffi_mat")]
+    F64Mat4x4,
+}
+
+impl From<&str> for ElemType {
+    fn from(value: &str) -> Self {
+        match value {
+            x if x == std::any::type_name::<f32>() => Self::F32,
+            #[cfg(feature = "ffi_vec")]
+            x if x == std::any::type_name::<Vector<f32, 1>>() => Self::F32Vec1,
+            #[cfg(feature = "ffi_vec")]
+            x if x == std::any::type_name::<Vector<f32, 2>>() => Self::F32Vec2,
+            #[cfg(feature = "ffi_vec")]
+            x if x == std::any::type_name::<Vector<f32, 3>>() => Self::F32Vec3,
+            #[cfg(feature = "ffi_vec")]
+            x if x == std::any::type_name::<Vector<f32, 4>>() => Self::F32Vec4,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 1>, 1>>() => Self::F32Mat1x1,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 2>, 1>>() => Self::F32Mat1x2,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 3>, 1>>() => Self::F32Mat1x3,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 4>, 1>>() => Self::F32Mat1x4,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 1>, 2>>() => Self::F32Mat2x1,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 2>, 2>>() => Self::F32Mat2x2,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 3>, 2>>() => Self::F32Mat2x3,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 4>, 2>>() => Self::F32Mat2x4,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 1>, 3>>() => Self::F32Mat3x1,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 2>, 3>>() => Self::F32Mat3x2,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 3>, 3>>() => Self::F32Mat3x3,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 4>, 3>>() => Self::F32Mat3x4,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 1>, 4>>() => Self::F32Mat4x1,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 2>, 4>>() => Self::F32Mat4x2,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 3>, 4>>() => Self::F32Mat4x3,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f32, 4>, 4>>() => Self::F32Mat4x4,
+
+            x if x == std::any::type_name::<f64>() => Self::F64,
+            #[cfg(feature = "ffi_vec")]
+            x if x == std::any::type_name::<Vector<f64, 1>>() => Self::F64Vec1,
+            #[cfg(feature = "ffi_vec")]
+            x if x == std::any::type_name::<Vector<f64, 2>>() => Self::F64Vec2,
+            #[cfg(feature = "ffi_vec")]
+            x if x == std::any::type_name::<Vector<f64, 3>>() => Self::F64Vec3,
+            #[cfg(feature = "ffi_vec")]
+            x if x == std::any::type_name::<Vector<f64, 4>>() => Self::F64Vec4,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 1>, 1>>() => Self::F64Mat1x1,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 2>, 1>>() => Self::F64Mat1x2,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 3>, 1>>() => Self::F64Mat1x3,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 4>, 1>>() => Self::F64Mat1x4,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 1>, 2>>() => Self::F64Mat2x1,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 2>, 2>>() => Self::F64Mat2x2,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 3>, 2>>() => Self::F64Mat2x3,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 4>, 2>>() => Self::F64Mat2x4,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 1>, 3>>() => Self::F64Mat3x1,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 2>, 3>>() => Self::F64Mat3x2,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 3>, 3>>() => Self::F64Mat3x3,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 4>, 3>>() => Self::F64Mat3x4,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 1>, 4>>() => Self::F64Mat4x1,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 2>, 4>>() => Self::F64Mat4x2,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 3>, 4>>() => Self::F64Mat4x3,
+            #[cfg(feature = "ffi_mat")]
+            x if x == std::any::type_name::<Vector<Vector<f64, 4>, 4>>() => Self::F64Mat4x4,
+            _ => unimplemented!(),
+        }
+    }
+}
+
+/// Filter types exposed by the ffi api.
+#[repr(i8)]
+#[allow(missing_docs)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FilterType {
+    Haar = 0,
+    Average = 1,
+}
+
+impl From<&str> for FilterType {
+    fn from(value: &str) -> Self {
+        match value {
+            x if x == std::any::type_name::<HaarWavelet>() => Self::Haar,
+            x if x == std::any::type_name::<AverageFilter>() => Self::Average,
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// Info pertaining to a decoder.
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DecoderInfo {
+    elem_type: ElemType,
+    filter_type: FilterType,
+    dims: OwnedCSlice<usize>,
 }
 
 /// Definition of a volume fetcher.
@@ -819,6 +1045,16 @@ macro_rules! decoder_def {
                 _: Box<VolumeWaveletDecoder<$T, $F>>,
             ) {}
 
+            /// Fetches the dimensions of the encoded dataset.
+            #[no_mangle]
+            pub unsafe extern "C" fn [<$($N)* _dims>](
+                decoder: *const VolumeWaveletDecoder<$T, $F>,
+                output: *mut MaybeUninit<CSlice<'_, usize>>
+            ) {
+                let dims = (*decoder).dims().into();
+                (*output).write(dims);
+            }
+
             /// Decodes the dataset.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _decode>](
@@ -941,4 +1177,35 @@ macro_rules! decoder_def {
 
 decoder_def! {
     f32; f64
+}
+
+/// Returns some info pertaining to the encoded data located at `path`.
+#[no_mangle]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn get_decoder_info(
+    path: *const std::ffi::c_char,
+    output: *mut MaybeUninit<DecoderInfo>,
+) {
+    use crate::encoder::OutputHeader;
+    use crate::stream::DeserializeStream;
+
+    let path = CStr::from_ptr(path.cast());
+    let path = String::from_utf8_lossy(path.as_ref().to_bytes());
+
+    let f = std::fs::File::open(&*path).unwrap();
+    let stream = DeserializeStream::new_decode(f).unwrap();
+    let mut stream = stream.stream();
+    let (elem_type, filter_type, dims) = OutputHeader::<(), ()>::deserialize_info(&mut stream);
+
+    let elem_type: ElemType = (*elem_type).into();
+    let filter_type: FilterType = (*filter_type).into();
+    let dims: OwnedCSlice<usize> = dims.into_boxed_slice().into();
+
+    let info = DecoderInfo {
+        elem_type,
+        filter_type,
+        dims,
+    };
+
+    (*output).write(info);
 }

@@ -38,6 +38,21 @@ pub(crate) struct OutputHeader<T, F> {
     pub filter: F,
 }
 
+impl OutputHeader<(), ()> {
+    pub fn deserialize_info(
+        stream: &mut crate::stream::DeserializeStreamRef<'_>,
+    ) -> (String, String, Vec<usize>) {
+        let t_name: String = Deserializable::deserialize(stream);
+        let f_name: String = Deserializable::deserialize(stream);
+
+        let _: String = Deserializable::deserialize(stream);
+        let _: AnyMap = Deserializable::deserialize(stream);
+        let dims = Deserializable::deserialize(stream);
+
+        (t_name, f_name, dims)
+    }
+}
+
 impl<T: Serializable, F: Serializable> Serializable for OutputHeader<T, F> {
     fn serialize(self, stream: &mut SerializeStream) {
         std::any::type_name::<T>().serialize(stream);

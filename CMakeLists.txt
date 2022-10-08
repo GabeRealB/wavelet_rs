@@ -3,11 +3,11 @@ cmake_minimum_required(VERSION 3.5.1 FATAL_ERROR)
 
 message(STATUS "Configuring wavelet library")
 
-option(BUILD_TESTS "Build the test executables" ON)
-option(ENABLE_VECTOR "Build the library with vector encoders and decoders" OFF)
-option(ENABLE_MATRIX "Build the library with matrix encoders and decoders" OFF)
-option(ENABLE_ARRAY_METADATA "Build the library with array metadata support" OFF)
-option(ENABLE_SLICE_METADATA "Build the library with slice metadata support" OFF)
+option(WAVELET_BUILD_TESTS "Build the test executables" OFF)
+option(WAVELET_ENABLE_VECTOR "Build the library with vector encoders and decoders" OFF)
+option(WAVELET_ENABLE_MATRIX "Build the library with matrix encoders and decoders" OFF)
+option(WAVELET_ENABLE_ARRAY_METADATA "Build the library with array metadata support" OFF)
+option(WAVELET_ENABLE_SLICE_METADATA "Build the library with slice metadata support" OFF)
 
 # output directory of the crate
 set(BDIR ${CMAKE_BINARY_DIR}/libwavelet)
