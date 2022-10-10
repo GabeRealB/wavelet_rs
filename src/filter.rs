@@ -1,8 +1,8 @@
 //! Definition of common wavelets.
 
-use std::ops::{Add, Mul, Sub};
+use std::ops::{Add, Mul, Neg, Sub};
 
-use num_traits::FloatConst;
+use num_traits::{Float, FloatConst, NumCast, Zero};
 
 use crate::{
     stream::{Deserializable, Serializable},
@@ -16,6 +16,117 @@ pub trait Filter<T>: Sync {
 
     /// Combines the low pass and the high pass into the original data.
     fn backwards(&self, output: &mut LaneMut<'_, T>, low: &[T], high: &[T]);
+}
+
+/// Trait to type-erase a filter into a GenericFilter.
+pub trait ToGenericFilter<T> {
+    /// Type-erases the filter.
+    fn to_generic(&self) -> GenericFilter<T>;
+}
+
+/// Generic filter.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GenericFilter<T> {
+    f_coeff_low: Vec<T>,
+    f_coeff_high: Vec<T>,
+    b_coeff_low: Vec<T>,
+    b_coeff_high: Vec<T>,
+}
+
+impl<T> GenericFilter<T> {
+    /// Constructs a new generic filter.
+    pub fn new(
+        f_coeff_low: Vec<T>,
+        f_coeff_high: Vec<T>,
+        b_coeff_low: Vec<T>,
+        b_coeff_high: Vec<T>,
+    ) -> Self {
+        assert_eq!(f_coeff_low.len(), f_coeff_high.len());
+        assert_eq!(b_coeff_low.len(), b_coeff_high.len());
+        assert_eq!(f_coeff_low.len(), b_coeff_low.len());
+
+        Self {
+            f_coeff_low,
+            f_coeff_high,
+            b_coeff_low,
+            b_coeff_high,
+        }
+    }
+}
+
+impl<T> Filter<T> for GenericFilter<T>
+where
+    T: Zero + Add<Output = T> + Mul<Output = T> + Clone + Sync,
+{
+    fn forwards(&self, input: &Lane<'_, T>, low: &mut [T], high: &mut [T]) {
+        for (i, (low, high)) in low.iter_mut().zip(high).enumerate() {
+            *low = T::zero();
+            *high = T::zero();
+
+            for (j, (lcoff, hcoff)) in self.f_coeff_low.iter().zip(&self.f_coeff_high).enumerate() {
+                let idx = ((2 * i) + j).min(input.len() - 1);
+                *low = low.clone() + (lcoff.clone() * input[idx].clone());
+                *high = high.clone() + (hcoff.clone() * input[idx].clone());
+            }
+        }
+    }
+
+    fn backwards(&self, output: &mut LaneMut<'_, T>, low: &[T], high: &[T]) {
+        for x in output.iter_mut() {
+            *x = T::zero();
+        }
+
+        for (i, (low, high)) in low.iter().zip(high).enumerate() {
+            for (j, (lcoff, hcoff)) in self.b_coeff_low.iter().zip(&self.b_coeff_high).enumerate() {
+                let idx = ((2 * i) + j).min(output.len() - 1);
+
+                let low = lcoff.clone() * low.clone();
+                let high = hcoff.clone() * high.clone();
+                let x = output[idx].clone() + low + high;
+                output[idx] = x;
+            }
+        }
+    }
+}
+
+impl<T> ToGenericFilter<T> for GenericFilter<T>
+where
+    T: Clone,
+{
+    fn to_generic(&self) -> GenericFilter<T> {
+        self.clone()
+    }
+}
+
+impl<T> Serializable for GenericFilter<T>
+where
+    T: Serializable,
+{
+    fn serialize(self, stream: &mut crate::stream::SerializeStream) {
+        self.f_coeff_low.serialize(stream);
+        self.f_coeff_high.serialize(stream);
+        self.b_coeff_low.serialize(stream);
+        self.b_coeff_high.serialize(stream);
+    }
+}
+
+impl<T> Deserializable for GenericFilter<T>
+where
+    T: Deserializable,
+{
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
+        let f_coeff_low = Deserializable::deserialize(stream);
+        let f_coeff_high = Deserializable::deserialize(stream);
+        let b_coeff_low = Deserializable::deserialize(stream);
+        let b_coeff_high = Deserializable::deserialize(stream);
+
+        Self {
+            f_coeff_low,
+            f_coeff_high,
+            b_coeff_low,
+            b_coeff_high,
+        }
+    }
 }
 
 /// Filter implementing an Haar wavelet.
@@ -57,6 +168,20 @@ where
     }
 }
 
+impl<T> ToGenericFilter<T> for HaarWavelet
+where
+    T: FloatConst + Neg<Output = T>,
+{
+    fn to_generic(&self) -> GenericFilter<T> {
+        GenericFilter::new(
+            vec![T::FRAC_1_SQRT_2(), T::FRAC_1_SQRT_2()],
+            vec![-T::FRAC_1_SQRT_2(), T::FRAC_1_SQRT_2()],
+            vec![T::FRAC_1_SQRT_2(), T::FRAC_1_SQRT_2()],
+            vec![-T::FRAC_1_SQRT_2(), T::FRAC_1_SQRT_2()],
+        )
+    }
+}
+
 impl Serializable for HaarWavelet {
     fn serialize(self, _stream: &mut crate::stream::SerializeStream) {}
 }
@@ -73,7 +198,7 @@ pub struct AverageFilter;
 
 impl<T> Filter<T> for AverageFilter
 where
-    T: PartialOrd + Add<Output = T> + Sub<Output = T> + Average<Output = T> + Clone + FloatConst,
+    T: PartialOrd + Add<Output = T> + Sub<Output = T> + Average<Output = T> + FloatConst + Clone,
 {
     fn forwards(&self, input: &Lane<'_, T>, low: &mut [T], high: &mut [T]) {
         for (i, (low, high)) in low.iter_mut().zip(high).enumerate() {
@@ -99,6 +224,20 @@ where
             output[idx_left] = left;
             output[idx_right] = right;
         }
+    }
+}
+
+impl<T> ToGenericFilter<T> for AverageFilter
+where
+    T: NumCast + Float,
+{
+    fn to_generic(&self) -> GenericFilter<T> {
+        GenericFilter::new(
+            vec![NumCast::from(0.5).unwrap(), NumCast::from(0.5).unwrap()],
+            vec![NumCast::from(0.5).unwrap(), NumCast::from(-0.5).unwrap()],
+            vec![NumCast::from(1).unwrap(), NumCast::from(1).unwrap()],
+            vec![NumCast::from(1).unwrap(), NumCast::from(-1).unwrap()],
+        )
     }
 }
 

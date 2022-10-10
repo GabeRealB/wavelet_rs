@@ -7,7 +7,7 @@ use std::{
 use num_traits::Zero;
 
 use crate::{
-    filter::Filter,
+    filter::{Filter, GenericFilter, ToGenericFilter},
     range::{for_each_range, for_each_range_enumerate, for_each_range_par_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream, Serializable, SerializeStream},
     transformations::{
@@ -27,40 +27,33 @@ pub struct VolumeWaveletEncoder<'a, T> {
     fetchers: Vec<Option<VolumeFetcher<'a, T>>>,
 }
 
-pub(crate) struct OutputHeader<T, F> {
-    pub num_type: String,
-    pub metadata: AnyMap,
+pub(crate) struct OutputHeader<T> {
     pub dims: Vec<usize>,
+    pub metadata: AnyMap,
     pub block_size: Vec<usize>,
     pub block_counts: Vec<usize>,
     pub input_block_dims: Vec<usize>,
     pub block_blueprints: BlockBlueprints<T>,
-    pub filter: F,
+    pub filter: GenericFilter<T>,
 }
 
-impl OutputHeader<(), ()> {
+impl OutputHeader<()> {
     pub fn deserialize_info(
         stream: &mut crate::stream::DeserializeStreamRef<'_>,
-    ) -> (String, String, Vec<usize>) {
+    ) -> (String, Vec<usize>) {
         let t_name: String = Deserializable::deserialize(stream);
-        let f_name: String = Deserializable::deserialize(stream);
 
-        let _: String = Deserializable::deserialize(stream);
-        let _: AnyMap = Deserializable::deserialize(stream);
         let dims = Deserializable::deserialize(stream);
-
-        (t_name, f_name, dims)
+        (t_name, dims)
     }
 }
 
-impl<T: Serializable, F: Serializable> Serializable for OutputHeader<T, F> {
+impl<T: Serializable> Serializable for OutputHeader<T> {
     fn serialize(self, stream: &mut SerializeStream) {
         std::any::type_name::<T>().serialize(stream);
-        std::any::type_name::<F>().serialize(stream);
 
-        self.num_type.serialize(stream);
-        self.metadata.serialize(stream);
         self.dims.serialize(stream);
+        self.metadata.serialize(stream);
         self.block_size.serialize(stream);
         self.block_counts.serialize(stream);
         self.input_block_dims.serialize(stream);
@@ -69,16 +62,13 @@ impl<T: Serializable, F: Serializable> Serializable for OutputHeader<T, F> {
     }
 }
 
-impl<T: Deserializable, F: Deserializable> Deserializable for OutputHeader<T, F> {
+impl<T: Deserializable> Deserializable for OutputHeader<T> {
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let t_name: String = Deserializable::deserialize(stream);
         assert_eq!(t_name, std::any::type_name::<T>());
-        let f_name: String = Deserializable::deserialize(stream);
-        assert_eq!(f_name, std::any::type_name::<F>());
 
-        let num_type = Deserializable::deserialize(stream);
-        let metadata = Deserializable::deserialize(stream);
         let dims = Deserializable::deserialize(stream);
+        let metadata = Deserializable::deserialize(stream);
         let block_size = Deserializable::deserialize(stream);
         let block_counts = Deserializable::deserialize(stream);
         let input_block_dims = Deserializable::deserialize(stream);
@@ -86,9 +76,8 @@ impl<T: Deserializable, F: Deserializable> Deserializable for OutputHeader<T, F>
         let filter = Deserializable::deserialize(stream);
 
         Self {
-            num_type,
-            metadata,
             dims,
+            metadata,
             block_size,
             block_counts,
             input_block_dims,
@@ -156,13 +145,17 @@ where
         &self,
         output: impl AsRef<Path> + Sync,
         block_size: &[usize],
-        filter: impl Filter<T> + Serializable + Clone,
-    ) {
+        filter: impl ToGenericFilter<T> + Serializable + Clone,
+    ) where
+        GenericFilter<T>: Filter<T>,
+    {
         assert_eq!(block_size.len(), self.dims.len());
         assert!(block_size
             .iter()
             .zip(&self.dims)
             .all(|(&block, &dim)| dim % block == 0 && block <= dim));
+
+        let filter = filter.to_generic();
 
         let block_resample_dims: Vec<_> = block_size
             .iter()
@@ -274,7 +267,6 @@ where
 
         let output_header = OutputHeader {
             metadata: self.metadata.clone(),
-            num_type: std::any::type_name::<T>().into(),
             dims: self.dims.clone(),
             block_size: block_size.into(),
             block_counts,

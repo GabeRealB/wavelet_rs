@@ -492,6 +492,8 @@ public:
     }
 };
 
+class string;
+
 namespace slice_priv_ {
     struct own_slice_ {
         void* ptr;
@@ -524,6 +526,7 @@ namespace slice_priv_ {
     OWNED_SLICE_EXTERN(std::int64_t, i64)
     OWNED_SLICE_EXTERN(float, f32)
     OWNED_SLICE_EXTERN(double, f64)
+    OWNED_SLICE_EXTERN(string, CString)
 }
 
 /// Owned view over a sontiguous memory region.
@@ -1543,16 +1546,9 @@ enum class elem_type : std::int32_t {
 #endif // WAVELET_RS_IMPORT_MAT
 };
 
-/// Filter types exposed by the ffi api.
-enum class filter_type : std::int8_t {
-    Haar = 0,
-    Average = 1
-};
-
 /// Info pertaining to a decoder.
 struct decoder_info {
     elem_type e_type;
-    filter_type f_type;
     owned_slice<std::size_t> dims;
 };
 
@@ -2057,47 +2053,47 @@ public:
 namespace dec_priv_ {
     class decoder_;
 
-    template <typename T, typename F>
+    template <typename T>
     struct decoder_impl {
         static constexpr bool implemented = false;
     };
 
-    template <typename T, typename F, typename U>
+    template <typename T, typename U>
     struct decoder_metadata_impl {
         static constexpr bool implemented = false;
     };
 
-#define DECODER_METADATA_EXTERN_(T, F, N, M, MN)                                                                               \
+#define DECODER_METADATA_EXTERN_(T, N, M, MN)                                                                                  \
     extern "C" void wavelet_rs_decoder_##N##_metadata_get_##MN(const decoder_*, const char*, priv_::maybe_uninit<option<M>>*); \
     template <>                                                                                                                \
-    struct decoder_metadata_impl<T, F, M> {                                                                                    \
+    struct decoder_metadata_impl<T, M> {                                                                                       \
         static constexpr bool implemented = true;                                                                              \
         static constexpr auto get_fn = wavelet_rs_decoder_##N##_metadata_get_##MN;                                             \
     };
 
 #ifdef WAVELET_RS_IMPORT_MEATADATA_ARR
-#define DECODER_METADATA_ARRAY_EXTERN(T, F, N, M, MN)         \
-    DECODER_METADATA_EXTERN_(T, F, N, array_1<M>, MN##_arr_1) \
-    DECODER_METADATA_EXTERN_(T, F, N, array_2<M>, MN##_arr_2) \
-    DECODER_METADATA_EXTERN_(T, F, N, array_3<M>, MN##_arr_3) \
-    DECODER_METADATA_EXTERN_(T, F, N, array_4<M>, MN##_arr_4)
+#define DECODER_METADATA_ARRAY_EXTERN(T, N, M, MN)         \
+    DECODER_METADATA_EXTERN_(T, N, array_1<M>, MN##_arr_1) \
+    DECODER_METADATA_EXTERN_(T, N, array_2<M>, MN##_arr_2) \
+    DECODER_METADATA_EXTERN_(T, N, array_3<M>, MN##_arr_3) \
+    DECODER_METADATA_EXTERN_(T, N, array_4<M>, MN##_arr_4)
 #else
-#define DECODER_METADATA_ARRAY_EXTERN(T, F, N, M, MN)
+#define DECODER_METADATA_ARRAY_EXTERN(T, N, M, MN)
 #endif // WAVELET_RS_IMPORT_MEATADATA_ARR
 
 #ifdef WAVELET_RS_IMPORT_MEATADATA_SLICE
-#define DECODER_METADATA_SLICE_EXTERN(T, F, N, M, MN) \
-    DECODER_METADATA_EXTERN_(T, F, N, owned_slice<M>, MN##_slice)
+#define DECODER_METADATA_SLICE_EXTERN(T, N, M, MN) \
+    DECODER_METADATA_EXTERN_(T, N, owned_slice<M>, MN##_slice)
 #else
-#define DECODER_METADATA_SLICE_EXTERN(T, F, N, M, MN)
+#define DECODER_METADATA_SLICE_EXTERN(T, N, M, MN)
 #endif // WAVELET_RS_IMPORT_MEATADATA_SLICE
 
-#define DECODER_METADATA_EXTERN(T, F, N, M, MN)   \
-    DECODER_METADATA_EXTERN_(T, F, N, M, MN)      \
-    DECODER_METADATA_ARRAY_EXTERN(T, F, N, M, MN) \
-    DECODER_METADATA_SLICE_EXTERN(T, F, N, M, MN)
+#define DECODER_METADATA_EXTERN(T, N, M, MN)   \
+    DECODER_METADATA_EXTERN_(T, N, M, MN)      \
+    DECODER_METADATA_ARRAY_EXTERN(T, N, M, MN) \
+    DECODER_METADATA_SLICE_EXTERN(T, N, M, MN)
 
-#define DECODER_EXTERN_(T, F, N)                                           \
+#define DECODER_EXTERN_(T, N)                                              \
     extern "C" decoder_* wavelet_rs_decoder_##N##_new(const char*);        \
     extern "C" void wavelet_rs_decoder_##N##_free(decoder_*);              \
     extern "C" void wavelet_rs_decoder_##N##_dims(const decoder_*,         \
@@ -2113,19 +2109,19 @@ namespace dec_priv_ {
         const slice<const range<std::size_t>>*,                            \
         const slice<const std::uint32_t>*,                                 \
         const slice<const std::uint32_t>*);                                \
-    DECODER_METADATA_EXTERN(T, F, N, std::uint8_t, u8)                     \
-    DECODER_METADATA_EXTERN(T, F, N, std::uint16_t, u16)                   \
-    DECODER_METADATA_EXTERN(T, F, N, std::uint32_t, u32)                   \
-    DECODER_METADATA_EXTERN(T, F, N, std::uint64_t, u64)                   \
-    DECODER_METADATA_EXTERN(T, F, N, std::int8_t, i8)                      \
-    DECODER_METADATA_EXTERN(T, F, N, std::int16_t, i16)                    \
-    DECODER_METADATA_EXTERN(T, F, N, std::int32_t, i32)                    \
-    DECODER_METADATA_EXTERN(T, F, N, std::int64_t, i64)                    \
-    DECODER_METADATA_EXTERN(T, F, N, float, f32)                           \
-    DECODER_METADATA_EXTERN(T, F, N, double, f64)                          \
-    DECODER_METADATA_EXTERN(T, F, N, string, string)                       \
+    DECODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                        \
+    DECODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                      \
+    DECODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                      \
+    DECODER_METADATA_EXTERN(T, N, std::uint64_t, u64)                      \
+    DECODER_METADATA_EXTERN(T, N, std::int8_t, i8)                         \
+    DECODER_METADATA_EXTERN(T, N, std::int16_t, i16)                       \
+    DECODER_METADATA_EXTERN(T, N, std::int32_t, i32)                       \
+    DECODER_METADATA_EXTERN(T, N, std::int64_t, i64)                       \
+    DECODER_METADATA_EXTERN(T, N, float, f32)                              \
+    DECODER_METADATA_EXTERN(T, N, double, f64)                             \
+    DECODER_METADATA_EXTERN(T, N, string, string)                          \
     template <>                                                            \
-    struct decoder_impl<T, F> {                                            \
+    struct decoder_impl<T> {                                               \
         static constexpr bool implemented = true;                          \
         static constexpr auto new_fn = wavelet_rs_decoder_##N##_new;       \
         static constexpr auto free_fn = wavelet_rs_decoder_##N##_free;     \
@@ -2135,44 +2131,41 @@ namespace dec_priv_ {
     };
 
 #ifdef WAVELET_RS_IMPORT_VEC
-#define DECODER_VEC_EXTERN(T, F, N)           \
-    DECODER_EXTERN_(array_1<T>, F, vec_1_##N) \
-    DECODER_EXTERN_(array_2<T>, F, vec_2_##N) \
-    DECODER_EXTERN_(array_3<T>, F, vec_3_##N) \
-    DECODER_EXTERN_(array_4<T>, F, vec_4_##N)
+#define DECODER_VEC_EXTERN(T, N)           \
+    DECODER_EXTERN_(array_1<T>, vec_1_##N) \
+    DECODER_EXTERN_(array_2<T>, vec_2_##N) \
+    DECODER_EXTERN_(array_3<T>, vec_3_##N) \
+    DECODER_EXTERN_(array_4<T>, vec_4_##N)
 #else
-#define DECODER_VEC_EXTERN(T, F, N)
+#define DECODER_VEC_EXTERN(T, N)
 #endif // WAVELET_RS_IMPORT_VEC
 
 #ifdef WAVELET_RS_IMPORT_MAT
-#define DECODER_MATRIX_EXTERN(T, F, N)                   \
-    DECODER_EXTERN_(array_1<array_1<T>>, F, mat_1x1_##N) \
-    DECODER_EXTERN_(array_1<array_2<T>>, F, mat_1x2_##N) \
-    DECODER_EXTERN_(array_1<array_3<T>>, F, mat_1x3_##N) \
-    DECODER_EXTERN_(array_1<array_4<T>>, F, mat_1x4_##N) \
-    DECODER_EXTERN_(array_2<array_1<T>>, F, mat_2x1_##N) \
-    DECODER_EXTERN_(array_2<array_2<T>>, F, mat_2x2_##N) \
-    DECODER_EXTERN_(array_2<array_3<T>>, F, mat_2x3_##N) \
-    DECODER_EXTERN_(array_2<array_4<T>>, F, mat_2x4_##N) \
-    DECODER_EXTERN_(array_3<array_1<T>>, F, mat_3x1_##N) \
-    DECODER_EXTERN_(array_3<array_2<T>>, F, mat_3x2_##N) \
-    DECODER_EXTERN_(array_3<array_3<T>>, F, mat_3x3_##N) \
-    DECODER_EXTERN_(array_3<array_4<T>>, F, mat_3x4_##N) \
-    DECODER_EXTERN_(array_4<array_1<T>>, F, mat_4x1_##N) \
-    DECODER_EXTERN_(array_4<array_2<T>>, F, mat_4x2_##N) \
-    DECODER_EXTERN_(array_4<array_3<T>>, F, mat_4x3_##N) \
-    DECODER_EXTERN_(array_4<array_4<T>>, F, mat_4x4_##N)
+#define DECODER_MATRIX_EXTERN(T, N)                   \
+    DECODER_EXTERN_(array_1<array_1<T>>, mat_1x1_##N) \
+    DECODER_EXTERN_(array_1<array_2<T>>, mat_1x2_##N) \
+    DECODER_EXTERN_(array_1<array_3<T>>, mat_1x3_##N) \
+    DECODER_EXTERN_(array_1<array_4<T>>, mat_1x4_##N) \
+    DECODER_EXTERN_(array_2<array_1<T>>, mat_2x1_##N) \
+    DECODER_EXTERN_(array_2<array_2<T>>, mat_2x2_##N) \
+    DECODER_EXTERN_(array_2<array_3<T>>, mat_2x3_##N) \
+    DECODER_EXTERN_(array_2<array_4<T>>, mat_2x4_##N) \
+    DECODER_EXTERN_(array_3<array_1<T>>, mat_3x1_##N) \
+    DECODER_EXTERN_(array_3<array_2<T>>, mat_3x2_##N) \
+    DECODER_EXTERN_(array_3<array_3<T>>, mat_3x3_##N) \
+    DECODER_EXTERN_(array_3<array_4<T>>, mat_3x4_##N) \
+    DECODER_EXTERN_(array_4<array_1<T>>, mat_4x1_##N) \
+    DECODER_EXTERN_(array_4<array_2<T>>, mat_4x2_##N) \
+    DECODER_EXTERN_(array_4<array_3<T>>, mat_4x3_##N) \
+    DECODER_EXTERN_(array_4<array_4<T>>, mat_4x4_##N)
 #else
-#define DECODER_MATRIX_EXTERN(T, F, N)
+#define DECODER_MATRIX_EXTERN(T, N)
 #endif // WAVELET_RS_IMPORT_MAT
 
-#define DECODER_EXTERN(T, N)                                    \
-    DECODER_EXTERN_(T, filters::haar_wavelet, N##_haar)         \
-    DECODER_EXTERN_(T, filters::average_filter, N##_average)    \
-    DECODER_VEC_EXTERN(T, filters::haar_wavelet, N##_haar)      \
-    DECODER_VEC_EXTERN(T, filters::average_filter, N##_average) \
-    DECODER_MATRIX_EXTERN(T, filters::haar_wavelet, N##_haar)   \
-    DECODER_MATRIX_EXTERN(T, filters::average_filter, N##_average)
+#define DECODER_EXTERN(T, N) \
+    DECODER_EXTERN_(T, N)    \
+    DECODER_VEC_EXTERN(T, N) \
+    DECODER_MATRIX_EXTERN(T, N)
 
     DECODER_EXTERN(float, f32)
     DECODER_EXTERN(double, f64)
@@ -2180,50 +2173,28 @@ namespace dec_priv_ {
     extern "C" void get_decoder_info(const char*, priv_::maybe_uninit<decoder_info>*);
 }
 
-template <typename T, typename F>
-class decoder {
+template <typename T>
+class decoder_ref {
     dec_priv_::decoder_* m_dec;
 
-    using decoder_ = dec_priv_::decoder_impl<T, F>;
-    static_assert(decoder_::implemented, "decoder is not implemented for the element, filter pair");
+    using decoder_ = dec_priv_::decoder_impl<T>;
+    static_assert(decoder_::implemented, "decoder is not implemented for the element type");
 
     template <typename U>
-    using decoder_meta_ = dec_priv_::decoder_metadata_impl<T, F, U>;
+    using decoder_meta_ = dec_priv_::decoder_metadata_impl<T, U>;
 
 public:
-    /// Constructs a new decoder by opening the encoded binary.
-    ///
-    /// @param path path to the encoded binary file.
-    decoder(const char* path)
-        : m_dec { decoder_::new_fn(path) }
+    /// Constructs a new decoder reference.
+    decoder_ref(dec_priv_::decoder_* dec) noexcept
+        : m_dec { dec }
     {
     }
 
-    decoder(const decoder& other) = delete;
+    decoder_ref(const decoder_ref& other) noexcept = default;
+    decoder_ref(decoder_ref&& other) noexcept = default;
 
-    decoder(decoder&& other) noexcept
-        : m_dec { priv_::exchange(other.m_dec, nullptr) }
-    {
-    }
-
-    ~decoder()
-    {
-        if (this->m_dec != nullptr) {
-            decoder_::free_fn(this->m_dec);
-            this->m_dec = nullptr;
-        }
-    }
-
-    decoder& operator=(const decoder& other) = delete;
-
-    decoder& operator=(decoder&& other) noexcept
-    {
-        if (this != &other) {
-            std::swap(this->m_dec, other.m_dec);
-        }
-
-        return *this;
-    }
+    decoder_ref& operator=(const decoder_ref& other) = default;
+    decoder_ref& operator=(decoder_ref&& other) noexcept = default;
 
     /// Fetches the dimensions of the encoded dataset.
     ///
@@ -2247,7 +2218,7 @@ public:
     {
         static_assert(std::is_standard_layout<priv_::maybe_uninit<option<U>>>::value, "invalid layout");
         static_assert(decoder_meta_<U>::implemented,
-            "metadata_get is not implemented for the element, filter, metadata triplet");
+            "metadata_get is not implemented for the element, metadata pair");
 
         priv_::maybe_uninit<option<U>> res {};
         decoder_meta_<U>::get_fn(this->m_dec, key, &res);
@@ -2296,10 +2267,128 @@ public:
         decoder_::refine_fn(this->m_dec, &reader, &writer, &input_range,
             &output_range, &curr_levels, &refinements);
     }
+
+    /// Returns the pointer to the type-erased decoder.
+    ///
+    /// @return pointer to the decoder
+    dec_priv_::decoder_* pointer() const noexcept
+    {
+        return this->m_dec;
+    }
+};
+
+template <typename T>
+class decoder {
+    decoder_ref<T> m_dec;
+
+    using decoder_ = dec_priv_::decoder_impl<T>;
+    static_assert(decoder_::implemented, "decoder is not implemented for the element type");
+
+public:
+    /// Constructs a new decoder by opening the encoded binary.
+    ///
+    /// @param path path to the encoded binary file.
+    decoder(const char* path)
+        : m_dec { decoder_::new_fn(path) }
+    {
+    }
+
+    decoder(const decoder& other) = delete;
+
+    decoder(decoder&& other) noexcept
+        : m_dec { priv_::exchange(other.m_dec, nullptr) }
+    {
+    }
+
+    ~decoder()
+    {
+        this->reset(decoder_ref<T> { nullptr });
+    }
+
+    decoder& operator=(const decoder& other) = delete;
+
+    decoder& operator=(decoder&& other) noexcept
+    {
+        if (this != &other) {
+            std::swap(this->m_dec, other.m_dec);
+        }
+
+        return *this;
+    }
+
+    /// Fetches the dimensions of the encoded dataset.
+    ///
+    /// @return Dimensions of the encoded dataset.
+    slice<const std::size_t> dims() const
+    {
+        return m_dec.dims();
+    }
+
+    /// Fetches an element from the decoder metadata.
+    ///
+    /// @tparam U type of the element.
+    /// @param key key of the mapped element.
+    /// @return metadata element.
+    template <typename U>
+    option<U> metadata_get(const char* key) const
+    {
+        return m_dec.template metadata_get<U>(key);
+    }
+
+    /// Decodes the dataset to the required detail levels.
+    ///
+    /// @param writer writer for writing into the requested output volume.
+    /// @param roi region of interest for the decoding operation.
+    /// @param levels desired detail levels.
+    void decode(writer_fetcher<T>&& writer,
+        slice<const range<std::size_t>> roi,
+        slice<const std::uint32_t> levels) const
+    {
+        return m_dec.decode(std::move(writer), std::move(roi), std::move(levels));
+    }
+
+    /// Refines a partially decoded dataset by the specified detail levels.
+    ///
+    /// @param reader reader for reading from a partially decoded input volume.
+    /// @param writer writer for writing into the requested output volume.
+    /// @param input_range range of the original volume contained in the input volume.
+    /// @param output_range desired range of data to write back, must be a subrange of input_range.
+    /// @param curr_levels detail levels of the input volume.
+    /// @param refinements number of refinement levels to apply.
+    void refine(reader_fetcher<T>&& reader,
+        writer_fetcher<T>&& writer,
+        slice<const range<std::size_t>> input_range,
+        slice<const range<std::size_t>> output_range,
+        slice<const std::uint32_t> curr_levels,
+        slice<const std::uint32_t> refinements) const
+    {
+        return m_dec.refine(std::move(reader), std::move(writer),
+            std::move(input_range), std::move(output_range),
+            std::move(curr_levels), std::move(refinements));
+    }
+
+    /// Releases ownership of the decoder.
+    ///
+    /// @return released decoder.
+    decoder_ref<T> release() noexcept
+    {
+        return priv_::exchange(this->m_dec, decoder_ref<T> { nullptr });
+    }
+
+    /// Replaces the owned decoder with a new one.
+    ///
+    /// @param dec new decoder.
+    void reset(decoder_ref<T> dec)
+    {
+        if (this->m_dec.pointer() != nullptr) {
+            decoder_::free_fn(this->m_dec.pointer());
+            this->m_dec = dec;
+        }
+    }
 };
 
 /// Returns some info pertaining to the encoded data located at `path`.
-decoder_info get_decoder_info(const char* path)
+inline decoder_info get_decoder_info(const char* path)
 {
     static_assert(std::is_standard_layout<priv_::maybe_uninit<decoder_info>>::value, "invalid layout");
 
@@ -2308,6 +2397,56 @@ decoder_info get_decoder_info(const char* path)
     return res.get();
 }
 
-}
+template <typename T>
+struct elem_type_trait {
+};
+
+#define ELEM_TYPE_TRAIT_(T, N)               \
+    template <>                              \
+    struct elem_type_trait<T> {              \
+        static constexpr elem_type type = N; \
+    };
+
+#ifdef WAVELET_RS_IMPORT_VEC
+#define ELEM_TYPE_TRAIT_VEC(T, F)         \
+    ELEM_TYPE_TRAIT_(array_1<T>, F##Vec1) \
+    ELEM_TYPE_TRAIT_(array_2<T>, F##Vec2) \
+    ELEM_TYPE_TRAIT_(array_3<T>, F##Vec3) \
+    ELEM_TYPE_TRAIT_(array_4<T>, F##Vec4)
+#else
+#define ELEM_TYPE_TRAIT_VEC(T, F)
+#endif // WAVELET_RS_IMPORT_VEC
+
+#ifdef WAVELET_RS_IMPORT_MAT
+#define ELEM_TYPE_TRAIT_MAT(T, F)                    \
+    ELEM_TYPE_TRAIT_(array_1<array_1<T>>, F##Mat1x1) \
+    ELEM_TYPE_TRAIT_(array_1<array_2<T>>, F##Mat1x2) \
+    ELEM_TYPE_TRAIT_(array_1<array_3<T>>, F##Mat1x3) \
+    ELEM_TYPE_TRAIT_(array_1<array_4<T>>, F##Mat1x4) \
+    ELEM_TYPE_TRAIT_(array_2<array_1<T>>, F##Mat2x1) \
+    ELEM_TYPE_TRAIT_(array_2<array_2<T>>, F##Mat2x2) \
+    ELEM_TYPE_TRAIT_(array_2<array_3<T>>, F##Mat2x3) \
+    ELEM_TYPE_TRAIT_(array_2<array_4<T>>, F##Mat2x4) \
+    ELEM_TYPE_TRAIT_(array_3<array_1<T>>, F##Mat3x1) \
+    ELEM_TYPE_TRAIT_(array_3<array_2<T>>, F##Mat3x2) \
+    ELEM_TYPE_TRAIT_(array_3<array_3<T>>, F##Mat3x3) \
+    ELEM_TYPE_TRAIT_(array_3<array_4<T>>, F##Mat3x4) \
+    ELEM_TYPE_TRAIT_(array_4<array_1<T>>, F##Mat4x1) \
+    ELEM_TYPE_TRAIT_(array_4<array_2<T>>, F##Mat4x2) \
+    ELEM_TYPE_TRAIT_(array_4<array_3<T>>, F##Mat4x3) \
+    ELEM_TYPE_TRAIT_(array_4<array_4<T>>, F##Mat4x4)
+#else
+#define ELEM_TYPE_TRAIT_MAT(T, F)
+#endif // WAVELET_RS_IMPORT_MAT
+
+#define ELEM_TYPE_TRAIT(T, N) \
+    ELEM_TYPE_TRAIT_(T, N)    \
+    ELEM_TYPE_TRAIT_VEC(T, N) \
+    ELEM_TYPE_TRAIT_MAT(T, N)
+
+ELEM_TYPE_TRAIT(float, elem_type::F32)
+ELEM_TYPE_TRAIT(double, elem_type::F64)
+
+};
 
 #endif // !WAVELET_H

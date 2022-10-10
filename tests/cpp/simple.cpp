@@ -1,6 +1,14 @@
 #include <wavelet.h>
 
+#include <cmath>
 #include <vector>
+
+template <class T>
+typename std::enable_if<!std::numeric_limits<T>::is_integer, bool>::type
+almost_equal(T x, T y, T eps)
+{
+    return std::fabs(x - y) <= eps || std::fabs(x - y) < std::numeric_limits<T>::min();
+}
 
 int main()
 {
@@ -50,11 +58,10 @@ int main()
 
     wavelet::decoder_info dec_info = wavelet::get_decoder_info("encode_cpp/output.bin");
     assert(dec_info.e_type == wavelet::elem_type::F32);
-    assert(dec_info.f_type == wavelet::filter_type::Average);
     assert(static_cast<wavelet::slice<std::size_t>>(dec_info.dims) == dims_slice);
 
     // construct a decoder by opening the newly encoded file.
-    wavelet::decoder<float, wavelet::filters::average_filter> dec { "encode_cpp/output.bin" };
+    wavelet::decoder<float> dec { "encode_cpp/output.bin" };
 
     assert(dec.dims() == dims_slice);
 
@@ -108,7 +115,9 @@ int main()
     wavelet::slice<wavelet::range<std::size_t>> roi_slice { roi.data(), roi.size() };
     dec.decode(std::move(writer), roi_slice, levels_slice);
 
-    assert(output == input);
+    for (std::size_t i = 0; i < output.size(); i++) {
+        assert(almost_equal(input[i], output[i], 0.001f));
+    }
 
     return 0;
 }

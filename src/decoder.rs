@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     encoder::{BlockBlueprints, OutputHeader},
-    filter::Filter,
+    filter::{Filter, GenericFilter},
     range::{for_each_range, for_each_range_enumerate, for_each_range_par_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream},
     transformations::{
@@ -21,7 +21,7 @@ use crate::{
 
 /// Decoder for a dataset encoded with a wavelet transform.
 #[derive(Debug)]
-pub struct VolumeWaveletDecoder<T, F> {
+pub struct VolumeWaveletDecoder<T> {
     path: PathBuf,
     metadata: AnyMap,
     dims: Vec<usize>,
@@ -30,13 +30,13 @@ pub struct VolumeWaveletDecoder<T, F> {
     input_block_dims: Vec<usize>,
     input_block: VolumeBlock<T>,
     block_blueprints: BlockBlueprints<T>,
-    filter: F,
+    filter: GenericFilter<T>,
 }
 
-impl<T, F> VolumeWaveletDecoder<T, F>
+impl<T> VolumeWaveletDecoder<T>
 where
     T: Zero + Deserializable + Clone + Send + Sync,
-    F: Filter<T> + Deserializable + Clone,
+    GenericFilter<T>: Filter<T>,
 {
     /// Constructs a new decoder.
     ///
@@ -49,7 +49,7 @@ where
         let f = std::fs::File::open(p).unwrap();
         let stream = DeserializeStream::new_decode(f).unwrap();
         let mut stream = stream.stream();
-        let header: OutputHeader<_, _> = Deserializable::deserialize(&mut stream);
+        let header: OutputHeader<T> = Deserializable::deserialize(&mut stream);
         let num_elements = header.input_block_dims.iter().product();
         let mut elements = Vec::with_capacity(num_elements);
         for _ in 0..num_elements {
@@ -381,9 +381,7 @@ where
 mod test {
     use std::{path::PathBuf, sync::Mutex};
 
-    use crate::{
-        decoder::VolumeWaveletDecoder, filter::AverageFilter, vector::Vector, volume::VolumeBlock,
-    };
+    use crate::{decoder::VolumeWaveletDecoder, vector::Vector, volume::VolumeBlock};
 
     const TRANSFORM_ERROR: f32 = 0.001;
 
@@ -398,7 +396,7 @@ mod test {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test/decode/output.bin");
 
-        let decoder = VolumeWaveletDecoder::<f32, AverageFilter>::new(res_path);
+        let decoder = VolumeWaveletDecoder::<f32>::new(res_path);
 
         let dims = [256, 256, 256];
         let num_elements = dims.iter().product();
@@ -458,7 +456,7 @@ mod test {
         res_path.push("resources/test/decode_sample/");
 
         let data_path = res_path.join("output.bin");
-        let decoder = VolumeWaveletDecoder::<f32, AverageFilter>::new(data_path);
+        let decoder = VolumeWaveletDecoder::<f32>::new(data_path);
 
         let dims = [4, 4, 1];
         let range = dims.map(|d| 0..d);
@@ -539,7 +537,7 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>, AverageFilter>::new(data_path);
+        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
 
         let dims = [2048, 2048, 1];
         let range = dims.map(|d| 0..d);
@@ -583,7 +581,7 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>, AverageFilter>::new(data_path);
+        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
 
         let dims = [2048, 2048, 1];
         let range = dims.map(|d| 0..d);

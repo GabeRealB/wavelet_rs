@@ -258,12 +258,12 @@ macro_rules! owned_c_slice_def {
 }
 
 owned_c_slice_def! {
-    u8; u16; u32; u64; i8; i16; i32; i64; f32; f64; c_char
+    u8; u16; u32; u64; i8; i16; i32; i64; f32; f64; c_char; CString
 }
 
 /// C compatible owned string.
 #[repr(C)]
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CString {
     buff: OwnedCSlice<c_char>,
 }
@@ -500,31 +500,11 @@ impl From<&str> for ElemType {
     }
 }
 
-/// Filter types exposed by the ffi api.
-#[repr(i8)]
-#[allow(missing_docs)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum FilterType {
-    Haar = 0,
-    Average = 1,
-}
-
-impl From<&str> for FilterType {
-    fn from(value: &str) -> Self {
-        match value {
-            x if x == std::any::type_name::<HaarWavelet>() => Self::Haar,
-            x if x == std::any::type_name::<AverageFilter>() => Self::Average,
-            _ => unreachable!(),
-        }
-    }
-}
-
 /// Info pertaining to a decoder.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DecoderInfo {
     elem_type: ElemType,
-    filter_type: FilterType,
     dims: OwnedCSlice<usize>,
 }
 
@@ -973,67 +953,62 @@ encoder_def! {
 macro_rules! decoder_def {
     ($($T:ty);*) => {
         $(
-            decoder_def! { $T, wavelet_rs_decoder_ $T }
+            decoder_def! { impl_ $T, wavelet_rs_decoder_ $T }
 
             #[cfg(feature = "ffi_vec")]
-            decoder_def! { Vector<$T, 1>, wavelet_rs_decoder_vec_1_ $T }
+            decoder_def! { impl_ Vector<$T, 1>, wavelet_rs_decoder_vec_1_ $T }
             #[cfg(feature = "ffi_vec")]
-            decoder_def! { Vector<$T, 2>, wavelet_rs_decoder_vec_2_ $T }
+            decoder_def! { impl_ Vector<$T, 2>, wavelet_rs_decoder_vec_2_ $T }
             #[cfg(feature = "ffi_vec")]
-            decoder_def! { Vector<$T, 3>, wavelet_rs_decoder_vec_3_ $T }
+            decoder_def! { impl_ Vector<$T, 3>, wavelet_rs_decoder_vec_3_ $T }
             #[cfg(feature = "ffi_vec")]
-            decoder_def! { Vector<$T, 4>, wavelet_rs_decoder_vec_4_ $T }
+            decoder_def! { impl_ Vector<$T, 4>, wavelet_rs_decoder_vec_4_ $T }
 
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 1>, 1>, wavelet_rs_decoder_mat_1x1_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 1>, 1>, wavelet_rs_decoder_mat_1x1_ $T }
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 2>, 1>, wavelet_rs_decoder_mat_1x2_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 2>, 1>, wavelet_rs_decoder_mat_1x2_ $T }
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 3>, 1>, wavelet_rs_decoder_mat_1x3_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 3>, 1>, wavelet_rs_decoder_mat_1x3_ $T }
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 4>, 1>, wavelet_rs_decoder_mat_1x4_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 4>, 1>, wavelet_rs_decoder_mat_1x4_ $T }
 
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 1>, 2>, wavelet_rs_decoder_mat_2x1_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 1>, 2>, wavelet_rs_decoder_mat_2x1_ $T }
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 2>, 2>, wavelet_rs_decoder_mat_2x2_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 2>, 2>, wavelet_rs_decoder_mat_2x2_ $T }
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 3>, 2>, wavelet_rs_decoder_mat_2x3_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 3>, 2>, wavelet_rs_decoder_mat_2x3_ $T }
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 4>, 2>, wavelet_rs_decoder_mat_2x4_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 4>, 2>, wavelet_rs_decoder_mat_2x4_ $T }
 
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 1>, 3>, wavelet_rs_decoder_mat_3x1_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 1>, 3>, wavelet_rs_decoder_mat_3x1_ $T }
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 2>, 3>, wavelet_rs_decoder_mat_3x2_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 2>, 3>, wavelet_rs_decoder_mat_3x2_ $T }
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 3>, 3>, wavelet_rs_decoder_mat_3x3_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 3>, 3>, wavelet_rs_decoder_mat_3x3_ $T }
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 4>, 3>, wavelet_rs_decoder_mat_3x4_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 4>, 3>, wavelet_rs_decoder_mat_3x4_ $T }
 
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 1>, 4>, wavelet_rs_decoder_mat_4x1_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 1>, 4>, wavelet_rs_decoder_mat_4x1_ $T }
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 2>, 4>, wavelet_rs_decoder_mat_4x2_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 2>, 4>, wavelet_rs_decoder_mat_4x2_ $T }
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 3>, 4>, wavelet_rs_decoder_mat_4x3_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 3>, 4>, wavelet_rs_decoder_mat_4x3_ $T }
             #[cfg(feature = "ffi_mat")]
-            decoder_def! { Vector<Vector<$T, 4>, 4>, wavelet_rs_decoder_mat_4x4_ $T }
+            decoder_def! { impl_ Vector<Vector<$T, 4>, 4>, wavelet_rs_decoder_mat_4x4_ $T }
         )*
     };
 
-    ($T:ty, $($N:tt)*) => {
-        decoder_def! { impl_ $T, HaarWavelet, $($N)* _haar }
-        decoder_def! { impl_ $T, AverageFilter, $($N)* _average }
-    };
-
-    (impl_ $T:ty, $F:ty, $($N:tt)*) => {
+    (impl_ $T:ty, $($N:tt)*) => {
         paste! {
             /// Constructs a new decoder.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _new>](
                 input: *const std::os::raw::c_char,
-            ) -> Box<VolumeWaveletDecoder<$T, $F>> {
+            ) -> Box<VolumeWaveletDecoder<$T>> {
                 let input = CStr::from_ptr(input.cast());
                 let input = String::from_utf8_lossy(input.as_ref().to_bytes());
                 Box::new(VolumeWaveletDecoder::new(&*input))
@@ -1042,13 +1017,13 @@ macro_rules! decoder_def {
             /// Deallocates and destructs an decoder.
             #[no_mangle]
             pub extern "C" fn [<$($N)* _free>](
-                _: Box<VolumeWaveletDecoder<$T, $F>>,
+                _: Box<VolumeWaveletDecoder<$T>>,
             ) {}
 
             /// Fetches the dimensions of the encoded dataset.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _dims>](
-                decoder: *const VolumeWaveletDecoder<$T, $F>,
+                decoder: *const VolumeWaveletDecoder<$T>,
                 output: *mut MaybeUninit<CSlice<'_, usize>>
             ) {
                 let dims = (*decoder).dims().into();
@@ -1058,7 +1033,7 @@ macro_rules! decoder_def {
             /// Decodes the dataset.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _decode>](
-                decoder: *const VolumeWaveletDecoder<$T, $F>,
+                decoder: *const VolumeWaveletDecoder<$T>,
                 writer_fetcher: *const MaybeUninit<BlockWriterFetcherBuilder<'_, $T>>,
                 roi: *const CSlice<'_, CRange<usize>>,
                 levels: *const CSlice<'_, u32>
@@ -1079,7 +1054,7 @@ macro_rules! decoder_def {
             /// Applies a partial decoding to a partially decoded dataset.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _refine>](
-                decoder: *const VolumeWaveletDecoder<$T, $F>,
+                decoder: *const VolumeWaveletDecoder<$T>,
                 reader_fetcher: *const MaybeUninit<BlockReaderFetcherBuilder<'_, $T>>,
                 writer_fetcher: *const MaybeUninit<BlockWriterFetcherBuilder<'_, $T>>,
                 input_range: *const CSlice<'_, CRange<usize>>,
@@ -1127,42 +1102,42 @@ macro_rules! decoder_def {
             }
         }
 
-        decoder_def! { metadata $T, $F, u8, $($N)* }
-        decoder_def! { metadata $T, $F, u16, $($N)* }
-        decoder_def! { metadata $T, $F, u32, $($N)* }
-        decoder_def! { metadata $T, $F, u64, $($N)* }
-        decoder_def! { metadata $T, $F, i8, $($N)* }
-        decoder_def! { metadata $T, $F, i16, $($N)* }
-        decoder_def! { metadata $T, $F, i32, $($N)* }
-        decoder_def! { metadata $T, $F, i64, $($N)* }
-        decoder_def! { metadata $T, $F, f32, $($N)* }
-        decoder_def! { metadata $T, $F, f64, $($N)* }
+        decoder_def! { metadata $T, u8, $($N)* }
+        decoder_def! { metadata $T, u16, $($N)* }
+        decoder_def! { metadata $T, u32, $($N)* }
+        decoder_def! { metadata $T, u64, $($N)* }
+        decoder_def! { metadata $T, i8, $($N)* }
+        decoder_def! { metadata $T, i16, $($N)* }
+        decoder_def! { metadata $T, i32, $($N)* }
+        decoder_def! { metadata $T, i64, $($N)* }
+        decoder_def! { metadata $T, f32, $($N)* }
+        decoder_def! { metadata $T, f64, $($N)* }
 
-        decoder_def! { metadata_ $T, $F, CString, ($($N)*); string}
+        decoder_def! { metadata_ $T, CString, ($($N)*); string}
     };
 
-    (metadata $T:ty, $F:ty, $U:ty, $($N:tt)*) => {
-        decoder_def! { metadata_ $T, $F, $U, ($($N)*); $U }
+    (metadata $T:ty, $U:ty, $($N:tt)*) => {
+        decoder_def! { metadata_ $T, $U, ($($N)*); $U }
 
         #[cfg(feature = "ffi_metadata_arr")]
-        decoder_def! { metadata_ $T, $F, CArray<$U, 1>, ($($N)*); $U _arr_1 }
+        decoder_def! { metadata_ $T, CArray<$U, 1>, ($($N)*); $U _arr_1 }
         #[cfg(feature = "ffi_metadata_arr")]
-        decoder_def! { metadata_ $T, $F, CArray<$U, 2>, ($($N)*); $U _arr_2 }
+        decoder_def! { metadata_ $T, CArray<$U, 2>, ($($N)*); $U _arr_2 }
         #[cfg(feature = "ffi_metadata_arr")]
-        decoder_def! { metadata_ $T, $F, CArray<$U, 3>, ($($N)*); $U _arr_3 }
+        decoder_def! { metadata_ $T, CArray<$U, 3>, ($($N)*); $U _arr_3 }
         #[cfg(feature = "ffi_metadata_arr")]
-        decoder_def! { metadata_ $T, $F, CArray<$U, 4>, ($($N)*); $U _arr_4 }
+        decoder_def! { metadata_ $T, CArray<$U, 4>, ($($N)*); $U _arr_4 }
 
         #[cfg(feature = "ffi_metadata_slice")]
-        decoder_def! { metadata_ $T, $F, OwnedCSlice<$U>, ($($N)*); $U _slice }
+        decoder_def! { metadata_ $T, OwnedCSlice<$U>, ($($N)*); $U _slice }
     };
 
-    (metadata_ $T:ty, $F:ty, $U:ty, ( $($N:tt)*); $($M:tt)*) => {
+    (metadata_ $T:ty, $U:ty, ( $($N:tt)*); $($M:tt)*) => {
         paste! {
             /// Fetches a value inserted into the metadata.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _metadata_get_ $($M)*>](
-                decoder: *const VolumeWaveletDecoder<$T, $F>,
+                decoder: *const VolumeWaveletDecoder<$T>,
                 key: *const std::ffi::c_char,
                 res: *mut MaybeUninit<COption<$U>>
             ) {
@@ -1195,17 +1170,12 @@ pub unsafe extern "C" fn get_decoder_info(
     let f = std::fs::File::open(&*path).unwrap();
     let stream = DeserializeStream::new_decode(f).unwrap();
     let mut stream = stream.stream();
-    let (elem_type, filter_type, dims) = OutputHeader::<(), ()>::deserialize_info(&mut stream);
+    let (elem_type, dims) = OutputHeader::<()>::deserialize_info(&mut stream);
 
     let elem_type: ElemType = (*elem_type).into();
-    let filter_type: FilterType = (*filter_type).into();
     let dims: OwnedCSlice<usize> = dims.into_boxed_slice().into();
 
-    let info = DecoderInfo {
-        elem_type,
-        filter_type,
-        dims,
-    };
+    let info = DecoderInfo { elem_type, dims };
 
     (*output).write(info);
 }
