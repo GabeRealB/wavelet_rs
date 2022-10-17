@@ -526,7 +526,7 @@ impl<T> BlockBlueprint<T> {
             let required_steps = adapted_size
                 .iter()
                 .zip(&part_to_remove_block.size)
-                .map(|(&r, &o)| (o / r).ilog2())
+                .map(|(&r, &o)| (o / r).max(1).ilog2())
                 .collect();
 
             adapted_size[part_to_remove_block.dim] *= 2;
