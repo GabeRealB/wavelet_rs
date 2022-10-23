@@ -893,8 +893,7 @@ macro_rules! encoder_def {
         encoder_def! { metadata $T, i64, $($N)* }
         encoder_def! { metadata $T, f32, $($N)* }
         encoder_def! { metadata $T, f64, $($N)* }
-
-        encoder_def! { metadata_ $T, CString, ($($N)*); string}
+        encoder_def! { metadata $T, CString, $($N)* }
     };
 
     (metadata $T:ty, $U:ty, $($N:tt)*) => {
@@ -1112,8 +1111,7 @@ macro_rules! decoder_def {
         decoder_def! { metadata $T, i64, $($N)* }
         decoder_def! { metadata $T, f32, $($N)* }
         decoder_def! { metadata $T, f64, $($N)* }
-
-        decoder_def! { metadata_ $T, CString, ($($N)*); string}
+        decoder_def! { metadata $T, CString, $($N)* }
     };
 
     (metadata $T:ty, $U:ty, $($N:tt)*) => {
