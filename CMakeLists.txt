@@ -17,25 +17,25 @@ set(FEATURES "ffi")
 set(FEATURES_DEF "WAVELET_RS_FEAT_FFI")
 
 # enable optional features
-if(ENABLE_VECTOR)
+if(WAVELET_ENABLE_VECTOR)
     string(APPEND FEATURES ",ffi_vec")
     list(APPEND FEATURES_DEF "WAVELET_RS_FEAT_FFI_VEC")
-endif(ENABLE_VECTOR)
+endif(WAVELET_ENABLE_VECTOR)
 
-if(ENABLE_MATRIX)
+if(WAVELET_ENABLE_MATRIX)
     string(APPEND FEATURES ",ffi_mat")
     list(APPEND FEATURES_DEF "WAVELET_RS_FEAT_FFI_MAT")
-endif(ENABLE_MATRIX)
+endif(WAVELET_ENABLE_MATRIX)
 
-if(ENABLE_ARRAY_METADATA)
+if(WAVELET_ENABLE_ARRAY_METADATA)
     string(APPEND FEATURES ",ffi_metadata_arr")
     list(APPEND FEATURES_DEF "WAVELET_RS_FEAT_FFI_MEATADATA_ARR")
-endif(ENABLE_ARRAY_METADATA)
+endif(WAVELET_ENABLE_ARRAY_METADATA)
 
-if(ENABLE_SLICE_METADATA)
+if(WAVELET_ENABLE_SLICE_METADATA)
     string(APPEND FEATURES ",ffi_metadata_slice")
     list(APPEND FEATURES_DEF "WAVELET_RS_FEAT_FFI_MEATADATA_SLICE")
-endif(ENABLE_SLICE_METADATA)
+endif(WAVELET_ENABLE_SLICE_METADATA)
 
 # enable ExternalProject CMake module for building the rust crate
 include(ExternalProject)
@@ -45,7 +45,7 @@ ExternalProject_Add(
     ext_libwavelet
     BUILD_ALWAYS         ON
     CONFIGURE_COMMAND    ""
-    BUILD_COMMAND        cargo build --target-dir ${BDIR} "$<IF:$<CONFIG:Release>,--release,>"
+    BUILD_COMMAND        cargo build --target-dir ${BDIR} --features ${FEATURES} "$<IF:$<CONFIG:Release>,--release,>"
     BUILD_BYPRODUCTS     ${BDIR}/$<IF:$<CONFIG:Release>,release,debug>/libwavelet_rs.a
     INSTALL_COMMAND      ""
     SOURCE_DIR           "${CMAKE_CURRENT_SOURCE_DIR}"

@@ -1872,7 +1872,7 @@ namespace enc_priv_ {
     ENCODER_METADATA_EXTERN(T, N, std::int64_t, i64)                                 \
     ENCODER_METADATA_EXTERN(T, N, float, f32)                                        \
     ENCODER_METADATA_EXTERN(T, N, double, f64)                                       \
-    ENCODER_METADATA_EXTERN_(T, N, string, string)                                   \
+    ENCODER_METADATA_EXTERN(T, N, string, CString)                                   \
     template <>                                                                      \
     struct encoder_impl<T> {                                                         \
         static constexpr bool implemented = true;                                    \
@@ -2119,7 +2119,7 @@ namespace dec_priv_ {
     DECODER_METADATA_EXTERN(T, N, std::int64_t, i64)                       \
     DECODER_METADATA_EXTERN(T, N, float, f32)                              \
     DECODER_METADATA_EXTERN(T, N, double, f64)                             \
-    DECODER_METADATA_EXTERN(T, N, string, string)                          \
+    DECODER_METADATA_EXTERN(T, N, string, CString)                         \
     template <>                                                            \
     struct decoder_impl<T> {                                               \
         static constexpr bool implemented = true;                          \
