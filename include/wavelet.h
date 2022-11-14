@@ -108,6 +108,18 @@ template <typename T>
 struct range {
     T start;
     T end;
+
+    template <typename U>
+    bool operator==(const range<U>& other) const
+    {
+        return (this->start == other.start) && (this->end == other.end);
+    }
+
+    template <typename U>
+    bool operator!=(const range<U>& other) const
+    {
+        return !(*this == other);
+    }
 };
 
 /// View over a borrowed contiguous memory region.
@@ -2290,6 +2302,14 @@ public:
     /// @param path path to the encoded binary file.
     decoder(const char* path)
         : m_dec { decoder_::new_fn(path) }
+    {
+    }
+
+    /// Constructs a new decoder by taking ownership of a borrowed decoder.
+    ///
+    /// @param decoder borrowed decoder.
+    decoder(decoder_ref<T> decoder)
+        : m_dec { std::move(decoder) }
     {
     }
 

@@ -287,9 +287,15 @@ where
             .block_blueprints
             .block_decompositions_full(&block_backwards_steps);
 
+        let resampled_block_size: Vec<_> = self
+            .block_size
+            .iter()
+            .map(|s| s.next_power_of_two())
+            .collect();
+
         let block_transform_cfg = Chain::combine(
             ResampleCfg::new(&self.block_size),
-            ResampleCfg::new(&self.block_size),
+            ResampleCfg::new(&resampled_block_size),
         )
         .chain(WaveletRecompCfg::new_with_start_dim(
             &block_forwards_steps,
@@ -666,6 +672,50 @@ mod test {
             let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
             img.save(res_path.join(format!("img_1_ref_x_{x}.png")))
                 .unwrap();
+        }
+    }
+
+    #[test]
+    fn decode_img_2() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test/decode_img_2/");
+
+        let data_path = res_path.join("output.bin");
+
+        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+
+        let dims = [3024, 4032, 1];
+        let range = dims.map(|d| 0..d);
+        let steps = dims.map(|d: usize| d.ilog2());
+        let mut data = VolumeBlock::new_zero(&dims).unwrap();
+
+        for x in 0..steps[0] + 1 {
+            let force_once = ForceOnce;
+            let writer = |counts: &[usize]| {
+                force_once.consume();
+
+                let windows = data.window_mut().divide_into_mut(counts);
+
+                let (windows, _, _) = windows.into_raw_parts();
+                let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+                move |block_idx: usize| {
+                    let window = &windows[block_idx];
+                    let mut window = window.lock().unwrap().take().unwrap();
+
+                    move |idx: &[usize], elem| {
+                        window[idx] = elem;
+                    }
+                }
+            };
+
+            decoder.decode(writer, &range, &[x, steps[1], 0]);
+            let mut img = image::Rgb32FImage::new(data.dims()[0] as u32, data.dims()[1] as u32);
+            for (p, rgb) in img.pixels_mut().zip(data.flatten()) {
+                p.0 = *rgb.as_ref();
+            }
+            let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
+            img.save(res_path.join(format!("img_1_x_{x}.png"))).unwrap();
         }
     }
 }
