@@ -5,7 +5,6 @@ message(STATUS "Configuring wavelet library")
 
 option(WAVELET_BUILD_TESTS "Build the test executables" OFF)
 option(WAVELET_ENABLE_VECTOR "Build the library with vector encoders and decoders" OFF)
-option(WAVELET_ENABLE_MATRIX "Build the library with matrix encoders and decoders" OFF)
 option(WAVELET_ENABLE_ARRAY_METADATA "Build the library with array metadata support" OFF)
 option(WAVELET_ENABLE_SLICE_METADATA "Build the library with slice metadata support" OFF)
 
@@ -21,11 +20,6 @@ if(WAVELET_ENABLE_VECTOR)
     string(APPEND FEATURES ",ffi_vec")
     list(APPEND FEATURES_DEF "WAVELET_RS_FEAT_FFI_VEC")
 endif(WAVELET_ENABLE_VECTOR)
-
-if(WAVELET_ENABLE_MATRIX)
-    string(APPEND FEATURES ",ffi_mat")
-    list(APPEND FEATURES_DEF "WAVELET_RS_FEAT_FFI_MAT")
-endif(WAVELET_ENABLE_MATRIX)
 
 if(WAVELET_ENABLE_ARRAY_METADATA)
     string(APPEND FEATURES ",ffi_metadata_arr")

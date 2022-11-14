@@ -113,12 +113,7 @@ where
         assert!(input_range
             .iter()
             .zip(&self.dims)
-            .zip(&self.block_size)
-            .all(
-                |((region, &volume_size), &block)| (region.end <= volume_size)
-                    && (region.start % block == 0)
-                    && (region.end % block == 0)
-            ));
+            .all(|(region, &volume_size)| region.end <= volume_size));
 
         // Output range must be contained inside the received input range.
         assert!(input_range
@@ -194,7 +189,6 @@ where
 
         let block_range: Vec<_> = self.block_counts.iter().map(|&c| 0..c).collect();
         let block_input_range: Vec<_> = block_input_dims.iter().map(|&c| 0..c).collect();
-        let block_size_range: Vec<_> = self.block_size.iter().map(|&c| 0..c).collect();
 
         let readers = reader_fetcher(&self.block_counts);
         let writers = writer_fetcher(&self.block_counts);
@@ -214,11 +208,17 @@ where
                 .map(|(&start, &size)| start..start + size)
                 .collect();
 
-            if input_range
+            let contained_in_input = input_range
                 .iter()
-                .zip(block_range)
-                .all(|(i_r, b_r)| (i_r.start <= b_r.start) && (i_r.end >= b_r.end))
-            {
+                .zip(&block_range)
+                .all(|(i_r, b_r)| (i_r.start <= b_r.start) && (i_r.end >= b_r.end));
+
+            let contained_in_output = output_range
+                .iter()
+                .zip(&block_range)
+                .all(|(o_r, b_r)| (o_r.start <= b_r.start) && (o_r.end >= b_r.end));
+
+            if contained_in_input && contained_in_output {
                 let block_path = self.path.join(format!("block_{block_idx}"));
                 let mut block = self.block_blueprints.reconstruct(
                     &self.filter,
@@ -240,8 +240,19 @@ where
 
                 let block = refinement_pass.backwards(block, refinement_cfg);
 
+                let sub_range: Vec<_> = output_range
+                    .iter()
+                    .zip(block_range)
+                    .map(|(required, range)| {
+                        let start = required.start.max(range.start) - range.start;
+                        let end = required.end.min(range.end) - range.start;
+
+                        start..end
+                    })
+                    .collect();
+
                 // Copy the result back to the caller.
-                for_each_range_enumerate(block_size_range.iter().cloned(), |i, local_idx| {
+                for_each_range_enumerate(sub_range.iter().cloned(), |i, local_idx| {
                     writer(local_idx, block[i].clone());
                 });
             }
@@ -287,9 +298,15 @@ where
             .block_blueprints
             .block_decompositions_full(&block_backwards_steps);
 
+        let resampled_block_size: Vec<_> = self
+            .block_size
+            .iter()
+            .map(|s| s.next_power_of_two())
+            .collect();
+
         let block_transform_cfg = Chain::combine(
             ResampleCfg::new(&self.block_size),
-            ResampleCfg::new(&self.block_size),
+            ResampleCfg::new(&resampled_block_size),
         )
         .chain(WaveletRecompCfg::new_with_start_dim(
             &block_forwards_steps,
@@ -353,6 +370,8 @@ where
 
                 // Fetch the writer for the current block.
                 let mut writer = writers(block_idx);
+
+                let roi: Vec<_> = roi.iter().collect();
 
                 // Write back all elements of required range, which are contained in the reconstructed block.
                 let sub_range: Vec<_> = roi
@@ -575,6 +594,51 @@ mod test {
     }
 
     #[test]
+    fn decode_img_1_part() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test/decode_img_1/");
+
+        let data_path = res_path.join("output.bin");
+
+        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+
+        let dims = [2048, 2048, 1];
+        let range = [500..500 + 1080, 128..128 + 1920, 0..1];
+        let steps = 2048usize.ilog2();
+        let mut data = VolumeBlock::new_zero(&dims).unwrap();
+
+        for x in 0..steps + 1 {
+            let force_once = ForceOnce;
+            let writer = |counts: &[usize]| {
+                force_once.consume();
+
+                let windows = data.window_mut().divide_into_mut(counts);
+
+                let (windows, _, _) = windows.into_raw_parts();
+                let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+                move |block_idx: usize| {
+                    let window = &windows[block_idx];
+                    let mut window = window.lock().unwrap().take().unwrap();
+
+                    move |idx: &[usize], elem| {
+                        window[idx] = elem;
+                    }
+                }
+            };
+
+            decoder.decode(writer, &range, &[x, steps, 0]);
+            let mut img = image::Rgb32FImage::new(data.dims()[0] as u32, data.dims()[1] as u32);
+            for (p, rgb) in img.pixels_mut().zip(data.flatten()) {
+                p.0 = *rgb.as_ref();
+            }
+            let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
+            img.save(res_path.join(format!("img_1_x_{x}_part.png")))
+                .unwrap();
+        }
+    }
+
+    #[test]
     fn decode_img_1_refine() {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test/decode_img_1/");
@@ -666,6 +730,146 @@ mod test {
             let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
             img.save(res_path.join(format!("img_1_ref_x_{x}.png")))
                 .unwrap();
+        }
+    }
+
+    #[test]
+    fn decode_img_1_refine_part() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test/decode_img_1/");
+
+        let data_path = res_path.join("output.bin");
+
+        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+
+        let dims = [2048, 2048, 1];
+        let range = [500..500 + 1080, 128..128 + 1920, 0..1];
+        //let range = dims.map(|d| 0..d);
+        let steps = 2048usize.ilog2();
+        let mut data = VolumeBlock::new_zero(&dims).unwrap();
+
+        let force_once = ForceOnce;
+        let writer = |counts: &[usize]| {
+            force_once.consume();
+
+            let windows = data.window_mut().divide_into_mut(counts);
+
+            let (windows, _, _) = windows.into_raw_parts();
+            let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+            move |block_idx: usize| {
+                let window = &windows[block_idx];
+                let mut window = window.lock().unwrap().take().unwrap();
+
+                move |idx: &[usize], elem| {
+                    window[idx] = elem;
+                }
+            }
+        };
+
+        decoder.decode(writer, &range, &[0, steps, 0]);
+        let mut img = image::Rgb32FImage::new(data.dims()[0] as u32, data.dims()[1] as u32);
+        for (p, rgb) in img.pixels_mut().zip(data.flatten()) {
+            p.0 = *rgb.as_ref();
+        }
+        let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
+        img.save(res_path.join("img_1_ref_x_0_part.png")).unwrap();
+
+        for x in 1..steps + 1 {
+            let mut next = VolumeBlock::new_zero(&dims).unwrap();
+            let reader = |counts: &[usize]| {
+                let windows = data.window().divide_into(counts);
+
+                let (windows, _, _) = windows.into_raw_parts();
+                let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+                move |block_idx: usize| {
+                    let window = &windows[block_idx];
+                    let window = window.lock().unwrap().take().unwrap();
+                    move |idx: &[usize]| window[idx]
+                }
+            };
+
+            let force_once = ForceOnce;
+            let writer = |counts: &[usize]| {
+                force_once.consume();
+
+                let windows = next.window_mut().divide_into_mut(counts);
+
+                let (windows, _, _) = windows.into_raw_parts();
+                let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+                move |block_idx: usize| {
+                    let window = &windows[block_idx];
+                    let mut window = window.lock().unwrap().take().unwrap();
+
+                    move |idx: &[usize], elem| {
+                        window[idx] = elem;
+                    }
+                }
+            };
+
+            decoder.refine(
+                reader,
+                writer,
+                &range,
+                &range,
+                &[x - 1, steps, 0],
+                &[1, 0, 0],
+            );
+            data = next;
+
+            let mut img = image::Rgb32FImage::new(data.dims()[0] as u32, data.dims()[1] as u32);
+            for (p, rgb) in img.pixels_mut().zip(data.flatten()) {
+                p.0 = *rgb.as_ref();
+            }
+            let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
+            img.save(res_path.join(format!("img_1_ref_x_{x}_part.png")))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn decode_img_2() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test/decode_img_2/");
+
+        let data_path = res_path.join("output.bin");
+
+        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+
+        let dims = [3024, 4032, 1];
+        let range = dims.map(|d| 0..d);
+        let steps = dims.map(|d: usize| d.ilog2());
+        let mut data = VolumeBlock::new_zero(&dims).unwrap();
+
+        for x in 0..steps[0] + 1 {
+            let force_once = ForceOnce;
+            let writer = |counts: &[usize]| {
+                force_once.consume();
+
+                let windows = data.window_mut().divide_into_mut(counts);
+
+                let (windows, _, _) = windows.into_raw_parts();
+                let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+                move |block_idx: usize| {
+                    let window = &windows[block_idx];
+                    let mut window = window.lock().unwrap().take().unwrap();
+
+                    move |idx: &[usize], elem| {
+                        window[idx] = elem;
+                    }
+                }
+            };
+
+            decoder.decode(writer, &range, &[x, steps[1], 0]);
+            let mut img = image::Rgb32FImage::new(data.dims()[0] as u32, data.dims()[1] as u32);
+            for (p, rgb) in img.pixels_mut().zip(data.flatten()) {
+                p.0 = *rgb.as_ref();
+            }
+            let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
+            img.save(res_path.join(format!("img_1_x_{x}.png"))).unwrap();
         }
     }
 }
