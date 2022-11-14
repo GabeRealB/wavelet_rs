@@ -12,7 +12,6 @@ crate-type = ["lib", "staticlib"]
 default = ["ffi"]
 ffi = ["paste"]
 ffi_vec = ["ffi"]
-ffi_mat = ["ffi"]
 ffi_metadata_arr = ["ffi"]
 ffi_metadata_slice = ["ffi"]
 

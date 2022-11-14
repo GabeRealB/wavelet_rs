@@ -7,14 +7,12 @@
 /// Features:
 ///         - WAVELET_RS_FEAT_FFI ("ffi"): export ffi api.
 ///         - WAVELET_RS_FEAT_FFI_VEC ("ffi_vec"): export vector encoders and decoders.
-///         - WAVELET_RS_FEAT_FFI_MAT ("ffi_mat"): export matrix encoders and decoders.
 ///         - WAVELET_RS_FEAT_FFI_MEATADATA_ARR ("ffi_metadata_arr"): export reading/writing of arrays from/to the metadata.
 ///         - WAVELET_RS_FEAT_FFI_MEATADATA_SLICE ("ffi_metadata_arr"): export reading/writing of slices from/to the metadata.
 ///
 /// Import options:
 ///         - WAVELET_RS_IMPORT_ALL: enable all imports.
 ///         - WAVELET_RS_IMPORT_VEC: import vector encoder and decoder declarations.
-///         - WAVELET_RS_IMPORT_MAT: import matrix encoder and decoder declarations.
 ///         - WAVELET_RS_IMPORT_MEATADATA_ARR: import array metadata declarations.
 ///         - WAVELET_RS_IMPORT_MEATADATA_SLICE: import matrix metadata declarations.
 
@@ -24,7 +22,6 @@
 
 #ifdef WAVELET_RS_IMPORT_ALL
 #define WAVELET_RS_IMPORT_VEC
-#define WAVELET_RS_IMPORT_MAT
 #define WAVELET_RS_IMPORT_MEATADATA_ARR
 #define WAVELET_RS_IMPORT_MEATADATA_SLICE
 #endif // WAVELET_RS_IMPORT_ALL
@@ -32,10 +29,6 @@
 #if defined(WAVELET_RS_IMPORT_VEC) && !defined(WAVELET_RS_FEAT_FFI_VEC)
 #error "wavelet-rs was not compiled with the required 'ffi_vec' feature (required because of 'WAVELET_RS_IMPORT_VEC')"
 #endif // WAVELET_RS_IMPORT_VEC && !WAVELET_RS_FEAT_FFI_VEC
-
-#if defined(WAVELET_RS_IMPORT_MAT) && !defined(WAVELET_RS_FEAT_FFI_MAT)
-#error "wavelet-rs was not compiled with the required 'ffi_mat' feature (required because of 'WAVELET_RS_IMPORT_MAT')"
-#endif // WAVELET_RS_IMPORT_MAT && !WAVELET_RS_FEAT_FFI_MAT
 
 #if defined(WAVELET_RS_IMPORT_MEATADATA_ARR) && !defined(WAVELET_RS_FEAT_FFI_MEATADATA_ARR)
 #error "wavelet-rs was not compiled with the required 'ffi_metadata_arr' feature (required because of 'WAVELET_RS_IMPORT_MEATADATA_ARR')"
@@ -1504,28 +1497,6 @@ enum class elem_type : std::int32_t {
     F32Vec4,
 #endif // WAVELET_RS_IMPORT_VEC
 
-#ifdef WAVELET_RS_IMPORT_MAT
-    F32Mat1x1 = 11,
-    F32Mat1x2,
-    F32Mat1x3,
-    F32Mat1x4,
-
-    F32Mat2x1,
-    F32Mat2x2,
-    F32Mat2x3,
-    F32Mat2x4,
-
-    F32Mat3x1,
-    F32Mat3x2,
-    F32Mat3x3,
-    F32Mat3x4,
-
-    F32Mat4x1,
-    F32Mat4x2,
-    F32Mat4x3,
-    F32Mat4x4,
-#endif // WAVELET_RS_IMPORT_MAT
-
     F64 = 40,
 
 #ifdef WAVELET_RS_IMPORT_VEC
@@ -1534,28 +1505,6 @@ enum class elem_type : std::int32_t {
     F64Vec3,
     F64Vec4,
 #endif // WAVELET_RS_IMPORT_VEC
-
-#ifdef WAVELET_RS_IMPORT_MAT
-    F64Mat1x1 = 51,
-    F64Mat1x2,
-    F64Mat1x3,
-    F64Mat1x4,
-
-    F64Mat2x1,
-    F64Mat2x2,
-    F64Mat2x3,
-    F64Mat2x4,
-
-    F64Mat3x1,
-    F64Mat3x2,
-    F64Mat3x3,
-    F64Mat3x4,
-
-    F64Mat4x1,
-    F64Mat4x2,
-    F64Mat4x3,
-    F64Mat4x4,
-#endif // WAVELET_RS_IMPORT_MAT
 };
 
 /// Info pertaining to a decoder.
@@ -1913,32 +1862,9 @@ namespace enc_priv_ {
 #define ENCODER_VEC_EXTERN(T, N)
 #endif // WAVELET_RS_IMPORT_VEC
 
-#ifdef WAVELET_RS_IMPORT_MAT
-#define ENCODER_MATRIX_EXTERN(T, N)                   \
-    ENCODER_EXTERN_(array_1<array_1<T>>, mat_1x1_##N) \
-    ENCODER_EXTERN_(array_1<array_2<T>>, mat_1x2_##N) \
-    ENCODER_EXTERN_(array_1<array_3<T>>, mat_1x3_##N) \
-    ENCODER_EXTERN_(array_1<array_4<T>>, mat_1x4_##N) \
-    ENCODER_EXTERN_(array_2<array_1<T>>, mat_2x1_##N) \
-    ENCODER_EXTERN_(array_2<array_2<T>>, mat_2x2_##N) \
-    ENCODER_EXTERN_(array_2<array_3<T>>, mat_2x3_##N) \
-    ENCODER_EXTERN_(array_2<array_4<T>>, mat_2x4_##N) \
-    ENCODER_EXTERN_(array_3<array_1<T>>, mat_3x1_##N) \
-    ENCODER_EXTERN_(array_3<array_2<T>>, mat_3x2_##N) \
-    ENCODER_EXTERN_(array_3<array_3<T>>, mat_3x3_##N) \
-    ENCODER_EXTERN_(array_3<array_4<T>>, mat_3x4_##N) \
-    ENCODER_EXTERN_(array_4<array_1<T>>, mat_4x1_##N) \
-    ENCODER_EXTERN_(array_4<array_2<T>>, mat_4x2_##N) \
-    ENCODER_EXTERN_(array_4<array_3<T>>, mat_4x3_##N) \
-    ENCODER_EXTERN_(array_4<array_4<T>>, mat_4x4_##N)
-#else
-#define ENCODER_MATRIX_EXTERN(T, N)
-#endif // WAVELET_RS_IMPORT_MAT
-
 #define ENCODER_EXTERN(T, N) \
     ENCODER_EXTERN_(T, N)    \
-    ENCODER_VEC_EXTERN(T, N) \
-    ENCODER_MATRIX_EXTERN(T, N)
+    ENCODER_VEC_EXTERN(T, N)
 
     ENCODER_EXTERN(float, f32)
     ENCODER_EXTERN(double, f64)
@@ -2152,32 +2078,9 @@ namespace dec_priv_ {
 #define DECODER_VEC_EXTERN(T, N)
 #endif // WAVELET_RS_IMPORT_VEC
 
-#ifdef WAVELET_RS_IMPORT_MAT
-#define DECODER_MATRIX_EXTERN(T, N)                   \
-    DECODER_EXTERN_(array_1<array_1<T>>, mat_1x1_##N) \
-    DECODER_EXTERN_(array_1<array_2<T>>, mat_1x2_##N) \
-    DECODER_EXTERN_(array_1<array_3<T>>, mat_1x3_##N) \
-    DECODER_EXTERN_(array_1<array_4<T>>, mat_1x4_##N) \
-    DECODER_EXTERN_(array_2<array_1<T>>, mat_2x1_##N) \
-    DECODER_EXTERN_(array_2<array_2<T>>, mat_2x2_##N) \
-    DECODER_EXTERN_(array_2<array_3<T>>, mat_2x3_##N) \
-    DECODER_EXTERN_(array_2<array_4<T>>, mat_2x4_##N) \
-    DECODER_EXTERN_(array_3<array_1<T>>, mat_3x1_##N) \
-    DECODER_EXTERN_(array_3<array_2<T>>, mat_3x2_##N) \
-    DECODER_EXTERN_(array_3<array_3<T>>, mat_3x3_##N) \
-    DECODER_EXTERN_(array_3<array_4<T>>, mat_3x4_##N) \
-    DECODER_EXTERN_(array_4<array_1<T>>, mat_4x1_##N) \
-    DECODER_EXTERN_(array_4<array_2<T>>, mat_4x2_##N) \
-    DECODER_EXTERN_(array_4<array_3<T>>, mat_4x3_##N) \
-    DECODER_EXTERN_(array_4<array_4<T>>, mat_4x4_##N)
-#else
-#define DECODER_MATRIX_EXTERN(T, N)
-#endif // WAVELET_RS_IMPORT_MAT
-
 #define DECODER_EXTERN(T, N) \
     DECODER_EXTERN_(T, N)    \
-    DECODER_VEC_EXTERN(T, N) \
-    DECODER_MATRIX_EXTERN(T, N)
+    DECODER_VEC_EXTERN(T, N)
 
     DECODER_EXTERN(float, f32)
     DECODER_EXTERN(double, f64)
@@ -2437,32 +2340,9 @@ struct elem_type_trait {
 #define ELEM_TYPE_TRAIT_VEC(T, F)
 #endif // WAVELET_RS_IMPORT_VEC
 
-#ifdef WAVELET_RS_IMPORT_MAT
-#define ELEM_TYPE_TRAIT_MAT(T, F)                    \
-    ELEM_TYPE_TRAIT_(array_1<array_1<T>>, F##Mat1x1) \
-    ELEM_TYPE_TRAIT_(array_1<array_2<T>>, F##Mat1x2) \
-    ELEM_TYPE_TRAIT_(array_1<array_3<T>>, F##Mat1x3) \
-    ELEM_TYPE_TRAIT_(array_1<array_4<T>>, F##Mat1x4) \
-    ELEM_TYPE_TRAIT_(array_2<array_1<T>>, F##Mat2x1) \
-    ELEM_TYPE_TRAIT_(array_2<array_2<T>>, F##Mat2x2) \
-    ELEM_TYPE_TRAIT_(array_2<array_3<T>>, F##Mat2x3) \
-    ELEM_TYPE_TRAIT_(array_2<array_4<T>>, F##Mat2x4) \
-    ELEM_TYPE_TRAIT_(array_3<array_1<T>>, F##Mat3x1) \
-    ELEM_TYPE_TRAIT_(array_3<array_2<T>>, F##Mat3x2) \
-    ELEM_TYPE_TRAIT_(array_3<array_3<T>>, F##Mat3x3) \
-    ELEM_TYPE_TRAIT_(array_3<array_4<T>>, F##Mat3x4) \
-    ELEM_TYPE_TRAIT_(array_4<array_1<T>>, F##Mat4x1) \
-    ELEM_TYPE_TRAIT_(array_4<array_2<T>>, F##Mat4x2) \
-    ELEM_TYPE_TRAIT_(array_4<array_3<T>>, F##Mat4x3) \
-    ELEM_TYPE_TRAIT_(array_4<array_4<T>>, F##Mat4x4)
-#else
-#define ELEM_TYPE_TRAIT_MAT(T, F)
-#endif // WAVELET_RS_IMPORT_MAT
-
 #define ELEM_TYPE_TRAIT(T, N) \
     ELEM_TYPE_TRAIT_(T, N)    \
-    ELEM_TYPE_TRAIT_VEC(T, N) \
-    ELEM_TYPE_TRAIT_MAT(T, N)
+    ELEM_TYPE_TRAIT_VEC(T, N)
 
 ELEM_TYPE_TRAIT(float, elem_type::F32)
 ELEM_TYPE_TRAIT(double, elem_type::F64)

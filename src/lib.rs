@@ -6,7 +6,6 @@
     rustdoc::broken_intra_doc_links
 )]
 #![feature(slice_ptr_get)]
-#![feature(int_log)]
 
 #[cfg(feature = "ffi")]
 pub mod ffi;

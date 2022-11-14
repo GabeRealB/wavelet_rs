@@ -17,7 +17,7 @@ use crate::{
     stream::{Deserializable, Serializable},
 };
 
-#[cfg(any(feature = "ffi_vec", feature = "ffi_mat"))]
+#[cfg(feature = "ffi_vec")]
 use crate::vector::Vector;
 
 /// C compatible array type.
@@ -325,42 +325,6 @@ pub enum ElemType {
     #[cfg(feature = "ffi_vec")]
     F32Vec4,
 
-    #[cfg(feature = "ffi_mat")]
-    F32Mat1x1 = 11,
-    #[cfg(feature = "ffi_mat")]
-    F32Mat1x2,
-    #[cfg(feature = "ffi_mat")]
-    F32Mat1x3,
-    #[cfg(feature = "ffi_mat")]
-    F32Mat1x4,
-
-    #[cfg(feature = "ffi_mat")]
-    F32Mat2x1,
-    #[cfg(feature = "ffi_mat")]
-    F32Mat2x2,
-    #[cfg(feature = "ffi_mat")]
-    F32Mat2x3,
-    #[cfg(feature = "ffi_mat")]
-    F32Mat2x4,
-
-    #[cfg(feature = "ffi_mat")]
-    F32Mat3x1,
-    #[cfg(feature = "ffi_mat")]
-    F32Mat3x2,
-    #[cfg(feature = "ffi_mat")]
-    F32Mat3x3,
-    #[cfg(feature = "ffi_mat")]
-    F32Mat3x4,
-
-    #[cfg(feature = "ffi_mat")]
-    F32Mat4x1,
-    #[cfg(feature = "ffi_mat")]
-    F32Mat4x2,
-    #[cfg(feature = "ffi_mat")]
-    F32Mat4x3,
-    #[cfg(feature = "ffi_mat")]
-    F32Mat4x4,
-
     F64 = 40,
 
     #[cfg(feature = "ffi_vec")]
@@ -371,42 +335,6 @@ pub enum ElemType {
     F64Vec3,
     #[cfg(feature = "ffi_vec")]
     F64Vec4,
-
-    #[cfg(feature = "ffi_mat")]
-    F64Mat1x1 = 51,
-    #[cfg(feature = "ffi_mat")]
-    F64Mat1x2,
-    #[cfg(feature = "ffi_mat")]
-    F64Mat1x3,
-    #[cfg(feature = "ffi_mat")]
-    F64Mat1x4,
-
-    #[cfg(feature = "ffi_mat")]
-    F64Mat2x1,
-    #[cfg(feature = "ffi_mat")]
-    F64Mat2x2,
-    #[cfg(feature = "ffi_mat")]
-    F64Mat2x3,
-    #[cfg(feature = "ffi_mat")]
-    F64Mat2x4,
-
-    #[cfg(feature = "ffi_mat")]
-    F64Mat3x1,
-    #[cfg(feature = "ffi_mat")]
-    F64Mat3x2,
-    #[cfg(feature = "ffi_mat")]
-    F64Mat3x3,
-    #[cfg(feature = "ffi_mat")]
-    F64Mat3x4,
-
-    #[cfg(feature = "ffi_mat")]
-    F64Mat4x1,
-    #[cfg(feature = "ffi_mat")]
-    F64Mat4x2,
-    #[cfg(feature = "ffi_mat")]
-    F64Mat4x3,
-    #[cfg(feature = "ffi_mat")]
-    F64Mat4x4,
 }
 
 impl From<&str> for ElemType {
@@ -421,38 +349,6 @@ impl From<&str> for ElemType {
             x if x == std::any::type_name::<Vector<f32, 3>>() => Self::F32Vec3,
             #[cfg(feature = "ffi_vec")]
             x if x == std::any::type_name::<Vector<f32, 4>>() => Self::F32Vec4,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 1>, 1>>() => Self::F32Mat1x1,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 2>, 1>>() => Self::F32Mat1x2,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 3>, 1>>() => Self::F32Mat1x3,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 4>, 1>>() => Self::F32Mat1x4,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 1>, 2>>() => Self::F32Mat2x1,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 2>, 2>>() => Self::F32Mat2x2,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 3>, 2>>() => Self::F32Mat2x3,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 4>, 2>>() => Self::F32Mat2x4,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 1>, 3>>() => Self::F32Mat3x1,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 2>, 3>>() => Self::F32Mat3x2,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 3>, 3>>() => Self::F32Mat3x3,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 4>, 3>>() => Self::F32Mat3x4,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 1>, 4>>() => Self::F32Mat4x1,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 2>, 4>>() => Self::F32Mat4x2,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 3>, 4>>() => Self::F32Mat4x3,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f32, 4>, 4>>() => Self::F32Mat4x4,
 
             x if x == std::any::type_name::<f64>() => Self::F64,
             #[cfg(feature = "ffi_vec")]
@@ -463,38 +359,6 @@ impl From<&str> for ElemType {
             x if x == std::any::type_name::<Vector<f64, 3>>() => Self::F64Vec3,
             #[cfg(feature = "ffi_vec")]
             x if x == std::any::type_name::<Vector<f64, 4>>() => Self::F64Vec4,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 1>, 1>>() => Self::F64Mat1x1,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 2>, 1>>() => Self::F64Mat1x2,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 3>, 1>>() => Self::F64Mat1x3,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 4>, 1>>() => Self::F64Mat1x4,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 1>, 2>>() => Self::F64Mat2x1,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 2>, 2>>() => Self::F64Mat2x2,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 3>, 2>>() => Self::F64Mat2x3,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 4>, 2>>() => Self::F64Mat2x4,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 1>, 3>>() => Self::F64Mat3x1,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 2>, 3>>() => Self::F64Mat3x2,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 3>, 3>>() => Self::F64Mat3x3,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 4>, 3>>() => Self::F64Mat3x4,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 1>, 4>>() => Self::F64Mat4x1,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 2>, 4>>() => Self::F64Mat4x2,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 3>, 4>>() => Self::F64Mat4x3,
-            #[cfg(feature = "ffi_mat")]
-            x if x == std::any::type_name::<Vector<Vector<f64, 4>, 4>>() => Self::F64Mat4x4,
             _ => unimplemented!(),
         }
     }
@@ -790,42 +654,6 @@ macro_rules! encoder_def {
             encoder_def! { Vector<$T, 3>, wavelet_rs_encoder_vec_3_ $T }
             #[cfg(feature = "ffi_vec")]
             encoder_def! { Vector<$T, 4>, wavelet_rs_encoder_vec_4_ $T }
-
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 1>, 1>, wavelet_rs_encoder_mat_1x1_ $T }
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 2>, 1>, wavelet_rs_encoder_mat_1x2_ $T }
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 3>, 1>, wavelet_rs_encoder_mat_1x3_ $T }
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 4>, 1>, wavelet_rs_encoder_mat_1x4_ $T }
-
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 1>, 2>, wavelet_rs_encoder_mat_2x1_ $T }
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 2>, 2>, wavelet_rs_encoder_mat_2x2_ $T }
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 3>, 2>, wavelet_rs_encoder_mat_2x3_ $T }
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 4>, 2>, wavelet_rs_encoder_mat_2x4_ $T }
-
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 1>, 3>, wavelet_rs_encoder_mat_3x1_ $T }
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 2>, 3>, wavelet_rs_encoder_mat_3x2_ $T }
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 3>, 3>, wavelet_rs_encoder_mat_3x3_ $T }
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 4>, 3>, wavelet_rs_encoder_mat_3x4_ $T }
-
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 1>, 4>, wavelet_rs_encoder_mat_4x1_ $T }
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 2>, 4>, wavelet_rs_encoder_mat_4x2_ $T }
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 3>, 4>, wavelet_rs_encoder_mat_4x3_ $T }
-            #[cfg(feature = "ffi_mat")]
-            encoder_def! { Vector<Vector<$T, 4>, 4>, wavelet_rs_encoder_mat_4x4_ $T }
         )*
     };
 
@@ -962,42 +790,6 @@ macro_rules! decoder_def {
             decoder_def! { impl_ Vector<$T, 3>, wavelet_rs_decoder_vec_3_ $T }
             #[cfg(feature = "ffi_vec")]
             decoder_def! { impl_ Vector<$T, 4>, wavelet_rs_decoder_vec_4_ $T }
-
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 1>, 1>, wavelet_rs_decoder_mat_1x1_ $T }
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 2>, 1>, wavelet_rs_decoder_mat_1x2_ $T }
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 3>, 1>, wavelet_rs_decoder_mat_1x3_ $T }
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 4>, 1>, wavelet_rs_decoder_mat_1x4_ $T }
-
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 1>, 2>, wavelet_rs_decoder_mat_2x1_ $T }
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 2>, 2>, wavelet_rs_decoder_mat_2x2_ $T }
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 3>, 2>, wavelet_rs_decoder_mat_2x3_ $T }
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 4>, 2>, wavelet_rs_decoder_mat_2x4_ $T }
-
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 1>, 3>, wavelet_rs_decoder_mat_3x1_ $T }
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 2>, 3>, wavelet_rs_decoder_mat_3x2_ $T }
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 3>, 3>, wavelet_rs_decoder_mat_3x3_ $T }
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 4>, 3>, wavelet_rs_decoder_mat_3x4_ $T }
-
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 1>, 4>, wavelet_rs_decoder_mat_4x1_ $T }
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 2>, 4>, wavelet_rs_decoder_mat_4x2_ $T }
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 3>, 4>, wavelet_rs_decoder_mat_4x3_ $T }
-            #[cfg(feature = "ffi_mat")]
-            decoder_def! { impl_ Vector<Vector<$T, 4>, 4>, wavelet_rs_decoder_mat_4x4_ $T }
         )*
     };
 
