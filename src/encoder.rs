@@ -11,7 +11,7 @@ use crate::{
     range::{for_each_range, for_each_range_enumerate, for_each_range_par_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream, Serializable, SerializeStream},
     transformations::{
-        wavelet_transform::BackwardsOperation, Chain, ResampleCfg, ResampleExtend,
+        wavelet_transform::BackwardsOperation, Chain, ResampleCfg, ResampleClamp,
         ReversibleTransform, WaveletDecompCfg, WaveletTransform,
     },
     utilities::{flatten_idx, flatten_idx_unchecked, strides_for_dims},
@@ -149,36 +149,45 @@ where
     ) where
         GenericFilter<T>: Filter<T>,
     {
+        // We require that the block size is a power of two and has
+        // the same dimensionality as the input data.
         assert_eq!(block_size.len(), self.dims.len());
-        assert!(block_size
-            .iter()
-            .zip(&self.dims)
-            .all(|(&block, &dim)| dim % block == 0 && block <= dim));
+        assert!(block_size.iter().all(|block| block.is_power_of_two()));
 
         let filter = filter.to_generic();
 
-        let block_resample_dims: Vec<_> = block_size
-            .iter()
-            .map(|size| size.next_power_of_two())
-            .collect();
-        let steps: Vec<_> = block_resample_dims
-            .iter()
-            .map(|size| size.ilog2())
-            .collect();
-        let block_transform_cfg = Chain::from((
-            ResampleCfg::new(&block_resample_dims),
-            WaveletDecompCfg::new(&steps),
-        ));
+        // The wavelet transformation requires that the block size is a
+        // power of two, but the provided block can be smaller, if the
+        // block size does not divide into the size of the data. Therefore
+        // we extend a smaller block by clamping at the boundary. Afterwards
+        // we can apply the wavelet transformation.
+        let steps: Vec<_> = block_size.iter().map(|size| size.ilog2()).collect();
+        let block_transform_cfg =
+            Chain::combine(ResampleCfg::new(block_size), WaveletDecompCfg::new(&steps));
         let block_transform =
-            Chain::from((ResampleExtend, WaveletTransform::new(filter.clone(), false)));
+            Chain::combine(ResampleClamp, WaveletTransform::new(filter.clone(), false));
 
+        let next_multiple_of = |x, y| {
+            let remainder = x % y;
+            if remainder == 0 {
+                x
+            } else {
+                x + y - remainder
+            }
+        };
+
+        // Compute the number of blocks along each dimension. In case the
+        // block size divides into the size of the dataset this equates to
+        // `dataset_size / block_size`, otherwise we add a partial block
+        // by increasing the size of the dataset to the next multiple of
+        // the block size.
         let block_counts: Vec<_> = block_size
             .iter()
             .zip(&self.dims)
-            .map(|(&block, &dim)| dim / block)
+            .map(|(&block, &dim)| (block, next_multiple_of(block, dim)))
+            .map(|(block, dim)| dim / block)
             .collect();
         let block_counts_range: Vec<_> = block_counts.iter().map(|&c| 0..c).collect();
-        let block_range: Vec<_> = block_size.iter().map(|&b| 0..b).collect();
 
         if !output.as_ref().exists() {
             std::fs::create_dir(output.as_ref()).unwrap();
@@ -186,15 +195,27 @@ where
 
         let (sx, rx) = std::sync::mpsc::sync_channel(block_counts.iter().product());
         for_each_range_par_enumerate(block_counts_range.iter().cloned(), |i, block_idx| {
+            // Compute the start index of the block.
             let block_offset: Vec<_> = block_idx
                 .iter()
                 .zip(block_size)
                 .map(|(&idx, &size)| idx * size)
                 .collect();
 
-            let mut block = VolumeBlock::new_zero(block_size).unwrap();
+            // We may only be able to fill a partial block. In that case
+            // we adjust the block_size and resample it afterwards.
+            let clamped_block_size: Vec<_> = block_offset
+                .iter()
+                .zip(&self.dims)
+                .zip(block_size)
+                .map(|((&start, &dim_size), &block_size)| (dim_size - start).min(block_size))
+                .collect();
+            let block_range: Vec<_> = clamped_block_size.iter().map(|&b| 0..b).collect();
 
+            // Fill the block with data from the dataset.
+            let mut block = VolumeBlock::new_zero(&clamped_block_size).unwrap();
             for_each_range_enumerate(block_range.iter().cloned(), |i, inner_idx| {
+                // Map the local block index into a global index.
                 let idx: Vec<_> = block_offset
                     .iter()
                     .zip(inner_idx)
@@ -205,6 +226,8 @@ where
                 block[i] = fetcher(&idx[0..self.num_base_dims]);
             });
 
+            // Transform the block and collect the first coefficient
+            // to be processed later.
             let block_decomp = block_transform.forwards(block, block_transform_cfg);
             sx.send((i, block_decomp[0].clone())).unwrap();
 
@@ -214,6 +237,7 @@ where
             }
             std::fs::create_dir(&block_dir).unwrap();
 
+            // Serialize the block by level of detail.
             let mut counter = 0;
             let mut block_decomp_window = block_decomp.window();
             while block_decomp_window.dims().iter().any(|&d| d != 1) {
@@ -244,26 +268,26 @@ where
             }
         });
 
+        // Collect the first coefficient of each block into a last block.
         let mut superblock = VolumeBlock::new_zero(&block_counts).unwrap();
         for (i, elem) in rx.try_iter() {
             superblock[i] = elem;
         }
 
+        // Transform the last block similarely to the other blocks.
         let resample_dims: Vec<_> = block_counts
             .iter()
             .map(|size| size.next_power_of_two())
             .collect();
         let steps: Vec<_> = resample_dims.iter().map(|size| size.ilog2()).collect();
 
-        let output_transform_cfg = Chain::from((
+        let output_transform_cfg = Chain::combine(
             ResampleCfg::new(&resample_dims),
             WaveletDecompCfg::new(&steps),
-        ));
+        );
         let output_transform =
-            Chain::from((ResampleExtend, WaveletTransform::new(filter.clone(), false)));
+            Chain::combine(ResampleClamp, WaveletTransform::new(filter.clone(), false));
         let transformed = output_transform.forwards(superblock, output_transform_cfg);
-
-        let mut stream = SerializeStream::new();
 
         let output_header = OutputHeader {
             metadata: self.metadata.clone(),
@@ -271,9 +295,12 @@ where
             block_size: block_size.into(),
             block_counts,
             input_block_dims: transformed.dims().into(),
-            block_blueprints: BlockBlueprints::<T>::new(&block_resample_dims),
+            block_blueprints: BlockBlueprints::<T>::new(block_size),
             filter,
         };
+
+        // Serialize the header and the transformed last block.
+        let mut stream = SerializeStream::new();
         output_header.serialize(&mut stream);
         for elem in transformed.flatten() {
             elem.clone().serialize(&mut stream);
@@ -1067,7 +1094,7 @@ mod test {
         let mut encoder = VolumeWaveletEncoder::new(&dims, 2);
         encoder.add_fetcher(&[0], fetcher);
 
-        let block_size = [252, 252, 1];
+        let block_size = [256, 256, 1];
         encoder.encode(res_path, &block_size, AverageFilter)
     }
 }

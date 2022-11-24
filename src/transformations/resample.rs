@@ -150,6 +150,80 @@ impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleExtend {
     }
 }
 
+/// Transformation which extends a volume block by clamping the values at the end boundary.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ResampleClamp;
+
+impl<T: Zero + Clone> OneWayTransform<Forwards, T> for ResampleClamp {
+    type Cfg<'a> = ResampleCfg<'a>;
+
+    #[inline]
+    fn apply(
+        &self,
+        input: crate::volume::VolumeBlock<T>,
+        cfg: Self::Cfg<'_>,
+    ) -> crate::volume::VolumeBlock<T> {
+        assert!(input.dims().len() == cfg.to.len());
+        assert!(input.dims().iter().zip(cfg.to).all(|(&s, &d)| s <= d));
+
+        if input.dims() == cfg.to {
+            return input;
+        }
+
+        let mut resampled = crate::volume::VolumeBlock::new_zero(cfg.to).unwrap();
+        let input_window = input.window();
+
+        let mut output_window = resampled.window_mut();
+        let mut clone_window = output_window.custom_range_mut(input.dims());
+        input_window.clone_to(&mut clone_window);
+
+        let mut window_dims: Vec<_> = input.dims().into();
+        for (i, (&from, &to)) in input.dims().iter().zip(cfg.to).enumerate() {
+            if from == to {
+                continue;
+            }
+
+            window_dims[i] = to;
+            let mut window = output_window.custom_range_mut(&window_dims);
+            for mut lane in window.lanes_mut(i) {
+                let last_element = lane[from - 1].clone();
+                for j in from..to {
+                    lane[j] = last_element.clone();
+                }
+            }
+        }
+
+        resampled
+    }
+}
+
+impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleClamp {
+    type Cfg<'a> = ResampleCfg<'a>;
+
+    #[inline]
+    fn apply(
+        &self,
+        input: crate::volume::VolumeBlock<T>,
+        cfg: Self::Cfg<'_>,
+    ) -> crate::volume::VolumeBlock<T> {
+        assert!(input.dims().len() == cfg.to.len());
+        assert!(input.dims().iter().zip(cfg.to).all(|(&s, &d)| s >= d));
+
+        if input.dims() == cfg.to {
+            return input;
+        }
+
+        let mut resampled = crate::volume::VolumeBlock::new_zero(cfg.to).unwrap();
+        let input_window = input.window();
+        let input_window = input_window.custom_range(cfg.to);
+
+        let mut output_window = resampled.window_mut();
+
+        input_window.clone_to(&mut output_window);
+        resampled
+    }
+}
+
 /// Transformation resampling a volume by linear interpolation.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleLinear;
