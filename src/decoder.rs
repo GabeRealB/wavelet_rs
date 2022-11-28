@@ -10,7 +10,7 @@ use std::{
 use crate::{
     encoder::{BlockBlueprints, OutputHeader},
     filter::{Filter, GenericFilter},
-    range::{for_each_range, for_each_range_enumerate, for_each_range_par_enumerate},
+    range::{for_each_range, for_each_range_par_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream},
     transformations::{
         Chain, ResampleCfg, ResampleExtend, ResampleIScale, Reverse, ReversibleTransform,
@@ -92,8 +92,8 @@ where
     /// Applies a partial decoding to a partially decoded dataset.
     pub fn refine<BR, R, BW, W>(
         &self,
-        reader_fetcher: impl FnOnce(&[usize]) -> BR,
-        writer_fetcher: impl FnOnce(&[usize]) -> BW,
+        reader_fetcher: impl FnOnce(&[usize], &[usize]) -> BR,
+        writer_fetcher: impl FnOnce(&[usize], &[usize]) -> BW,
         input_range: &[Range<usize>],
         output_range: &[Range<usize>],
         curr_levels: &[u32],
@@ -145,6 +145,7 @@ where
             .map(|(&i_re, &re)| re - i_re)
             .collect();
 
+        // Fall back to decode, if we require data from the second pass input block.
         let requires_input_pass = input_refinements.iter().any(|&r| r != 0);
         if requires_input_pass {
             let new_levels: Vec<_> = curr_levels
@@ -155,20 +156,23 @@ where
             return self.decode(writer_fetcher, output_range, &new_levels);
         }
 
-        let resample_dim: Vec<_> = self
-            .block_size
-            .iter()
-            .map(|&b| b.next_power_of_two())
-            .collect();
-        let block_decompositions: Vec<_> = resample_dim.iter().map(|&b| b.ilog2()).collect();
+        let block_decompositions: Vec<_> = self.block_size.iter().map(|&b| b.ilog2()).collect();
         let remaining_decompositions: Vec<_> = block_decompositions
             .iter()
             .zip(&block_levels)
             .map(|(&d, &l)| d - l)
             .collect();
 
+        // We don't need to fully read a block to apply the refinement, as
+        // we expect the block to contain lots of redundant data. E. g. for
+        // an input with 3 detail levels and a size of 2^(3-1) we have:
+        //
+        // Level 2:  [x] [y] [z] [w],   Stride: 1 = 2^2 / 2^2
+        // Level 1:  [m] [m] [n] [n],   Stride: 2 = 2^2 / 2^1
+        // Level 0:  [a] [a] [a] [a],   Stride: 4 = 2^2 / 2^0
         let block_input_dims: Vec<_> = block_levels.iter().map(|&re| 2usize.pow(re)).collect();
-        let block_downsample_stepping: Vec<_> = resample_dim
+        let block_downsample_stepping: Vec<_> = self
+            .block_size
             .iter()
             .zip(&block_input_dims)
             .map(|(&s, &d)| s / d)
@@ -176,93 +180,143 @@ where
 
         let refinement_cfg = Chain::combine(
             ResampleCfg::new(&self.block_size),
-            ResampleCfg::new(&resample_dim),
-        )
-        .chain(WaveletRecompCfg::new_with_start_dim(
-            &block_refinements,
-            &block_refinements,
-            self.block_blueprints
-                .start_dim(&remaining_decompositions, &block_refinements),
-        ));
-        let refinement_pass = Chain::combine(ResampleExtend, Reverse::new(ResampleIScale))
-            .chain(WaveletTransform::new(self.filter.clone(), false));
+            WaveletRecompCfg::new_with_start_dim(
+                &block_refinements,
+                &block_refinements,
+                self.block_blueprints
+                    .start_dim(&remaining_decompositions, &block_refinements),
+            ),
+        );
+        let refinement_pass = Chain::combine(
+            Reverse::new(ResampleIScale),
+            WaveletTransform::new(self.filter.clone(), false),
+        );
 
         let block_range: Vec<_> = self.block_counts.iter().map(|&c| 0..c).collect();
-        let block_input_range: Vec<_> = block_input_dims.iter().map(|&c| 0..c).collect();
 
-        let readers = reader_fetcher(&self.block_counts);
-        let writers = writer_fetcher(&self.block_counts);
+        let readers = reader_fetcher(&self.block_counts, &self.block_size);
+        let writers = writer_fetcher(&self.block_counts, &self.block_size);
 
+        // Iterate over each block and refine it, if it is part of the requested data range.
         for_each_range_par_enumerate(block_range.iter().cloned(), |block_idx, block_iter_idx| {
             let reader = readers(block_idx);
             let mut writer = writers(block_idx);
 
+            // Each block, appart from the ones on the end boundary, is of
+            // uniform size `block_size`, therefore we can compute the start
+            // of a block by multiplying the multidimensional index by the
+            // block size along the dimension.
             let block_offset: Vec<_> = block_iter_idx
                 .iter()
                 .zip(&self.block_size)
                 .map(|(&idx, &size)| idx * size)
                 .collect();
+
+            // Compute the range of the input data the block spans.
+            // A block begins at position `block_offset` and can take a size of
+            // up to `block_size`, if the dataset is large enough. In case of
+            // overhang, we shorten the block size.
             let block_range: Vec<_> = block_offset
-                .iter()
+                .into_iter()
                 .zip(&self.block_size)
-                .map(|(&start, &size)| start..start + size)
+                .zip(&self.dims)
+                .map(|((start, &size), &dim)| (start, (dim - start).min(size)))
+                .map(|(start, size)| start..start + size)
                 .collect();
 
-            let contained_in_input = input_range
+            // Compute the subrange of the block that is contained in the input data.
+            let block_input_range: Vec<_> = input_range
                 .iter()
                 .zip(&block_range)
-                .all(|(i_r, b_r)| (i_r.start <= b_r.start) && (i_r.end >= b_r.end));
+                .map(|(r1, r2)| r1.start.max(r2.start)..r1.end.min(r2.end))
+                .collect();
 
-            let contained_in_output = output_range
+            // Check whether the block is part of the input.
+            let block_contained_in_input = block_input_range.iter().all(|r| !r.is_empty());
+            if !block_contained_in_input {
+                return;
+            }
+
+            // Compute the subrange of the block that is contained in the output data.
+            let block_output_range: Vec<_> = output_range
                 .iter()
                 .zip(&block_range)
-                .all(|(o_r, b_r)| (o_r.start <= b_r.start) && (o_r.end >= b_r.end));
+                .map(|(r1, r2)| r1.start.max(r2.start)..r1.end.min(r2.end))
+                .collect();
 
-            if contained_in_input && contained_in_output {
-                let block_path = self.path.join(format!("block_{block_idx}"));
-                let mut block = self.block_blueprints.reconstruct(
-                    &self.filter,
-                    block_path,
-                    &block_levels,
-                    &block_refinements,
-                );
+            // Check whether the block is part of the output.
+            let block_contained_in_output = block_output_range.iter().all(|r| !r.is_empty());
+            if !block_contained_in_output {
+                return;
+            }
 
-                // Load the partially recomposed data into the block.
-                for_each_range(block_input_range.iter().cloned(), |local_idx| {
-                    let reader_idx: Vec<_> = block_downsample_stepping
-                        .iter()
-                        .zip(local_idx)
-                        .map(|(&step, &idx)| step * idx)
-                        .collect();
+            let block_path = self.path.join(format!("block_{block_idx}"));
+            let mut block = self.block_blueprints.reconstruct(
+                &self.filter,
+                block_path,
+                &block_levels,
+                &block_refinements,
+            );
 
-                    block[local_idx] = reader(&reader_idx);
-                });
+            // Shift the global input range into a local range between `0..block_size`.
+            let relative_block_input_range: Vec<_> = block_input_range
+                .iter()
+                .zip(&block_range)
+                .zip(&block_downsample_stepping)
+                .map(|((out, block), &step)| {
+                    let start = (out.start - block.start) / step;
 
-                let block = refinement_pass.backwards(block, refinement_cfg);
+                    let end_idx = (out.end - block.start) / step;
+                    let end_overshoot = ((out.end - block.start) % step).min(1);
+                    let end = end_idx + end_overshoot;
 
-                let sub_range: Vec<_> = output_range
+                    start..end
+                })
+                .collect();
+
+            let block_input_overshoot: Vec<_> = block_input_range
+                .into_iter()
+                .zip(&block_downsample_stepping)
+                .map(|(range, &step)| range.start % step)
+                .collect();
+
+            // Load the partially recomposed data into the block.
+            for_each_range(relative_block_input_range.into_iter(), |local_idx| {
+                let reader_idx: Vec<_> = block_downsample_stepping
                     .iter()
-                    .zip(block_range)
-                    .map(|(required, range)| {
-                        let start = required.start.max(range.start) - range.start;
-                        let end = required.end.min(range.end) - range.start;
-
-                        start..end
-                    })
+                    .zip(local_idx)
+                    .zip(&block_input_overshoot)
+                    .map(|((&step, &idx), &overshoot)| (step * idx) + overshoot)
                     .collect();
 
-                // Copy the result back to the caller.
-                for_each_range_enumerate(sub_range.iter().cloned(), |i, local_idx| {
-                    writer(local_idx, block[i].clone());
-                });
-            }
+                block[local_idx] = reader(&reader_idx);
+            });
+
+            let block = refinement_pass.backwards(block, refinement_cfg);
+
+            // Shift the global output range into a local range between `0..block_size`.
+            let relative_block_output_range: Vec<_> = block_output_range
+                .iter()
+                .zip(&block_range)
+                .map(|(out, block)| {
+                    let start = out.start - block.start;
+                    let end = out.end - block.start;
+
+                    start..end
+                })
+                .collect();
+
+            // Copy the result back to the caller.
+            for_each_range(relative_block_output_range.into_iter(), |local_idx| {
+                writer(local_idx, block[local_idx].clone());
+            });
         });
     }
 
     /// Decodes the dataset.
     pub fn decode<BW, W>(
         &self,
-        writer_fetcher: impl FnOnce(&[usize]) -> BW,
+        writer_fetcher: impl FnOnce(&[usize], &[usize]) -> BW,
         roi: &[Range<usize>],
         levels: &[u32],
     ) where
@@ -298,25 +352,20 @@ where
             .block_blueprints
             .block_decompositions_full(&block_backwards_steps);
 
-        let resampled_block_size: Vec<_> = self
-            .block_size
-            .iter()
-            .map(|s| s.next_power_of_two())
-            .collect();
-
         let block_transform_cfg = Chain::combine(
             ResampleCfg::new(&self.block_size),
-            ResampleCfg::new(&resampled_block_size),
-        )
-        .chain(WaveletRecompCfg::new_with_start_dim(
-            &block_forwards_steps,
-            &block_backwards_steps,
-            self.block_blueprints.start_dim_full(&block_backwards_steps),
-        ));
-        let block_transform = Chain::combine(ResampleExtend, Reverse::new(ResampleIScale))
-            .chain(WaveletTransform::new(self.filter.clone(), false));
+            WaveletRecompCfg::new_with_start_dim(
+                &block_forwards_steps,
+                &block_backwards_steps,
+                self.block_blueprints.start_dim_full(&block_backwards_steps),
+            ),
+        );
+        let block_transform = Chain::combine(
+            Reverse::new(ResampleIScale),
+            WaveletTransform::new(self.filter.clone(), false),
+        );
 
-        let writers = writer_fetcher(&self.block_counts);
+        let writers = writer_fetcher(&self.block_counts, &self.block_size);
 
         // The dataset was encoded using a two pass approach.
         // The first pass deconstructs each block independently. Since each
@@ -339,21 +388,39 @@ where
         // Iterate over each block and decode it, if it is part of the requested data range.
         let block_range: Vec<_> = self.block_counts.iter().map(|&c| 0..c).collect();
         for_each_range_par_enumerate(block_range.iter().cloned(), |block_idx, block_iter_idx| {
+            // Each block, appart from the ones on the end boundary, is of
+            // uniform size `block_size`, therefore we can compute the start
+            // of a block by multiplying the multidimensional index by the
+            // block size along the dimension.
             let block_offset: Vec<_> = block_iter_idx
                 .iter()
                 .zip(&self.block_size)
                 .map(|(&idx, &size)| idx * size)
                 .collect();
+
+            // Compute the range of the input data the block spans.
+            // A block begins at position `block_offset` and can take a size of
+            // up to `block_size`, if the dataset is large enough. In case of
+            // overhang, we shorten the block size.
             let block_range: Vec<_> = block_offset
                 .iter()
                 .zip(&self.block_size)
-                .map(|(&start, &size)| start..start + size)
+                .zip(&self.dims)
+                .map(|((&start, &size), &dim)| (start, (dim - start).min(size)))
+                .map(|(start, size)| start..start + size)
+                .collect();
+
+            // Compute the subrange that we are interested in, that lies inside the block.
+            let block_roi: Vec<_> = roi
+                .iter()
+                .zip(&block_range)
+                .map(|(r1, r2)| r1.start.max(r2.start)..r1.end.min(r2.end))
                 .collect();
 
             // Check whether the block contains data in the requested range.
-            if roi.iter().zip(&block_range).all(|(required, range)| {
-                required.contains(&range.start) || required.contains(&range.end)
-            }) {
+            let block_contained_in_roi = block_roi.iter().all(|r| !r.is_empty());
+
+            if block_contained_in_roi {
                 // To recompose a block we need to reconstruct the block of coefficients.
                 // The detail coefficients are stored on disk, while the approximation coefficient
                 // (i.e. the first element) is contained in the block from the first reconstruction
@@ -371,17 +438,8 @@ where
                 // Fetch the writer for the current block.
                 let mut writer = writers(block_idx);
 
-                let roi: Vec<_> = roi.iter().collect();
-
                 // Write back all elements of required range, which are contained in the reconstructed block.
-                let sub_range: Vec<_> = roi
-                    .iter()
-                    .zip(block_range)
-                    .map(|(required, range)| {
-                        required.start.max(range.start)..required.end.min(range.end)
-                    })
-                    .collect();
-                for_each_range(sub_range.iter().cloned(), |idx| {
+                for_each_range(block_roi.into_iter(), |idx| {
                     let local_idx: Vec<_> = idx
                         .iter()
                         .zip(&block_offset)
@@ -423,11 +481,11 @@ mod test {
         let mut block_2 = VolumeBlock::new_zero(&dims).unwrap();
 
         let force_once = ForceOnce;
-        let writer = |counts: &[usize]| {
+        let writer = |counts: &[usize], size: &[usize]| {
             force_once.consume();
 
-            let block_1_windows = block_1.window_mut().divide_into_mut(counts);
-            let block_2_windows = block_2.window_mut().divide_into_mut(counts);
+            let block_1_windows = block_1.window_mut().divide_into_with_size_mut(counts, size);
+            let block_2_windows = block_2.window_mut().divide_into_with_size_mut(counts, size);
 
             let (block_1_windows, _, _) = block_1_windows.into_raw_parts();
             let (block_2_windows, _, _) = block_2_windows.into_raw_parts();
@@ -483,10 +541,10 @@ mod test {
         let mut data = VolumeBlock::new_zero(&dims).unwrap();
 
         let force_once = ForceOnce;
-        let writer = |counts: &[usize]| {
+        let writer = |counts: &[usize], size: &[usize]| {
             force_once.consume();
 
-            let windows = data.window_mut().divide_into_mut(counts);
+            let windows = data.window_mut().divide_into_with_size_mut(counts, size);
 
             let (windows, _, _) = windows.into_raw_parts();
             let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
@@ -505,8 +563,8 @@ mod test {
 
         for x in 1..steps + 1 {
             let mut next = VolumeBlock::new_zero(&dims).unwrap();
-            let reader = |counts: &[usize]| {
-                let windows = data.window().divide_into(counts);
+            let reader = |counts: &[usize], size: &[usize]| {
+                let windows = data.window().divide_into_with_size(counts, size);
 
                 let (windows, _, _) = windows.into_raw_parts();
                 let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
@@ -519,10 +577,10 @@ mod test {
             };
 
             let force_once = ForceOnce;
-            let writer = |counts: &[usize]| {
+            let writer = |counts: &[usize], size: &[usize]| {
                 force_once.consume();
 
-                let windows = next.window_mut().divide_into_mut(counts);
+                let windows = next.window_mut().divide_into_with_size_mut(counts, size);
 
                 let (windows, _, _) = windows.into_raw_parts();
                 let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
@@ -565,10 +623,10 @@ mod test {
 
         for x in 0..steps + 1 {
             let force_once = ForceOnce;
-            let writer = |counts: &[usize]| {
+            let writer = |counts: &[usize], size: &[usize]| {
                 force_once.consume();
 
-                let windows = data.window_mut().divide_into_mut(counts);
+                let windows = data.window_mut().divide_into_with_size_mut(counts, size);
 
                 let (windows, _, _) = windows.into_raw_parts();
                 let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
@@ -609,10 +667,10 @@ mod test {
 
         for x in 0..steps + 1 {
             let force_once = ForceOnce;
-            let writer = |counts: &[usize]| {
+            let writer = |counts: &[usize], size: &[usize]| {
                 force_once.consume();
 
-                let windows = data.window_mut().divide_into_mut(counts);
+                let windows = data.window_mut().divide_into_with_size_mut(counts, size);
 
                 let (windows, _, _) = windows.into_raw_parts();
                 let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
@@ -653,10 +711,10 @@ mod test {
         let mut data = VolumeBlock::new_zero(&dims).unwrap();
 
         let force_once = ForceOnce;
-        let writer = |counts: &[usize]| {
+        let writer = |counts: &[usize], size: &[usize]| {
             force_once.consume();
 
-            let windows = data.window_mut().divide_into_mut(counts);
+            let windows = data.window_mut().divide_into_with_size_mut(counts, size);
 
             let (windows, _, _) = windows.into_raw_parts();
             let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
@@ -681,8 +739,8 @@ mod test {
 
         for x in 1..steps + 1 {
             let mut next = VolumeBlock::new_zero(&dims).unwrap();
-            let reader = |counts: &[usize]| {
-                let windows = data.window().divide_into(counts);
+            let reader = |counts: &[usize], size: &[usize]| {
+                let windows = data.window().divide_into_with_size(counts, size);
 
                 let (windows, _, _) = windows.into_raw_parts();
                 let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
@@ -695,10 +753,10 @@ mod test {
             };
 
             let force_once = ForceOnce;
-            let writer = |counts: &[usize]| {
+            let writer = |counts: &[usize], size: &[usize]| {
                 force_once.consume();
 
-                let windows = next.window_mut().divide_into_mut(counts);
+                let windows = next.window_mut().divide_into_with_size_mut(counts, size);
 
                 let (windows, _, _) = windows.into_raw_parts();
                 let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
@@ -744,15 +802,14 @@ mod test {
 
         let dims = [2048, 2048, 1];
         let range = [500..500 + 1080, 128..128 + 1920, 0..1];
-        //let range = dims.map(|d| 0..d);
         let steps = 2048usize.ilog2();
         let mut data = VolumeBlock::new_zero(&dims).unwrap();
 
         let force_once = ForceOnce;
-        let writer = |counts: &[usize]| {
+        let writer = |counts: &[usize], size: &[usize]| {
             force_once.consume();
 
-            let windows = data.window_mut().divide_into_mut(counts);
+            let windows = data.window_mut().divide_into_with_size_mut(counts, size);
 
             let (windows, _, _) = windows.into_raw_parts();
             let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
@@ -777,8 +834,8 @@ mod test {
 
         for x in 1..steps + 1 {
             let mut next = VolumeBlock::new_zero(&dims).unwrap();
-            let reader = |counts: &[usize]| {
-                let windows = data.window().divide_into(counts);
+            let reader = |counts: &[usize], size: &[usize]| {
+                let windows = data.window().divide_into_with_size(counts, size);
 
                 let (windows, _, _) = windows.into_raw_parts();
                 let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
@@ -791,10 +848,10 @@ mod test {
             };
 
             let force_once = ForceOnce;
-            let writer = |counts: &[usize]| {
+            let writer = |counts: &[usize], size: &[usize]| {
                 force_once.consume();
 
-                let windows = next.window_mut().divide_into_mut(counts);
+                let windows = next.window_mut().divide_into_with_size_mut(counts, size);
 
                 let (windows, _, _) = windows.into_raw_parts();
                 let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
@@ -845,10 +902,10 @@ mod test {
 
         for x in 0..steps[0] + 1 {
             let force_once = ForceOnce;
-            let writer = |counts: &[usize]| {
+            let writer = |counts: &[usize], size: &[usize]| {
                 force_once.consume();
 
-                let windows = data.window_mut().divide_into_mut(counts);
+                let windows = data.window_mut().divide_into_with_size_mut(counts, size);
 
                 let (windows, _, _) = windows.into_raw_parts();
                 let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();

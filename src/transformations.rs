@@ -7,7 +7,8 @@ pub(crate) mod wavelet_transform;
 
 pub use basic::{Chain, Identity, Reverse};
 pub use resample::{
-    Lerp, ResampleCfg, ResampleCfgOwned, ResampleExtend, ResampleIScale, ResampleLinear,
+    Lerp, ResampleCfg, ResampleCfgOwned, ResampleClamp, ResampleExtend, ResampleIScale,
+    ResampleLinear,
 };
 pub use wavelet_transform::{
     WaveletDecompCfg, WaveletDecompCfgOwned, WaveletRecompCfg, WaveletRecompCfgOwned,
@@ -87,7 +88,7 @@ mod tests {
     };
 
     use super::{
-        resample::{ResampleCfg, ResampleExtend},
+        resample::{ResampleCfg, ResampleClamp},
         wavelet_transform::WaveletRecompCfg,
         Chain, ReversibleTransform,
     };
@@ -368,7 +369,7 @@ mod tests {
 
         let f_cfg = Chain::combine(ResampleCfg::new(&r_dims), f_cfg);
         let b_cfg = Chain::combine(ResampleCfg::new(&dims), b_cfg);
-        let transform = Chain::from((ResampleExtend, transform));
+        let transform = Chain::from((ResampleClamp, transform));
 
         let volume_dims = [width, height];
         let volume = VolumeBlock::new_with_data(&volume_dims, data).unwrap();

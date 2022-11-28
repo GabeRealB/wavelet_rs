@@ -494,14 +494,17 @@ pub struct BlockReaderFetcherBuilder<'a, T> {
     call: unsafe extern "C" fn(
         BlockReaderFetcherBuilderCtx<'a, T>,
         CSlice<'_, usize>,
+        CSlice<'_, usize>,
     ) -> BlockReaderFetcher<'a, T>,
-    _phantom: PhantomData<dyn FnOnce(CSlice<'_, usize>) -> BlockReaderFetcher<'a, T> + 'a>,
+    _phantom: PhantomData<
+        dyn FnOnce(CSlice<'_, usize>, CSlice<'_, usize>) -> BlockReaderFetcher<'a, T> + 'a,
+    >,
 }
 
 #[repr(C)]
 union BlockReaderFetcherBuilderCtx<'a, T> {
     opaque: *mut (),
-    func: unsafe extern "C" fn(CSlice<'_, usize>) -> BlockReaderFetcher<'a, T>,
+    func: unsafe extern "C" fn(CSlice<'_, usize>, CSlice<'_, usize>) -> BlockReaderFetcher<'a, T>,
 }
 
 impl<T> Copy for BlockReaderFetcherBuilderCtx<'_, T> {}
@@ -513,9 +516,9 @@ impl<T> Clone for BlockReaderFetcherBuilderCtx<'_, T> {
 }
 
 impl<'a, T> BlockReaderFetcherBuilder<'a, T> {
-    fn call(self, num_blocks: &[usize]) -> BlockReaderFetcher<'a, T> {
+    fn call(self, num_blocks: &[usize], block_size: &[usize]) -> BlockReaderFetcher<'a, T> {
         let this = ManuallyDrop::new(self);
-        unsafe { (this.call)(this.ctx, num_blocks.into()) }
+        unsafe { (this.call)(this.ctx, num_blocks.into(), block_size.into()) }
     }
 }
 
@@ -608,14 +611,17 @@ pub struct BlockWriterFetcherBuilder<'a, T> {
     call: unsafe extern "C" fn(
         BlockWriterFetcherBuilderCtx<'a, T>,
         CSlice<'_, usize>,
+        CSlice<'_, usize>,
     ) -> BlockWriterFetcher<'a, T>,
-    _phantom: PhantomData<dyn FnOnce(CSlice<'_, usize>) -> BlockWriterFetcher<'a, T> + 'a>,
+    _phantom: PhantomData<
+        dyn FnOnce(CSlice<'_, usize>, CSlice<'_, usize>) -> BlockWriterFetcher<'a, T> + 'a,
+    >,
 }
 
 #[repr(C)]
 union BlockWriterFetcherBuilderCtx<'a, T> {
     opaque: *mut (),
-    func: unsafe extern "C" fn(CSlice<'_, usize>) -> BlockWriterFetcher<'a, T>,
+    func: unsafe extern "C" fn(CSlice<'_, usize>, CSlice<'_, usize>) -> BlockWriterFetcher<'a, T>,
 }
 
 impl<T> Copy for BlockWriterFetcherBuilderCtx<'_, T> {}
@@ -627,9 +633,9 @@ impl<T> Clone for BlockWriterFetcherBuilderCtx<'_, T> {
 }
 
 impl<'a, T> BlockWriterFetcherBuilder<'a, T> {
-    fn call(self, num_blocks: &[usize]) -> BlockWriterFetcher<'a, T> {
+    fn call(self, num_blocks: &[usize], block_size: &[usize]) -> BlockWriterFetcher<'a, T> {
         let this = ManuallyDrop::new(self);
-        unsafe { (this.call)(this.ctx, num_blocks.into()) }
+        unsafe { (this.call)(this.ctx, num_blocks.into(), block_size.into()) }
     }
 }
 
@@ -830,8 +836,8 @@ macro_rules! decoder_def {
                 levels: *const CSlice<'_, u32>
             ) {
                 let writer_fetcher = (*writer_fetcher).assume_init_read();
-                let writer_fetcher = move |index: &[usize]| {
-                    let fetcher = writer_fetcher.call(index);
+                let writer_fetcher = move |index: &[usize], block_size: &[usize]| {
+                    let fetcher = writer_fetcher.call(index, block_size);
                     move |index: usize| {
                         let mut writer = fetcher.call(index);
                         move |index: &[usize], val: $T| writer.call(index, val)
@@ -855,16 +861,16 @@ macro_rules! decoder_def {
             ) {
                 let reader_fetcher = (*reader_fetcher).assume_init_read();
                 let writer_fetcher = (*writer_fetcher).assume_init_read();
-                let reader_fetcher = move |index: &[usize]| {
-                    let fetcher = reader_fetcher.call(index);
+                let reader_fetcher = move |index: &[usize], block_size: &[usize]| {
+                    let fetcher = reader_fetcher.call(index, block_size);
                     move |index: usize| {
                         let reader = fetcher.call(index);
                         move |index: &[usize]| reader.call(index)
                     }
                 };
 
-                let writer_fetcher = move |index: &[usize]| {
-                    let fetcher = writer_fetcher.call(index);
+                let writer_fetcher = move |index: &[usize], block_size: &[usize]| {
+                    let fetcher = writer_fetcher.call(index, block_size);
                     move |index: usize| {
                         let mut writer = fetcher.call(index);
                         move |index: &[usize], val: $T| writer.call(index, val)
