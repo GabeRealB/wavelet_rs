@@ -81,3 +81,12 @@ where
 {
     s.zip(i).zip(o).map(|((s, i), o)| s * (i + o)).sum()
 }
+
+pub fn next_multiple_of(x: usize, y: usize) -> usize {
+    let remainder = x % y;
+    if remainder == 0 {
+        x
+    } else {
+        x + y - remainder
+    }
+}

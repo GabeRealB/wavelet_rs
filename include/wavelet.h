@@ -1722,7 +1722,7 @@ using block_reader_fetcher = callable<Fn, block_reader<T>, std::size_t>;
 ///
 /// @tparam T element type of the volume.
 template <typename T>
-using reader_fetcher = callable<FnOnce, block_reader_fetcher<T>, slice<const std::size_t>>;
+using reader_fetcher = callable<FnOnce, block_reader_fetcher<T>, slice<const std::size_t>, slice<const std::size_t>>;
 
 /// Callable writing an element at the provided position in the current block.
 ///
@@ -1741,7 +1741,7 @@ using block_writer_fetcher = callable<Fn, block_writer<T>, std::size_t>;
 ///
 /// @tparam T element type of the volume.
 template <typename T>
-using writer_fetcher = callable<FnOnce, block_writer_fetcher<T>, slice<const std::size_t>>;
+using writer_fetcher = callable<FnOnce, block_writer_fetcher<T>, slice<const std::size_t>, slice<const std::size_t>>;
 
 namespace filters {
     /// Marker type for the haar wavelet.

@@ -84,14 +84,14 @@ int main()
     // the writer will only be called once and does not need to be
     // thread-safe.
     wavelet::writer_fetcher<float> writer {
-        [&output](wavelet::slice<const std::size_t> block_counts) -> wavelet::block_writer_fetcher<float> {
+        [&output](wavelet::slice<const std::size_t> block_counts, wavelet::slice<const std::size_t> block_size)
+            -> wavelet::block_writer_fetcher<float> {
             // the volume is one dimensional, therefore we
             // only require the offset to the start of the
             // requested block.
-            auto block_size = 128 / block_counts[0];
             std::vector<std::size_t> block_offsets(block_counts[0]);
             for (std::size_t i = 0; i < block_counts[0]; i++) {
-                block_offsets[i] = i * block_size;
+                block_offsets[i] = i * block_size[0];
             }
 
             // the returned callable uniquely assigns a block to each decoding task.

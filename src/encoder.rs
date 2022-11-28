@@ -14,7 +14,7 @@ use crate::{
         wavelet_transform::BackwardsOperation, Chain, ResampleCfg, ResampleClamp,
         ReversibleTransform, WaveletDecompCfg, WaveletTransform,
     },
-    utilities::{flatten_idx, flatten_idx_unchecked, strides_for_dims},
+    utilities::{flatten_idx, flatten_idx_unchecked, next_multiple_of, strides_for_dims},
     volume::{VolumeBlock, VolumeWindowMut},
 };
 
@@ -167,15 +167,6 @@ where
         let block_transform =
             Chain::combine(ResampleClamp, WaveletTransform::new(filter.clone(), false));
 
-        let next_multiple_of = |x, y| {
-            let remainder = x % y;
-            if remainder == 0 {
-                x
-            } else {
-                x + y - remainder
-            }
-        };
-
         // Compute the number of blocks along each dimension. In case the
         // block size divides into the size of the dataset this equates to
         // `dataset_size / block_size`, otherwise we add a partial block
@@ -184,7 +175,7 @@ where
         let block_counts: Vec<_> = block_size
             .iter()
             .zip(&self.dims)
-            .map(|(&block, &dim)| (block, next_multiple_of(block, dim)))
+            .map(|(&block, &dim)| (block, next_multiple_of(dim, block)))
             .map(|(block, dim)| dim / block)
             .collect();
         let block_counts_range: Vec<_> = block_counts.iter().map(|&c| 0..c).collect();
