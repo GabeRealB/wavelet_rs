@@ -1938,6 +1938,8 @@ public:
     /// ensure that `output` is a writable directory. The selected block size
     /// must tile the input volume exactly.
     ///
+    /// @pre `block_size` must be a power of two.
+    ///
     /// @tparam Filter filter to use for the encoding.
     /// @param output output directory.
     /// @param block_size selected block size.
@@ -2031,41 +2033,47 @@ namespace dec_priv_ {
     DECODER_METADATA_ARRAY_EXTERN(T, N, M, MN) \
     DECODER_METADATA_SLICE_EXTERN(T, N, M, MN)
 
-#define DECODER_EXTERN_(T, N)                                              \
-    extern "C" decoder_* wavelet_rs_decoder_##N##_new(const char*);        \
-    extern "C" void wavelet_rs_decoder_##N##_free(decoder_*);              \
-    extern "C" void wavelet_rs_decoder_##N##_dims(const decoder_*,         \
-        priv_::maybe_uninit<slice<const std::size_t>>*);                   \
-    extern "C" void wavelet_rs_decoder_##N##_decode(const decoder_*,       \
-        const priv_::maybe_uninit<writer_fetcher<T>>*,                     \
-        const slice<const range<std::size_t>>*,                            \
-        const slice<const std::uint32_t>*);                                \
-    extern "C" void wavelet_rs_decoder_##N##_refine(const decoder_*,       \
-        const priv_::maybe_uninit<reader_fetcher<T>>*,                     \
-        const priv_::maybe_uninit<writer_fetcher<T>>*,                     \
-        const slice<const range<std::size_t>>*,                            \
-        const slice<const range<std::size_t>>*,                            \
-        const slice<const std::uint32_t>*,                                 \
-        const slice<const std::uint32_t>*);                                \
-    DECODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                        \
-    DECODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                      \
-    DECODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                      \
-    DECODER_METADATA_EXTERN(T, N, std::uint64_t, u64)                      \
-    DECODER_METADATA_EXTERN(T, N, std::int8_t, i8)                         \
-    DECODER_METADATA_EXTERN(T, N, std::int16_t, i16)                       \
-    DECODER_METADATA_EXTERN(T, N, std::int32_t, i32)                       \
-    DECODER_METADATA_EXTERN(T, N, std::int64_t, i64)                       \
-    DECODER_METADATA_EXTERN(T, N, float, f32)                              \
-    DECODER_METADATA_EXTERN(T, N, double, f64)                             \
-    DECODER_METADATA_EXTERN(T, N, string, CString)                         \
-    template <>                                                            \
-    struct decoder_impl<T> {                                               \
-        static constexpr bool implemented = true;                          \
-        static constexpr auto new_fn = wavelet_rs_decoder_##N##_new;       \
-        static constexpr auto free_fn = wavelet_rs_decoder_##N##_free;     \
-        static constexpr auto dims_fn = wavelet_rs_decoder_##N##_dims;     \
-        static constexpr auto decode_fn = wavelet_rs_decoder_##N##_decode; \
-        static constexpr auto refine_fn = wavelet_rs_decoder_##N##_refine; \
+#define DECODER_EXTERN_(T, N)                                                          \
+    extern "C" decoder_* wavelet_rs_decoder_##N##_new(const char*);                    \
+    extern "C" void wavelet_rs_decoder_##N##_free(decoder_*);                          \
+    extern "C" void wavelet_rs_decoder_##N##_dims(const decoder_*,                     \
+        priv_::maybe_uninit<slice<const std::size_t>>*);                               \
+    extern "C" void wavelet_rs_decoder_##N##_block_size(const decoder_*,               \
+        priv_::maybe_uninit<slice<const std::size_t>>*);                               \
+    extern "C" void wavelet_rs_decoder_##N##_block_counts(const decoder_*,             \
+        priv_::maybe_uninit<slice<const std::size_t>>*);                               \
+    extern "C" void wavelet_rs_decoder_##N##_decode(const decoder_*,                   \
+        const priv_::maybe_uninit<writer_fetcher<T>>*,                                 \
+        const slice<const range<std::size_t>>*,                                        \
+        const slice<const std::uint32_t>*);                                            \
+    extern "C" void wavelet_rs_decoder_##N##_refine(const decoder_*,                   \
+        const priv_::maybe_uninit<reader_fetcher<T>>*,                                 \
+        const priv_::maybe_uninit<writer_fetcher<T>>*,                                 \
+        const slice<const range<std::size_t>>*,                                        \
+        const slice<const range<std::size_t>>*,                                        \
+        const slice<const std::uint32_t>*,                                             \
+        const slice<const std::uint32_t>*);                                            \
+    DECODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                                    \
+    DECODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                                  \
+    DECODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                                  \
+    DECODER_METADATA_EXTERN(T, N, std::uint64_t, u64)                                  \
+    DECODER_METADATA_EXTERN(T, N, std::int8_t, i8)                                     \
+    DECODER_METADATA_EXTERN(T, N, std::int16_t, i16)                                   \
+    DECODER_METADATA_EXTERN(T, N, std::int32_t, i32)                                   \
+    DECODER_METADATA_EXTERN(T, N, std::int64_t, i64)                                   \
+    DECODER_METADATA_EXTERN(T, N, float, f32)                                          \
+    DECODER_METADATA_EXTERN(T, N, double, f64)                                         \
+    DECODER_METADATA_EXTERN(T, N, string, CString)                                     \
+    template <>                                                                        \
+    struct decoder_impl<T> {                                                           \
+        static constexpr bool implemented = true;                                      \
+        static constexpr auto new_fn = wavelet_rs_decoder_##N##_new;                   \
+        static constexpr auto free_fn = wavelet_rs_decoder_##N##_free;                 \
+        static constexpr auto dims_fn = wavelet_rs_decoder_##N##_dims;                 \
+        static constexpr auto block_size_fn = wavelet_rs_decoder_##N##_block_size;     \
+        static constexpr auto block_counts_fn = wavelet_rs_decoder_##N##_block_counts; \
+        static constexpr auto decode_fn = wavelet_rs_decoder_##N##_decode;             \
+        static constexpr auto refine_fn = wavelet_rs_decoder_##N##_refine;             \
     };
 
 #ifdef WAVELET_RS_IMPORT_VEC
@@ -2120,6 +2128,30 @@ public:
 
         priv_::maybe_uninit<slice<const std::size_t>> res {};
         decoder_::dims_fn(this->m_dec, &res);
+        return res.get();
+    }
+
+    /// Fetches the blocksize used to encode the dataset.
+    ///
+    /// @return Maximum size of a block.
+    slice<const std::size_t> block_size() const
+    {
+        static_assert(std::is_standard_layout<priv_::maybe_uninit<slice<const std::size_t>>>::value, "invalid layout");
+
+        priv_::maybe_uninit<slice<const std::size_t>> res {};
+        decoder_::block_size_fn(this->m_dec, &res);
+        return res.get();
+    }
+
+    /// Fetches the number of blocks used for encoding the dataset.
+    ///
+    /// @return Block counts.
+    slice<const std::size_t> block_counts() const
+    {
+        static_assert(std::is_standard_layout<priv_::maybe_uninit<slice<const std::size_t>>>::value, "invalid layout");
+
+        priv_::maybe_uninit<slice<const std::size_t>> res {};
+        decoder_::block_counts_fn(this->m_dec, &res);
         return res.get();
     }
 
@@ -2245,6 +2277,22 @@ public:
     slice<const std::size_t> dims() const
     {
         return m_dec.dims();
+    }
+
+    /// Fetches the blocksize used to encode the dataset.
+    ///
+    /// @return Maximum size of a block.
+    slice<const std::size_t> block_size() const
+    {
+        return m_dec.block_size();
+    }
+
+    /// Fetches the number of blocks used for encoding the dataset.
+    ///
+    /// @return Block counts.
+    slice<const std::size_t> block_counts() const
+    {
+        return m_dec.block_counts();
     }
 
     /// Fetches an element from the decoder metadata.

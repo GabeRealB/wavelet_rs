@@ -827,6 +827,26 @@ macro_rules! decoder_def {
                 (*output).write(dims);
             }
 
+            /// Fetches the blocksize used to encode the dataset.
+            #[no_mangle]
+            pub unsafe extern "C" fn [<$($N)* _block_size>](
+                decoder: *const VolumeWaveletDecoder<$T>,
+                output: *mut MaybeUninit<CSlice<'_, usize>>
+            ) {
+                let size = (*decoder).block_size().into();
+                (*output).write(size);
+            }
+
+            /// Fetches the number of blocks used for encoding the dataset.
+            #[no_mangle]
+            pub unsafe extern "C" fn [<$($N)* _block_counts>](
+                decoder: *const VolumeWaveletDecoder<$T>,
+                output: *mut MaybeUninit<CSlice<'_, usize>>
+            ) {
+                let counts = (*decoder).block_counts().into();
+                (*output).write(counts);
+            }
+
             /// Decodes the dataset.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _decode>](
