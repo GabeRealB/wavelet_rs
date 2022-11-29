@@ -89,6 +89,16 @@ where
         &self.dims
     }
 
+    /// Fetches the blocksize used to encode the dataset.
+    pub fn block_size(&self) -> &[usize] {
+        &self.block_size
+    }
+
+    /// Fetches the number of blocks used for encoding the dataset.
+    pub fn block_counts(&self) -> &[usize] {
+        &self.block_counts
+    }
+
     /// Applies a partial decoding to a partially decoded dataset.
     pub fn refine<BR, R, BW, W>(
         &self,
