@@ -2093,7 +2093,23 @@ namespace dec_priv_ {
     DECODER_EXTERN(float, f32)
     DECODER_EXTERN(double, f64)
 
-    extern "C" void get_decoder_info(const char*, priv_::maybe_uninit<decoder_info>*);
+    extern "C" void wavelet_rs_get_decoder_info(const char*,
+        priv_::maybe_uninit<decoder_info>*);
+
+    extern "C" void wavelet_rs_allowed_block_sizes(std::size_t,
+        std::uint8_t,
+        std::uint8_t,
+        priv_::maybe_uninit<option<owned_slice<std::size_t>>>*);
+
+    extern "C" std::uint32_t wavelet_rs_min_level(std::size_t,
+        std::size_t,
+        std::uint8_t,
+        std::uint8_t);
+
+    extern "C" void wavelet_rs_max_range(std::size_t,
+        std::size_t,
+        std::uint8_t,
+        priv_::maybe_uninit<range<std::size_t>>*);
 }
 
 template <typename T>
@@ -2364,7 +2380,52 @@ inline decoder_info get_decoder_info(const char* path)
     static_assert(std::is_standard_layout<priv_::maybe_uninit<decoder_info>>::value, "invalid layout");
 
     priv_::maybe_uninit<decoder_info> res {};
-    dec_priv_::get_decoder_info(path, &res);
+    dec_priv_::wavelet_rs_get_decoder_info(path, &res);
+    return res.get();
+}
+
+/// Returns a list of block sizes which satisfies the given error constrains.
+///
+/// A `L0` error occurs when the size of the second pass is not a power of two,
+/// while a `L1` error occurs when the block size does not divide into `dim`.
+inline option<owned_slice<std::size_t>> allowed_block_sizes(std::size_t dim, bool allow_l0_error, bool allow_l1_error)
+{
+    static_assert(std::is_standard_layout<priv_::maybe_uninit<option<owned_slice<std::size_t>>>>::value, "invalid layout");
+
+    priv_::maybe_uninit<option<owned_slice<std::size_t>>> res {};
+    dec_priv_::wavelet_rs_allowed_block_sizes(dim,
+        static_cast<std::uint8_t>(allow_l0_error),
+        static_cast<std::uint8_t>(allow_l1_error),
+        &res);
+
+    return res.get();
+}
+
+/// Returns the minimum level required to avoid any error.
+///
+/// A `L0` error occurs when the size of the second pass is not a power of two,
+/// while a `L1` error occurs when the block size does not divide into `dim`.
+inline std::uint32_t min_level(std::size_t dim, std::size_t block_size, bool allow_l0_error, bool allow_l1_error)
+{
+    return dec_priv_::wavelet_rs_min_level(dim,
+        block_size,
+        static_cast<std::uint8_t>(allow_l0_error),
+        static_cast<std::uint8_t>(allow_l1_error));
+}
+
+/// Returns the maximum range which does not produce any unwanted error.
+///
+/// A `L1` error occurs when the block size does not divide into `dim`.
+inline range<std::size_t> max_range(std::size_t dim, std::size_t block_size, bool allow_l1_error)
+{
+    static_assert(std::is_standard_layout<priv_::maybe_uninit<range<std::size_t>>>::value, "invalid layout");
+
+    priv_::maybe_uninit<range<std::size_t>> res {};
+    dec_priv_::wavelet_rs_max_range(dim,
+        block_size,
+        static_cast<std::uint8_t>(allow_l1_error),
+        &res);
+
     return res.get();
 }
 

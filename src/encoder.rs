@@ -152,7 +152,9 @@ where
         // We require that the block size is a power of two and has
         // the same dimensionality as the input data.
         assert_eq!(block_size.len(), self.dims.len());
-        assert!(block_size.iter().all(|block| block.is_power_of_two()));
+        assert!(block_size
+            .iter()
+            .all(|&block| block.is_power_of_two() && block != 0));
 
         let filter = filter.to_generic();
 
@@ -973,6 +975,66 @@ impl Deserializable for BlockBlueprintPart {
             adapt,
         }
     }
+}
+
+/// Returns a list of block sizes which satisfies the given error constrains.
+///
+/// A `L0` error occurs when the size of the second pass is not a power of two,
+/// while a `L1` error occurs when the block size does not divide into `dim`.
+///
+/// ```
+/// use wavelet_rs::encoder::allowed_block_sizes;
+///
+/// // A dimension of `0` can not be used with our encoder.
+/// assert_eq!(allowed_block_sizes(0, true, true), None);
+///
+/// // With no constraints given we allow all powers of two from `1`
+/// // up to `dim.next_power_of_two()`.
+/// assert_eq!(allowed_block_sizes(10, true, true).unwrap().as_ref(), &[1, 2, 4, 8, 16]);
+///
+/// // The size of the second pass is given as `ceil(dim / x)`.
+/// assert_eq!(allowed_block_sizes(10, false, true).unwrap().as_ref(), &[8, 16]);
+/// assert_eq!(allowed_block_sizes(10, true, false).unwrap().as_ref(), &[1, 2]);
+///
+/// // Enabling both constraints is equivalent to computing the intersection
+/// // of each constraint individually.
+/// assert_eq!(allowed_block_sizes(10, false, false), None);
+/// ```
+pub fn allowed_block_sizes(
+    dim: usize,
+    allow_l0_error: bool,
+    allow_l1_error: bool,
+) -> Option<Box<[usize]>> {
+    if dim == 0 {
+        return None;
+    }
+
+    let adjusted_dim = dim.next_power_of_two();
+    let num_sizes = adjusted_dim.ilog2();
+    let mut block_sizes = Vec::new();
+
+    for i in 0..=num_sizes {
+        let size = 1usize << i;
+
+        if !allow_l0_error {
+            let l0_dim = (dim / size) + (dim % size).min(1);
+            if !l0_dim.is_power_of_two() {
+                continue;
+            }
+        }
+
+        if !allow_l1_error && (dim % size != 0) {
+            continue;
+        }
+
+        block_sizes.push(size);
+    }
+
+    if block_sizes.is_empty() {
+        return None;
+    }
+
+    Some(block_sizes.into_boxed_slice())
 }
 
 #[cfg(test)]

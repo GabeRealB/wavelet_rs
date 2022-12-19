@@ -973,7 +973,7 @@ decoder_def! {
 /// Returns some info pertaining to the encoded data located at `path`.
 #[no_mangle]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn get_decoder_info(
+pub unsafe extern "C" fn wavelet_rs_get_decoder_info(
     path: *const std::ffi::c_char,
     output: *mut MaybeUninit<DecoderInfo>,
 ) {
@@ -994,4 +994,52 @@ pub unsafe extern "C" fn get_decoder_info(
     let info = DecoderInfo { elem_type, dims };
 
     (*output).write(info);
+}
+
+/// Returns a list of block sizes which satisfies the given error constrains.
+///
+/// A `L0` error occurs when the size of the second pass is not a power of two,
+/// while a `L1` error occurs when the block size does not divide into `dim`.
+#[no_mangle]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn wavelet_rs_allowed_block_sizes(
+    dim: usize,
+    allow_l0_error: u8,
+    allow_l1_error: u8,
+    output: *mut MaybeUninit<COption<OwnedCSlice<usize>>>,
+) {
+    let sizes = crate::encoder::allowed_block_sizes(dim, allow_l0_error != 0, allow_l1_error != 0);
+    let sizes: Option<OwnedCSlice<usize>> = sizes.map(|sizes| sizes.into());
+
+    (*output).write(sizes.into());
+}
+
+/// Returns the minimum level required to avoid any error.
+///
+/// A `L0` error occurs when the size of the second pass is not a power of two,
+/// while a `L1` error occurs when the block size does not divide into `dim`.
+#[no_mangle]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn wavelet_rs_min_level(
+    dim: usize,
+    block_size: usize,
+    allow_l0_error: u8,
+    allow_l1_error: u8,
+) -> u32 {
+    crate::decoder::min_level(dim, block_size, allow_l0_error != 0, allow_l1_error != 0)
+}
+
+/// Returns the maximum range which does not produce any unwanted error.
+///
+/// A `L1` error occurs when the block size does not divide into `dim`.
+#[no_mangle]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn wavelet_rs_max_range(
+    dim: usize,
+    block_size: usize,
+    allow_l1_error: u8,
+    output: *mut MaybeUninit<CRange<usize>>,
+) {
+    let range = crate::decoder::max_range(dim, block_size, allow_l1_error != 0);
+    (*output).write(range.into());
 }
