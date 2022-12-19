@@ -464,6 +464,47 @@ where
     }
 }
 
+/// Returns the minimum level required to avoid any error.
+///
+/// A `L0` error occurs when the size of the second pass is not a power of two,
+/// while a `L1` error occurs when the block size does not divide into `dim`.
+pub fn min_level(dim: usize, block_size: usize, allow_l0_error: bool, allow_l1_error: bool) -> u32 {
+    if allow_l0_error && allow_l1_error {
+        return 0;
+    }
+
+    let l0_size = (dim / block_size) + (dim % block_size).min(1);
+    let l0_levels = l0_size.next_power_of_two().ilog2();
+    let l1_levels = block_size.ilog2();
+
+    let mut min_level = 0;
+
+    // If we can not tolerate a `L0` error, we are forced
+    // to fully reconstruct the second pass.
+    if !allow_l0_error && !l0_size.is_power_of_two() {
+        min_level = l0_levels;
+    }
+
+    // A `L1` error can only be avoided by reconstructing
+    // the data at it's maximum resolution.
+    if !allow_l1_error && (dim % block_size != 0) {
+        min_level = l0_levels + l1_levels;
+    }
+
+    min_level
+}
+
+/// Returns the maximum range which does not produce any unwanted error.
+///
+/// A `L1` error occurs when the block size does not divide into `dim`.
+pub fn max_range(dim: usize, block_size: usize, allow_l1_error: bool) -> Range<usize> {
+    if allow_l1_error {
+        0..dim
+    } else {
+        0..(dim - (dim % block_size))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::{path::PathBuf, sync::Mutex};
