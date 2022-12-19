@@ -728,7 +728,7 @@ impl BlockBlueprintPart {
         if steps.iter().all(|&s| s == 0) {
             let block_path = block_path
                 .as_ref()
-                .join(format!("block_part_{}.bin", part_id));
+                .join(format!("block_part_{part_id}.bin"));
 
             let f = std::fs::File::open(block_path).unwrap();
             let stream = DeserializeStream::new_decode(f).unwrap();

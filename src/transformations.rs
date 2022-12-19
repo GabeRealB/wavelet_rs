@@ -101,17 +101,17 @@ mod tests {
         let dims = [8];
         let block = VolumeBlock::new_with_data(&dims, data).unwrap();
         let block_clone = block.clone();
-        println!("Block {:?}", block);
+        println!("Block {block:?}");
 
         let f_cfg = WaveletDecompCfg::new(&[3]);
         let b_cfg = f_cfg.into();
         let transform = WaveletTransform::new(HaarWavelet, true);
 
         let transformed = transform.forwards(block, f_cfg);
-        println!("Transformed {:?}", transformed);
+        println!("Transformed {transformed:?}");
 
         let backwards = transform.backwards(transformed, b_cfg);
-        println!("Original {:?}", backwards);
+        println!("Original {backwards:?}");
         assert!(block_clone.is_equal(&backwards, TRANSFORM_ERROR));
     }
 
@@ -121,17 +121,17 @@ mod tests {
         let dims = [2, 2, 2];
         let block = VolumeBlock::new_with_data(&dims, data).unwrap();
         let block_clone = block.clone();
-        println!("Block {:?}", block);
+        println!("Block {block:?}");
 
         let f_cfg = WaveletDecompCfg::new(&[1, 1, 1]);
         let b_cfg = f_cfg.into();
         let transform = WaveletTransform::new(AverageFilter, true);
 
         let transformed = transform.forwards(block, f_cfg);
-        println!("Transformed {:?}", transformed);
+        println!("Transformed {transformed:?}");
 
         let backwards = transform.backwards(transformed, b_cfg);
-        println!("Original {:?}", backwards);
+        println!("Original {backwards:?}");
         assert!(block_clone.is_equal(&backwards, TRANSFORM_ERROR));
     }
 
