@@ -185,11 +185,12 @@ where
     }
 }
 
-impl<T, F> OneWayTransform<Forwards, T> for WaveletTransform<T, F>
+impl<T, F> OneWayTransform<Forwards, VolumeBlock<T>> for WaveletTransform<T, F>
 where
     T: Zero + Clone + Send,
     F: Filter<T>,
 {
+    type Result = VolumeBlock<T>;
     type Cfg<'a> = WaveletDecompCfg<'a>;
 
     fn apply(&self, mut input: VolumeBlock<T>, cfg: Self::Cfg<'_>) -> VolumeBlock<T> {
@@ -219,11 +220,12 @@ where
     }
 }
 
-impl<T, F> OneWayTransform<Backwards, T> for WaveletTransform<T, F>
+impl<T, F> OneWayTransform<Backwards, VolumeBlock<T>> for WaveletTransform<T, F>
 where
     T: Zero + Clone + Send,
     F: Filter<T>,
 {
+    type Result = VolumeBlock<T>;
     type Cfg<'a> = WaveletRecompCfg<'a>;
 
     fn apply(&self, mut input: VolumeBlock<T>, cfg: Self::Cfg<'_>) -> VolumeBlock<T> {

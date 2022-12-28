@@ -1,6 +1,4 @@
 //! Wavelet based transformations.
-use crate::volume::VolumeBlock;
-
 mod basic;
 mod resample;
 pub(crate) mod wavelet_transform;
@@ -24,51 +22,38 @@ pub enum Forwards {}
 pub enum Backwards {}
 
 /// Trait providing a, possibly irreversible, transformation.
-pub trait OneWayTransform<Dir, T> {
+pub trait OneWayTransform<Dir, In> {
+    /// Result type of the transformation.
+    type Result;
+
     /// Type of the config parameter for the transformation.
     type Cfg<'a>;
 
-    /// Applies the transformation on a [`VolumeBlock`].
-    fn apply(&self, input: VolumeBlock<T>, cfg: Self::Cfg<'_>) -> VolumeBlock<T>;
+    /// Applies the transformation on an `In`.
+    fn apply(&self, input: In, cfg: Self::Cfg<'_>) -> Self::Result;
 }
 
 /// Trait providing a reversible transformation.
-pub trait ReversibleTransform<T>:
-    OneWayTransform<Forwards, T> + OneWayTransform<Backwards, T>
+pub trait ReversibleTransform<In, Out>:
+    OneWayTransform<Forwards, In, Result = Out> + OneWayTransform<Backwards, Out, Result = In>
 {
     /// Applies the transformation on a [`VolumeBlock`].
-    fn forwards(
-        &self,
-        input: VolumeBlock<T>,
-        cfg: <Self as OneWayTransform<Forwards, T>>::Cfg<'_>,
-    ) -> VolumeBlock<T>;
+    fn forwards(&self, input: In, cfg: <Self as OneWayTransform<Forwards, In>>::Cfg<'_>) -> Out;
 
     /// Applies the inverse of the transformation on a [`VolumeBlock`].
-    fn backwards(
-        &self,
-        input: VolumeBlock<T>,
-        cfg: <Self as OneWayTransform<Backwards, T>>::Cfg<'_>,
-    ) -> VolumeBlock<T>;
+    fn backwards(&self, input: Out, cfg: <Self as OneWayTransform<Backwards, Out>>::Cfg<'_>) -> In;
 }
 
-impl<T, U> ReversibleTransform<U> for T
+impl<T, In, Out> ReversibleTransform<In, Out> for T
 where
-    T: OneWayTransform<Forwards, U> + OneWayTransform<Backwards, U>,
+    T: OneWayTransform<Forwards, In, Result = Out> + OneWayTransform<Backwards, Out, Result = In>,
 {
-    fn forwards(
-        &self,
-        input: VolumeBlock<U>,
-        cfg: <Self as OneWayTransform<Forwards, U>>::Cfg<'_>,
-    ) -> VolumeBlock<U> {
-        <Self as OneWayTransform<Forwards, U>>::apply(self, input, cfg)
+    fn forwards(&self, input: In, cfg: <Self as OneWayTransform<Forwards, In>>::Cfg<'_>) -> Out {
+        <Self as OneWayTransform<Forwards, In>>::apply(self, input, cfg)
     }
 
-    fn backwards(
-        &self,
-        input: VolumeBlock<U>,
-        cfg: <Self as OneWayTransform<Backwards, U>>::Cfg<'_>,
-    ) -> VolumeBlock<U> {
-        <Self as OneWayTransform<Backwards, U>>::apply(self, input, cfg)
+    fn backwards(&self, input: Out, cfg: <Self as OneWayTransform<Backwards, Out>>::Cfg<'_>) -> In {
+        <Self as OneWayTransform<Backwards, Out>>::apply(self, input, cfg)
     }
 }
 

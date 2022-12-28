@@ -7,7 +7,8 @@ use crate::stream::{Deserializable, Serializable};
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleIScale;
 
-impl<T: Zero + Clone> OneWayTransform<Forwards, T> for ResampleIScale {
+impl<T: Zero + Clone> OneWayTransform<Forwards, crate::volume::VolumeBlock<T>> for ResampleIScale {
+    type Result = crate::volume::VolumeBlock<T>;
     type Cfg<'a> = ResampleCfg<'a>;
 
     fn apply(
@@ -50,7 +51,8 @@ impl<T: Zero + Clone> OneWayTransform<Forwards, T> for ResampleIScale {
     }
 }
 
-impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleIScale {
+impl<T: Zero + Clone> OneWayTransform<Backwards, crate::volume::VolumeBlock<T>> for ResampleIScale {
+    type Result = crate::volume::VolumeBlock<T>;
     type Cfg<'a> = ResampleCfg<'a>;
 
     fn apply(
@@ -96,7 +98,8 @@ impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleIScale {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleExtend;
 
-impl<T: Zero + Clone> OneWayTransform<Forwards, T> for ResampleExtend {
+impl<T: Zero + Clone> OneWayTransform<Forwards, crate::volume::VolumeBlock<T>> for ResampleExtend {
+    type Result = crate::volume::VolumeBlock<T>;
     type Cfg<'a> = ResampleCfg<'a>;
 
     #[inline]
@@ -123,7 +126,8 @@ impl<T: Zero + Clone> OneWayTransform<Forwards, T> for ResampleExtend {
     }
 }
 
-impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleExtend {
+impl<T: Zero + Clone> OneWayTransform<Backwards, crate::volume::VolumeBlock<T>> for ResampleExtend {
+    type Result = crate::volume::VolumeBlock<T>;
     type Cfg<'a> = ResampleCfg<'a>;
 
     #[inline]
@@ -154,7 +158,8 @@ impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleExtend {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleClamp;
 
-impl<T: Zero + Clone> OneWayTransform<Forwards, T> for ResampleClamp {
+impl<T: Zero + Clone> OneWayTransform<Forwards, crate::volume::VolumeBlock<T>> for ResampleClamp {
+    type Result = crate::volume::VolumeBlock<T>;
     type Cfg<'a> = ResampleCfg<'a>;
 
     #[inline]
@@ -197,7 +202,8 @@ impl<T: Zero + Clone> OneWayTransform<Forwards, T> for ResampleClamp {
     }
 }
 
-impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleClamp {
+impl<T: Zero + Clone> OneWayTransform<Backwards, crate::volume::VolumeBlock<T>> for ResampleClamp {
+    type Result = crate::volume::VolumeBlock<T>;
     type Cfg<'a> = ResampleCfg<'a>;
 
     #[inline]
@@ -228,7 +234,10 @@ impl<T: Zero + Clone> OneWayTransform<Backwards, T> for ResampleClamp {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResampleLinear;
 
-impl<T: Zero + Lerp + Clone> OneWayTransform<Forwards, T> for ResampleLinear {
+impl<T: Zero + Lerp + Clone> OneWayTransform<Forwards, crate::volume::VolumeBlock<T>>
+    for ResampleLinear
+{
+    type Result = crate::volume::VolumeBlock<T>;
     type Cfg<'a> = ResampleCfg<'a>;
 
     #[inline]
@@ -277,7 +286,10 @@ impl<T: Zero + Lerp + Clone> OneWayTransform<Forwards, T> for ResampleLinear {
     }
 }
 
-impl<T: Zero + Lerp + Clone> OneWayTransform<Backwards, T> for ResampleLinear {
+impl<T: Zero + Lerp + Clone> OneWayTransform<Backwards, crate::volume::VolumeBlock<T>>
+    for ResampleLinear
+{
+    type Result = crate::volume::VolumeBlock<T>;
     type Cfg<'a> = ResampleCfg<'a>;
 
     #[inline]
@@ -286,7 +298,7 @@ impl<T: Zero + Lerp + Clone> OneWayTransform<Backwards, T> for ResampleLinear {
         input: crate::volume::VolumeBlock<T>,
         cfg: Self::Cfg<'_>,
     ) -> crate::volume::VolumeBlock<T> {
-        <Self as OneWayTransform<Forwards, T>>::apply(self, input, cfg)
+        <Self as OneWayTransform<Forwards, crate::volume::VolumeBlock<T>>>::apply(self, input, cfg)
     }
 }
 
