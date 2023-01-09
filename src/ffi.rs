@@ -370,6 +370,7 @@ impl From<&str> for ElemType {
 pub struct DecoderInfo {
     elem_type: ElemType,
     dims: OwnedCSlice<usize>,
+    block_size: OwnedCSlice<usize>,
 }
 
 /// Definition of a volume fetcher.
@@ -988,12 +989,17 @@ pub unsafe extern "C" fn wavelet_rs_get_decoder_info(
     let f = std::fs::File::open(&*path).unwrap();
     let stream = DeserializeStream::new_decode(f).unwrap();
     let mut stream = stream.stream();
-    let (elem_type, dims) = OutputHeader::<()>::deserialize_info(&mut stream);
+    let (elem_type, dims, block_size) = OutputHeader::<()>::deserialize_info(&mut stream);
 
     let elem_type: ElemType = (*elem_type).into();
     let dims: OwnedCSlice<usize> = dims.into_boxed_slice().into();
+    let block_size: OwnedCSlice<usize> = block_size.into_boxed_slice().into();
 
-    let info = DecoderInfo { elem_type, dims };
+    let info = DecoderInfo {
+        elem_type,
+        dims,
+        block_size,
+    };
 
     (*output).write(info);
 }

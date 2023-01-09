@@ -118,11 +118,13 @@ where
 impl OutputHeader<()> {
     pub fn deserialize_info(
         stream: &mut crate::stream::DeserializeStreamRef<'_>,
-    ) -> (String, Vec<usize>) {
+    ) -> (String, Vec<usize>, Vec<usize>) {
         let t_name: String = Deserializable::deserialize(stream);
 
         let dims = Deserializable::deserialize(stream);
-        (t_name, dims)
+        let _: AnyMap = Deserializable::deserialize(stream);
+        let block_size = Deserializable::deserialize(stream);
+        (t_name, dims, block_size)
     }
 }
 

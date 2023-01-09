@@ -1511,6 +1511,7 @@ enum class elem_type : std::int32_t {
 struct decoder_info {
     elem_type e_type;
     owned_slice<std::size_t> dims;
+    owned_slice<std::size_t> block_size;
 };
 
 /// Marker for callables that can only be invoked once.
