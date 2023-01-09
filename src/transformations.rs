@@ -1,9 +1,15 @@
 //! Wavelet based transformations.
 mod basic;
+pub(crate) mod greedy_wavelet_transform;
 mod resample;
 pub(crate) mod wavelet_transform;
 
 pub use basic::{Chain, Identity, Reverse};
+pub use greedy_wavelet_transform::{
+    has_known_greedy_filter, BlockCount, GreedyFilter, GreedyTransformCoefficents,
+    GreedyWaveletTransform, GreedyWaveletTransformBackwardsCfg, KnownGreedyFilter,
+    TryToKnownGreedyFilter,
+};
 pub use resample::{
     Lerp, ResampleCfg, ResampleCfgOwned, ResampleClamp, ResampleExtend, ResampleIScale,
     ResampleLinear,
@@ -37,10 +43,10 @@ pub trait OneWayTransform<Dir, In> {
 pub trait ReversibleTransform<In, Out>:
     OneWayTransform<Forwards, In, Result = Out> + OneWayTransform<Backwards, Out, Result = In>
 {
-    /// Applies the transformation on a [`VolumeBlock`].
+    /// Applies the transformation on the input.
     fn forwards(&self, input: In, cfg: <Self as OneWayTransform<Forwards, In>>::Cfg<'_>) -> Out;
 
-    /// Applies the inverse of the transformation on a [`VolumeBlock`].
+    /// Applies the inverse of the transformation on the input.
     fn backwards(&self, input: Out, cfg: <Self as OneWayTransform<Backwards, Out>>::Cfg<'_>) -> In;
 }
 

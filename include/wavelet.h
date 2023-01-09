@@ -1820,9 +1820,9 @@ namespace enc_priv_ {
         const slice<const std::size_t>*,                                             \
         const priv_::maybe_uninit<volume_fetcher<T>>*);                              \
     extern "C" void wavelet_rs_encoder_##N##_encode_haar(const encoder_*,            \
-        const char*, const slice<const std::size_t>*);                               \
+        const char*, const slice<const std::size_t>*, bool);                         \
     extern "C" void wavelet_rs_encoder_##N##_encode_average(const encoder_*,         \
-        const char*, const slice<const std::size_t>*);                               \
+        const char*, const slice<const std::size_t>*, bool);                         \
     ENCODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                                  \
     ENCODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                                \
     ENCODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                                \
@@ -1944,13 +1944,13 @@ public:
     /// @param output output directory.
     /// @param block_size selected block size.
     template <typename Filter>
-    void encode(const char* output, slice<const std::size_t> block_size) const
+    void encode(const char* output, slice<const std::size_t> block_size, bool use_greedy_transform) const
     {
         static_assert(std::is_standard_layout<slice<const std::size_t>>::value, "invalid layout");
         static_assert(encoder_enc_<Filter>::implemented,
             "encode is not implemented for the element, filter pair");
 
-        encoder_enc_<Filter>::encode_fn(this->m_enc, output, &block_size);
+        encoder_enc_<Filter>::encode_fn(this->m_enc, output, &block_size, use_greedy_transform);
     }
 
     /// Fetches an element from the encoder metadata.

@@ -460,12 +460,12 @@ impl Deserializable for WaveletRecompCfgOwned {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ForwardsOperation {
-    dim: usize,
+pub(crate) struct ForwardsOperation {
+    pub dim: usize,
 }
 
 impl ForwardsOperation {
-    fn new(steps: &[u32]) -> Vec<Self> {
+    pub fn new(steps: &[u32]) -> Vec<Self> {
         let mut ops = Vec::new();
         let mut step = vec![0; steps.len()];
 

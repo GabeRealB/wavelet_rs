@@ -698,10 +698,11 @@ macro_rules! encoder_def {
                 encoder: *const VolumeWaveletEncoder<'_, $T>,
                 output: *const std::os::raw::c_char,
                 block_size: *const CSlice<'_, usize>,
+                use_greedy_transform: bool,
             ) {
                 let output = CStr::from_ptr(output.cast());
                 let output = String::from_utf8_lossy(output.as_ref().to_bytes()).into_owned();
-                (*encoder).encode(output, &*block_size, HaarWavelet)
+                (*encoder).encode(output, &*block_size, HaarWavelet, use_greedy_transform)
             }
 
             /// Encodes the dataset with the specified block size and the average filter.
@@ -710,10 +711,11 @@ macro_rules! encoder_def {
                 encoder: *const VolumeWaveletEncoder<'_, $T>,
                 output: *const std::os::raw::c_char,
                 block_size: *const CSlice<'_, usize>,
+                use_greedy_transform: bool,
             ) {
                 let output = CStr::from_ptr(output.cast());
                 let output = String::from_utf8_lossy(output.as_ref().to_bytes()).into_owned();
-                (*encoder).encode(output, &*block_size, AverageFilter)
+                (*encoder).encode(output, &*block_size, AverageFilter, use_greedy_transform)
             }
         }
 
