@@ -5,6 +5,7 @@
     missing_debug_implementations,
     rustdoc::broken_intra_doc_links
 )]
+#![feature(min_specialization)]
 #![feature(slice_ptr_get)]
 
 #[cfg(feature = "ffi")]

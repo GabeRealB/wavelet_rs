@@ -54,7 +54,7 @@ int main()
     // encode the data with a block size of 32x1 and the average filter.
     std::array<std::size_t, num_base_dims + 1> block_size { 32, 1 };
     wavelet::slice<std::size_t> block_size_slice { block_size };
-    enc.encode<wavelet::filters::average_filter>("encode_cpp", block_size_slice);
+    enc.encode<wavelet::filters::average_filter>("encode_cpp", block_size_slice, false);
 
     wavelet::decoder_info dec_info = wavelet::get_decoder_info("encode_cpp/output.bin");
     assert(dec_info.e_type == wavelet::elem_type::F32);

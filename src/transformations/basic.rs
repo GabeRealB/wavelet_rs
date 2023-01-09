@@ -6,27 +6,21 @@ use crate::stream::{Deserializable, Serializable};
 pub struct Identity;
 
 impl<T> OneWayTransform<Forwards, T> for Identity {
+    type Result = T;
     type Cfg<'a> = Identity;
 
     #[inline(always)]
-    fn apply(
-        &self,
-        input: crate::volume::VolumeBlock<T>,
-        _cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<T> {
+    fn apply(&self, input: T, _cfg: Self::Cfg<'_>) -> T {
         input
     }
 }
 
 impl<T> OneWayTransform<Backwards, T> for Identity {
+    type Result = T;
     type Cfg<'a> = Identity;
 
     #[inline(always)]
-    fn apply(
-        &self,
-        input: crate::volume::VolumeBlock<T>,
-        _cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<T> {
+    fn apply(&self, input: T, _cfg: Self::Cfg<'_>) -> T {
         input
     }
 }
@@ -60,34 +54,28 @@ impl<T> From<T> for Reverse<T> {
     }
 }
 
-impl<T, U> OneWayTransform<Forwards, U> for Reverse<T>
+impl<T, In> OneWayTransform<Forwards, In> for Reverse<T>
 where
-    T: OneWayTransform<Backwards, U>,
+    T: OneWayTransform<Backwards, In>,
 {
+    type Result = <T as OneWayTransform<Backwards, In>>::Result;
     type Cfg<'a> = T::Cfg<'a>;
 
     #[inline(always)]
-    fn apply(
-        &self,
-        input: crate::volume::VolumeBlock<U>,
-        cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<U> {
+    fn apply(&self, input: In, cfg: Self::Cfg<'_>) -> Self::Result {
         self.0.apply(input, cfg)
     }
 }
 
-impl<T, U> OneWayTransform<Backwards, U> for Reverse<T>
+impl<T, In> OneWayTransform<Backwards, In> for Reverse<T>
 where
-    T: OneWayTransform<Forwards, U>,
+    T: OneWayTransform<Forwards, In>,
 {
+    type Result = <T as OneWayTransform<Forwards, In>>::Result;
     type Cfg<'a> = T::Cfg<'a>;
 
     #[inline(always)]
-    fn apply(
-        &self,
-        input: crate::volume::VolumeBlock<U>,
-        cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<U> {
+    fn apply(&self, input: In, cfg: Self::Cfg<'_>) -> Self::Result {
         self.0.apply(input, cfg)
     }
 }
@@ -144,35 +132,29 @@ impl<T, U> From<(T, U)> for Chain<T, U> {
     }
 }
 
-impl<T, U, V> OneWayTransform<Forwards, V> for Chain<T, U>
+impl<T, U, In> OneWayTransform<Forwards, In> for Chain<T, U>
 where
-    T: OneWayTransform<Forwards, V>,
-    U: OneWayTransform<Forwards, V>,
+    T: OneWayTransform<Forwards, In>,
+    U: OneWayTransform<Forwards, T::Result>,
 {
+    type Result = U::Result;
     type Cfg<'a> = Chain<T::Cfg<'a>, U::Cfg<'a>>;
 
-    fn apply(
-        &self,
-        input: crate::volume::VolumeBlock<V>,
-        cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<V> {
+    fn apply(&self, input: In, cfg: Self::Cfg<'_>) -> Self::Result {
         let tmp = self.0.apply(input, cfg.0);
         self.1.apply(tmp, cfg.1)
     }
 }
 
-impl<T, U, V> OneWayTransform<Backwards, V> for Chain<T, U>
+impl<T, U, In> OneWayTransform<Backwards, In> for Chain<T, U>
 where
-    T: OneWayTransform<Backwards, V>,
-    U: OneWayTransform<Backwards, V>,
+    T: OneWayTransform<Backwards, U::Result>,
+    U: OneWayTransform<Backwards, In>,
 {
+    type Result = T::Result;
     type Cfg<'a> = Chain<T::Cfg<'a>, U::Cfg<'a>>;
 
-    fn apply(
-        &self,
-        input: crate::volume::VolumeBlock<V>,
-        cfg: Self::Cfg<'_>,
-    ) -> crate::volume::VolumeBlock<V> {
+    fn apply(&self, input: In, cfg: Self::Cfg<'_>) -> Self::Result {
         let tmp = self.1.apply(input, cfg.1);
         self.0.apply(tmp, cfg.0)
     }

@@ -11,8 +11,9 @@ use crate::{
     range::{for_each_range, for_each_range_enumerate, for_each_range_par_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream, Serializable, SerializeStream},
     transformations::{
-        wavelet_transform::BackwardsOperation, Chain, ResampleCfg, ResampleClamp,
-        ReversibleTransform, WaveletDecompCfg, WaveletTransform,
+        wavelet_transform::BackwardsOperation, BlockCount, Chain, GreedyFilter,
+        GreedyTransformCoefficents, KnownGreedyFilter, ResampleCfg, ResampleClamp,
+        ReversibleTransform, TryToKnownGreedyFilter, WaveletDecompCfg, WaveletTransform,
     },
     utilities::{flatten_idx, flatten_idx_unchecked, next_multiple_of, strides_for_dims},
     volume::{VolumeBlock, VolumeWindowMut},
@@ -35,16 +36,95 @@ pub(crate) struct OutputHeader<T> {
     pub input_block_dims: Vec<usize>,
     pub block_blueprints: BlockBlueprints<T>,
     pub filter: GenericFilter<T>,
+    pub coeff_block: CoeffBlock<T>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum CoeffBlock<T> {
+    Standard(VolumeBlock<T>),
+    Greedy(GreedyTransformCoefficents<BlockCount, T>, KnownGreedyFilter),
+}
+
+impl<T> CoeffBlock<T> {
+    pub fn is_greedy(&self) -> bool {
+        match self {
+            CoeffBlock::Standard(_) => false,
+            CoeffBlock::Greedy(_, _) => true,
+        }
+    }
+
+    pub fn standard_block(&self) -> VolumeBlock<T>
+    where
+        T: Clone,
+    {
+        match self {
+            CoeffBlock::Standard(b) => b.clone(),
+            CoeffBlock::Greedy(_, _) => panic!("Invalid block type"),
+        }
+    }
+
+    pub fn greedy_coeff(&self) -> &GreedyTransformCoefficents<BlockCount, T>
+    where
+        T: Clone,
+    {
+        match self {
+            CoeffBlock::Standard(_) => panic!("Invalid block type"),
+            CoeffBlock::Greedy(b, _) => b,
+        }
+    }
+
+    pub fn greedy_filter(&self) -> KnownGreedyFilter {
+        match self {
+            CoeffBlock::Standard(_) => panic!("Invalid block type"),
+            CoeffBlock::Greedy(_, f) => *f,
+        }
+    }
+}
+
+impl<T> Serializable for CoeffBlock<T>
+where
+    T: Serializable,
+{
+    fn serialize(self, stream: &mut SerializeStream) {
+        self.is_greedy().serialize(stream);
+
+        match self {
+            CoeffBlock::Standard(block) => block.serialize(stream),
+            CoeffBlock::Greedy(block, filter) => {
+                block.serialize(stream);
+                filter.serialize(stream);
+            }
+        }
+    }
+}
+
+impl<T> Deserializable for CoeffBlock<T>
+where
+    T: Deserializable,
+{
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
+        let is_greedy = bool::deserialize(stream);
+        if !is_greedy {
+            let block = Deserializable::deserialize(stream);
+            Self::Standard(block)
+        } else {
+            let block = Deserializable::deserialize(stream);
+            let filter = Deserializable::deserialize(stream);
+            Self::Greedy(block, filter)
+        }
+    }
 }
 
 impl OutputHeader<()> {
     pub fn deserialize_info(
         stream: &mut crate::stream::DeserializeStreamRef<'_>,
-    ) -> (String, Vec<usize>) {
+    ) -> (String, Vec<usize>, Vec<usize>) {
         let t_name: String = Deserializable::deserialize(stream);
 
         let dims = Deserializable::deserialize(stream);
-        (t_name, dims)
+        let _: AnyMap = Deserializable::deserialize(stream);
+        let block_size = Deserializable::deserialize(stream);
+        (t_name, dims, block_size)
     }
 }
 
@@ -59,6 +139,7 @@ impl<T: Serializable> Serializable for OutputHeader<T> {
         self.input_block_dims.serialize(stream);
         self.block_blueprints.serialize(stream);
         self.filter.serialize(stream);
+        self.coeff_block.serialize(stream);
     }
 }
 
@@ -74,6 +155,7 @@ impl<T: Deserializable> Deserializable for OutputHeader<T> {
         let input_block_dims = Deserializable::deserialize(stream);
         let block_blueprints = Deserializable::deserialize(stream);
         let filter = Deserializable::deserialize(stream);
+        let coeff_block = Deserializable::deserialize(stream);
 
         Self {
             dims,
@@ -83,6 +165,7 @@ impl<T: Deserializable> Deserializable for OutputHeader<T> {
             input_block_dims,
             block_blueprints,
             filter,
+            coeff_block,
         }
     }
 }
@@ -145,9 +228,12 @@ where
         &self,
         output: impl AsRef<Path> + Sync,
         block_size: &[usize],
-        filter: impl ToGenericFilter<T> + Serializable + Clone,
+        filter: impl ToGenericFilter<T> + TryToKnownGreedyFilter + Serializable + Clone,
+        use_greedy_transform: bool,
     ) where
+        T: Sync,
         GenericFilter<T>: Filter<T>,
+        KnownGreedyFilter: GreedyFilter<BlockCount, T>,
     {
         // We require that the block size is a power of two and has
         // the same dimensionality as the input data.
@@ -156,6 +242,7 @@ where
             .iter()
             .all(|&block| block.is_power_of_two() && block != 0));
 
+        let greedy_filter = filter.to_known_greedy_filter();
         let filter = filter.to_generic();
 
         // The wavelet transformation requires that the block size is a
@@ -274,30 +361,42 @@ where
             .collect();
         let steps: Vec<_> = resample_dims.iter().map(|size| size.ilog2()).collect();
 
-        let output_transform_cfg = Chain::combine(
-            ResampleCfg::new(&resample_dims),
-            WaveletDecompCfg::new(&steps),
-        );
-        let output_transform =
-            Chain::combine(ResampleClamp, WaveletTransform::new(filter.clone(), false));
-        let transformed = output_transform.forwards(superblock, output_transform_cfg);
+        let input_block_dims = superblock
+            .dims()
+            .iter()
+            .map(|d| d.next_power_of_two())
+            .collect();
+        let coeff_block =
+            if !use_greedy_transform || superblock.dims().iter().all(|d| d.is_power_of_two()) {
+                let output_transform_cfg = Chain::combine(
+                    ResampleCfg::new(&resample_dims),
+                    WaveletDecompCfg::new(&steps),
+                );
+                let output_transform =
+                    Chain::combine(ResampleClamp, WaveletTransform::new(filter.clone(), false));
+                let transformed = output_transform.forwards(superblock, output_transform_cfg);
+                CoeffBlock::Standard(transformed)
+            } else {
+                let greedy_filter = greedy_filter.unwrap();
+                let coeff = GreedyTransformCoefficents::new(superblock, &greedy_filter);
+                CoeffBlock::Greedy(coeff, greedy_filter)
+            };
 
         let output_header = OutputHeader {
             metadata: self.metadata.clone(),
             dims: self.dims.clone(),
             block_size: block_size.into(),
             block_counts,
-            input_block_dims: transformed.dims().into(),
+            input_block_dims,
             block_blueprints: BlockBlueprints::<T>::new(block_size),
             filter,
+            coeff_block,
         };
 
         // Serialize the header and the transformed last block.
         let mut stream = SerializeStream::new();
         output_header.serialize(&mut stream);
-        for elem in transformed.flatten() {
-            elem.clone().serialize(&mut stream);
-        }
+
         let output_path = output.as_ref().join("output.bin");
         let output_file = File::create(output_path).unwrap();
         stream.write_encode(output_file).unwrap();
@@ -1069,7 +1168,7 @@ mod test {
         encoder.insert_metadata::<String>("Test".into(), "Example metadata string".into());
 
         let block_size = [32, 32, 32, 2];
-        encoder.encode(res_path, &block_size, AverageFilter)
+        encoder.encode(res_path, &block_size, AverageFilter, false)
     }
 
     #[test]
@@ -1094,7 +1193,7 @@ mod test {
         encoder.add_fetcher(&[0], fetcher);
 
         let block_size = [4, 4, 1];
-        encoder.encode(res_path, &block_size, AverageFilter)
+        encoder.encode(res_path, &block_size, AverageFilter, false)
     }
 
     #[test]
@@ -1121,7 +1220,7 @@ mod test {
         encoder.add_fetcher(&[0], fetcher);
 
         let block_size = [256, 256, 1];
-        encoder.encode(res_path, &block_size, AverageFilter)
+        encoder.encode(res_path, &block_size, AverageFilter, false)
     }
 
     #[test]
@@ -1148,6 +1247,33 @@ mod test {
         encoder.add_fetcher(&[0], fetcher);
 
         let block_size = [256, 256, 1];
-        encoder.encode(res_path, &block_size, AverageFilter)
+        encoder.encode(res_path, &block_size, AverageFilter, false)
+    }
+
+    #[test]
+    fn encode_img_2_greedy() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let img_path = res_path.join("resources/test/img_2.jpg");
+        res_path.push("resources/test/encode_img_2_greedy");
+
+        let f = File::open(img_path).unwrap();
+        let reader = BufReader::new(f);
+        let img = image::load(reader, image::ImageFormat::Jpeg)
+            .unwrap()
+            .to_rgb32f();
+
+        let (width, height) = (img.width() as usize, img.height() as usize);
+        let data: Vec<_> = img.pixels().map(|p| Vector::new(p.0)).collect();
+        let fetcher = move |idx: &[usize]| {
+            let idx = unsafe { flatten_idx_unchecked(&[1, width], idx) };
+            data[idx]
+        };
+
+        let dims = [width, height, 1];
+        let mut encoder = VolumeWaveletEncoder::new(&dims, 2);
+        encoder.add_fetcher(&[0], fetcher);
+
+        let block_size = [256, 256, 1];
+        encoder.encode(res_path, &block_size, AverageFilter, true)
     }
 }

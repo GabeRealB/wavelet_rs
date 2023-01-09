@@ -370,6 +370,7 @@ impl From<&str> for ElemType {
 pub struct DecoderInfo {
     elem_type: ElemType,
     dims: OwnedCSlice<usize>,
+    block_size: OwnedCSlice<usize>,
 }
 
 /// Definition of a volume fetcher.
@@ -698,10 +699,11 @@ macro_rules! encoder_def {
                 encoder: *const VolumeWaveletEncoder<'_, $T>,
                 output: *const std::os::raw::c_char,
                 block_size: *const CSlice<'_, usize>,
+                use_greedy_transform: bool,
             ) {
                 let output = CStr::from_ptr(output.cast());
                 let output = String::from_utf8_lossy(output.as_ref().to_bytes()).into_owned();
-                (*encoder).encode(output, &*block_size, HaarWavelet)
+                (*encoder).encode(output, &*block_size, HaarWavelet, use_greedy_transform)
             }
 
             /// Encodes the dataset with the specified block size and the average filter.
@@ -710,10 +712,11 @@ macro_rules! encoder_def {
                 encoder: *const VolumeWaveletEncoder<'_, $T>,
                 output: *const std::os::raw::c_char,
                 block_size: *const CSlice<'_, usize>,
+                use_greedy_transform: bool,
             ) {
                 let output = CStr::from_ptr(output.cast());
                 let output = String::from_utf8_lossy(output.as_ref().to_bytes()).into_owned();
-                (*encoder).encode(output, &*block_size, AverageFilter)
+                (*encoder).encode(output, &*block_size, AverageFilter, use_greedy_transform)
             }
         }
 
@@ -986,12 +989,17 @@ pub unsafe extern "C" fn wavelet_rs_get_decoder_info(
     let f = std::fs::File::open(&*path).unwrap();
     let stream = DeserializeStream::new_decode(f).unwrap();
     let mut stream = stream.stream();
-    let (elem_type, dims) = OutputHeader::<()>::deserialize_info(&mut stream);
+    let (elem_type, dims, block_size) = OutputHeader::<()>::deserialize_info(&mut stream);
 
     let elem_type: ElemType = (*elem_type).into();
     let dims: OwnedCSlice<usize> = dims.into_boxed_slice().into();
+    let block_size: OwnedCSlice<usize> = block_size.into_boxed_slice().into();
 
-    let info = DecoderInfo { elem_type, dims };
+    let info = DecoderInfo {
+        elem_type,
+        dims,
+        block_size,
+    };
 
     (*output).write(info);
 }

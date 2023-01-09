@@ -8,15 +8,14 @@ use std::{
 };
 
 use crate::{
-    encoder::{BlockBlueprints, OutputHeader},
+    encoder::{BlockBlueprints, CoeffBlock, OutputHeader},
     filter::{Filter, GenericFilter},
     range::{for_each_range, for_each_range_par_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream},
     transformations::{
-        Chain, ResampleCfg, ResampleExtend, ResampleIScale, Reverse, ReversibleTransform,
-        WaveletRecompCfg, WaveletTransform,
+        BlockCount, Chain, GreedyFilter, KnownGreedyFilter, ResampleCfg, ResampleExtend,
+        ResampleIScale, Reverse, ReversibleTransform, WaveletRecompCfg, WaveletTransform,
     },
-    volume::VolumeBlock,
 };
 
 /// Decoder for a dataset encoded with a wavelet transform.
@@ -28,7 +27,7 @@ pub struct VolumeWaveletDecoder<T> {
     block_size: Vec<usize>,
     block_counts: Vec<usize>,
     input_block_dims: Vec<usize>,
-    input_block: VolumeBlock<T>,
+    input_block: CoeffBlock<T>,
     block_blueprints: BlockBlueprints<T>,
     filter: GenericFilter<T>,
 }
@@ -50,12 +49,6 @@ where
         let stream = DeserializeStream::new_decode(f).unwrap();
         let mut stream = stream.stream();
         let header: OutputHeader<T> = Deserializable::deserialize(&mut stream);
-        let num_elements = header.input_block_dims.iter().product();
-        let mut elements = Vec::with_capacity(num_elements);
-        for _ in 0..num_elements {
-            elements.push(T::deserialize(&mut stream));
-        }
-        let input_block = VolumeBlock::new_with_data(&header.input_block_dims, elements).unwrap();
 
         assert_eq!(header.dims.len(), header.block_size.len());
         assert_eq!(header.block_counts.len(), header.block_size.len());
@@ -70,7 +63,7 @@ where
             input_block_dims: header.input_block_dims,
             block_blueprints: header.block_blueprints,
             filter: header.filter,
-            input_block,
+            input_block: header.coeff_block,
         }
     }
 
@@ -109,6 +102,7 @@ where
         curr_levels: &[u32],
         refinements: &[u32],
     ) where
+        KnownGreedyFilter: GreedyFilter<BlockCount, T>,
         BR: Fn(usize) -> R + Sync,
         R: Fn(&[usize]) -> T,
         BW: Fn(usize) -> W + Sync,
@@ -330,6 +324,7 @@ where
         roi: &[Range<usize>],
         levels: &[u32],
     ) where
+        KnownGreedyFilter: GreedyFilter<BlockCount, T>,
         BW: Fn(usize) -> W + Sync,
         W: FnMut(&[usize], T),
     {
@@ -393,7 +388,13 @@ where
             ResampleExtend,
             WaveletTransform::new(self.filter.clone(), false),
         );
-        let first_pass = input_transform.backwards(self.input_block.clone(), input_transform_cfg);
+        let first_pass = if !self.input_block.is_greedy() {
+            input_transform.backwards(self.input_block.standard_block(), input_transform_cfg)
+        } else {
+            let coeff = self.input_block.greedy_coeff();
+            let filter = self.input_block.greedy_filter();
+            coeff.reconstruct_extend(&input_backwards_steps, &filter)
+        };
 
         // Iterate over each block and decode it, if it is part of the requested data range.
         let block_range: Vec<_> = self.block_counts.iter().map(|&c| 0..c).collect();
@@ -941,6 +942,50 @@ mod test {
     fn decode_img_2() {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test/decode_img_2/");
+
+        let data_path = res_path.join("output.bin");
+
+        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+
+        let dims = [3024, 4032, 1];
+        let range = dims.map(|d| 0..d);
+        let steps = dims.map(|d: usize| d.ilog2());
+        let mut data = VolumeBlock::new_zero(&dims).unwrap();
+
+        for x in 0..steps[0] + 1 {
+            let force_once = ForceOnce;
+            let writer = |counts: &[usize], size: &[usize]| {
+                force_once.consume();
+
+                let windows = data.window_mut().divide_into_with_size_mut(counts, size);
+
+                let (windows, _, _) = windows.into_raw_parts();
+                let windows: Vec<_> = windows.into_iter().map(|w| Mutex::new(Some(w))).collect();
+
+                move |block_idx: usize| {
+                    let window = &windows[block_idx];
+                    let mut window = window.lock().unwrap().take().unwrap();
+
+                    move |idx: &[usize], elem| {
+                        window[idx] = elem;
+                    }
+                }
+            };
+
+            decoder.decode(writer, &range, &[x, steps[1], 0]);
+            let mut img = image::Rgb32FImage::new(data.dims()[0] as u32, data.dims()[1] as u32);
+            for (p, rgb) in img.pixels_mut().zip(data.flatten()) {
+                p.0 = *rgb.as_ref();
+            }
+            let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
+            img.save(res_path.join(format!("img_1_x_{x}.png"))).unwrap();
+        }
+    }
+
+    #[test]
+    fn decode_img_2_greedy() {
+        let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        res_path.push("resources/test/decode_img_2_greedy/");
 
         let data_path = res_path.join("output.bin");
 

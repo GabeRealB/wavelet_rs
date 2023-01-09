@@ -11,6 +11,7 @@ use thiserror::Error;
 
 use crate::{
     range::for_each_range,
+    stream::{Deserializable, Serializable},
     utilities::{
         flatten_idx, flatten_idx_with_offset, flatten_idx_with_offset_unchecked, next_multiple_of,
         strides_for_dims,
@@ -278,6 +279,34 @@ impl<T> IndexMut<&[usize]> for VolumeBlock<T> {
     fn index_mut(&mut self, index: &[usize]) -> &mut Self::Output {
         let idx = flatten_idx(&self.dims, &self.strides, index);
         &mut self[idx]
+    }
+}
+
+impl<T> Serializable for VolumeBlock<T>
+where
+    T: Serializable,
+{
+    fn serialize(self, stream: &mut crate::stream::SerializeStream) {
+        self.data.serialize(stream);
+        self.dims.serialize(stream);
+        self.strides.serialize(stream);
+    }
+}
+
+impl<T> Deserializable for VolumeBlock<T>
+where
+    T: Deserializable,
+{
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
+        let data = Deserializable::deserialize(stream);
+        let dims = Deserializable::deserialize(stream);
+        let strides = Deserializable::deserialize(stream);
+
+        Self {
+            data,
+            dims,
+            strides,
+        }
     }
 }
 
@@ -784,6 +813,17 @@ impl<'a, T: Clone> VolumeWindow<'a, T> {
             let dst = dst.as_slice_mut().unwrap();
             dst.clone_from_slice(src)
         }
+    }
+
+    /// Clones the window into a new block.
+    pub fn as_block(&self) -> VolumeBlock<T> {
+        let mut data = Vec::new();
+        for lane in self.lanes(0) {
+            let elems = lane.as_slice().unwrap();
+            data.extend_from_slice(elems);
+        }
+
+        VolumeBlock::new_with_data(self.dims(), data).unwrap()
     }
 }
 
@@ -1619,6 +1659,17 @@ impl<'a, T: Clone> VolumeWindowMut<'a, T> {
             let dst = dst.as_slice_mut().unwrap();
             dst.clone_from_slice(src)
         }
+    }
+
+    /// Clones the window into a new block.
+    pub fn as_block(&self) -> VolumeBlock<T> {
+        let mut data = Vec::new();
+        for lane in self.lanes(0) {
+            let elems = lane.as_slice().unwrap();
+            data.extend_from_slice(elems);
+        }
+
+        VolumeBlock::new_with_data(self.dims(), data).unwrap()
     }
 }
 
