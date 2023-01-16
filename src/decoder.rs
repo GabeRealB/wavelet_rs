@@ -13,8 +13,9 @@ use crate::{
     range::{for_each_range, for_each_range_par_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream},
     transformations::{
-        BlockCount, Chain, GreedyFilter, KnownGreedyFilter, ResampleCfg, ResampleExtend,
-        ResampleIScale, Reverse, ReversibleTransform, WaveletRecompCfg, WaveletTransform,
+        BlockCount, Chain, DerivableMetadataFilter, KnownGreedyFilter,
+        PartialGreedyTransformCoefficients, ResampleCfg, ResampleExtend, ResampleIScale, Reverse,
+        ReversibleTransform, WaveletRecompCfg, WaveletTransform,
     },
 };
 
@@ -102,7 +103,7 @@ where
         curr_levels: &[u32],
         refinements: &[u32],
     ) where
-        KnownGreedyFilter: GreedyFilter<BlockCount, T>,
+        KnownGreedyFilter: DerivableMetadataFilter<BlockCount, T>,
         BR: Fn(usize) -> R + Sync,
         R: Fn(&[usize]) -> T,
         BW: Fn(usize) -> W + Sync,
@@ -150,7 +151,8 @@ where
             .collect();
 
         // Fall back to decode, if we require data from the second pass input block.
-        let requires_input_pass = input_refinements.iter().any(|&r| r != 0);
+        let requires_input_pass =
+            input_refinements.iter().any(|&r| r != 0) || self.input_block.is_greedy();
         if requires_input_pass {
             let new_levels: Vec<_> = curr_levels
                 .iter()
@@ -324,7 +326,7 @@ where
         roi: &[Range<usize>],
         levels: &[u32],
     ) where
-        KnownGreedyFilter: GreedyFilter<BlockCount, T>,
+        KnownGreedyFilter: DerivableMetadataFilter<BlockCount, T>,
         BW: Fn(usize) -> W + Sync,
         W: FnMut(&[usize], T),
     {
@@ -420,6 +422,10 @@ where
                 .map(|((&start, &size), &dim)| (start, (dim - start).min(size)))
                 .map(|(start, size)| start..start + size)
                 .collect();
+            let transform_is_exact = block_range
+                .iter()
+                .map(|range| range.clone().count())
+                .all(|size| size.is_power_of_two());
 
             // Compute the subrange that we are interested in, that lies inside the block.
             let block_roi: Vec<_> = roi
@@ -437,14 +443,27 @@ where
                 // (i.e. the first element) is contained in the block from the first reconstruction
                 // pass.
                 let block_path = self.path.join(format!("block_{block_idx}"));
-                let mut block = self.block_blueprints.reconstruct_full(
-                    &self.filter,
-                    block_path,
-                    &block_backwards_steps,
-                );
-                block[0] = first_pass[block_idx].clone();
 
-                let block_pass = block_transform.backwards(block, block_transform_cfg);
+                let block = if transform_is_exact || !self.input_block.is_greedy() {
+                    let mut block = self.block_blueprints.reconstruct_full(
+                        &self.filter,
+                        block_path,
+                        &block_backwards_steps,
+                    );
+                    block[0] = first_pass[block_idx].clone();
+
+                    block_transform.backwards(block, block_transform_cfg)
+                } else {
+                    let partial_coeff = PartialGreedyTransformCoefficients::read_for_steps(
+                        &block_backwards_steps,
+                        block_path,
+                    );
+                    let coeff = partial_coeff.into_full_coeff(&self.input_block.greedy_filter());
+                    coeff.reconstruct_extend(
+                        &block_backwards_steps,
+                        &self.input_block.greedy_filter(),
+                    )
+                };
 
                 // Fetch the writer for the current block.
                 let mut writer = writers(block_idx);
@@ -457,7 +476,7 @@ where
                         .map(|(&global, &offset)| global - offset)
                         .collect();
 
-                    let elem = block_pass[&*local_idx].clone();
+                    let elem = block[&*local_idx].clone();
                     writer(&local_idx, elem);
                 });
             }

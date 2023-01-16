@@ -12,8 +12,9 @@ use crate::{
     stream::{AnyMap, Deserializable, DeserializeStream, Serializable, SerializeStream},
     transformations::{
         wavelet_transform::BackwardsOperation, BlockCount, Chain, GreedyFilter,
-        GreedyTransformCoefficents, KnownGreedyFilter, ResampleCfg, ResampleClamp,
-        ReversibleTransform, TryToKnownGreedyFilter, WaveletDecompCfg, WaveletTransform,
+        GreedyTransformCoefficents, KnownGreedyFilter, PartialGreedyTransformCoefficients,
+        ResampleCfg, ResampleClamp, ReversibleTransform, TryToKnownGreedyFilter, WaveletDecompCfg,
+        WaveletTransform,
     },
     utilities::{flatten_idx, flatten_idx_unchecked, next_multiple_of, strides_for_dims},
     volume::{VolumeBlock, VolumeWindowMut},
@@ -291,6 +292,7 @@ where
                 .map(|((&start, &dim_size), &block_size)| (dim_size - start).min(block_size))
                 .collect();
             let block_range: Vec<_> = clamped_block_size.iter().map(|&b| 0..b).collect();
+            let transform_is_exact = clamped_block_size.iter().all(|size| size.is_power_of_two());
 
             // Fill the block with data from the dataset.
             let mut block = VolumeBlock::new_zero(&clamped_block_size).unwrap();
@@ -306,52 +308,69 @@ where
                 block[i] = fetcher(&idx[0..self.num_base_dims]);
             });
 
-            // Transform the block and collect the first coefficient
-            // to be processed later.
-            let block_decomp = block_transform.forwards(block, block_transform_cfg);
-            sx.send((i, block_decomp[0].clone())).unwrap();
-
             let block_dir = output.as_ref().join(format!("block_{i}"));
             if block_dir.exists() {
                 std::fs::remove_dir_all(&block_dir).unwrap();
             }
             std::fs::create_dir(&block_dir).unwrap();
 
-            // Serialize the block by level of detail.
-            let mut counter = 0;
-            let mut block_decomp_window = block_decomp.window();
-            while block_decomp_window.dims().iter().any(|&d| d != 1) {
-                let num_dims = block_decomp_window.dims().len();
+            if transform_is_exact || !use_greedy_transform {
+                let elements_in_block = clamped_block_size
+                    .iter()
+                    .map(|size| size.next_power_of_two())
+                    .product::<usize>();
+                let block_count = BlockCount::new(elements_in_block / 2, elements_in_block / 2);
 
-                for dim in 0..num_dims {
-                    if block_decomp_window.dims()[dim] == 1 {
-                        continue;
-                    }
+                // Transform the block and collect the first coefficient
+                // to be processed later.
+                let block_decomp = block_transform.forwards(block, block_transform_cfg);
+                sx.send((i, block_decomp[0].clone(), block_count)).unwrap();
 
-                    let (low, high) = block_decomp_window.split_into(dim);
-                    block_decomp_window = low;
+                // Serialize the block by level of detail.
+                let mut counter = 0;
+                let mut block_decomp_window = block_decomp.window();
+                while block_decomp_window.dims().iter().any(|&d| d != 1) {
+                    let num_dims = block_decomp_window.dims().len();
 
-                    let lanes = high.lanes(0);
-                    let mut stream = SerializeStream::new();
-                    for lane in lanes {
-                        for elem in lane.as_slice().unwrap() {
-                            elem.clone().serialize(&mut stream);
+                    for dim in 0..num_dims {
+                        if block_decomp_window.dims()[dim] == 1 {
+                            continue;
                         }
+
+                        let (low, high) = block_decomp_window.split_into(dim);
+                        block_decomp_window = low;
+
+                        let lanes = high.lanes(0);
+                        let mut stream = SerializeStream::new();
+                        for lane in lanes {
+                            for elem in lane.as_slice().unwrap() {
+                                elem.clone().serialize(&mut stream);
+                            }
+                        }
+
+                        let out_path = block_dir.join(format!("block_part_{counter}.bin"));
+                        let out_file = File::create(out_path).unwrap();
+                        stream.write_encode(out_file).unwrap();
+
+                        counter += 1;
                     }
-
-                    let out_path = block_dir.join(format!("block_part_{counter}.bin"));
-                    let out_file = File::create(out_path).unwrap();
-                    stream.write_encode(out_file).unwrap();
-
-                    counter += 1;
                 }
+            } else {
+                let greedy_filter = greedy_filter.unwrap();
+                let coeff = GreedyTransformCoefficents::new(block, &greedy_filter);
+                sx.send((i, coeff.low[0].clone(), coeff.meta[0])).unwrap();
+
+                let partial_coeff: PartialGreedyTransformCoefficients<_> = coeff.into();
+                partial_coeff.write_out(block_dir);
             }
         });
 
         // Collect the first coefficient of each block into a last block.
         let mut superblock = VolumeBlock::new_zero(&block_counts).unwrap();
-        for (i, elem) in rx.try_iter() {
+        let mut superblock_meta = VolumeBlock::new_zero(&block_counts).unwrap();
+        for (i, elem, meta) in rx.try_iter() {
             superblock[i] = elem;
+            superblock_meta[i] = meta;
         }
 
         // Transform the last block similarely to the other blocks.
@@ -378,7 +397,11 @@ where
                 CoeffBlock::Standard(transformed)
             } else {
                 let greedy_filter = greedy_filter.unwrap();
-                let coeff = GreedyTransformCoefficents::new(superblock, &greedy_filter);
+                let coeff = GreedyTransformCoefficents::new_with_meta(
+                    superblock,
+                    superblock_meta,
+                    &greedy_filter,
+                );
                 CoeffBlock::Greedy(coeff, greedy_filter)
             };
 

@@ -43,6 +43,16 @@ pub trait GreedyFilter<Meta, T>: Sync {
     fn compute_metadata(&self, input: VolumeWindow<'_, T>) -> VolumeBlock<Meta>;
 }
 
+/// A [`GreedyFilter`] where the metadata can be derived from only
+/// the data size and the metadata of the previous step.
+pub trait DerivableMetadataFilter<Meta, T>: GreedyFilter<Meta, T> {
+    /// Derives the initial metadata block.
+    fn derive_init(&self, dims: &[usize]) -> VolumeBlock<Meta>;
+
+    /// Derives the metadata of the next step.
+    fn derive_step(&self, input: Lane<'_, Meta>, output: LaneMut<'_, Meta>);
+}
+
 /// Tries to construct a [`KnownGreedyFilter`] from an arbitrary type.
 pub trait TryToKnownGreedyFilter {
     /// Fetches the [`KnownGreedyFilter`] which describes the desired operation.
@@ -124,6 +134,28 @@ where
     fn compute_metadata(&self, input: VolumeWindow<'_, T>) -> VolumeBlock<Meta> {
         match self {
             KnownGreedyFilter::Average => GreedyFilter::compute_metadata(&AverageFilter, input),
+        }
+    }
+}
+
+impl<Meta, T> DerivableMetadataFilter<Meta, T> for KnownGreedyFilter
+where
+    KnownGreedyFilter: GreedyFilter<Meta, T>,
+    AverageFilter: DerivableMetadataFilter<Meta, T>,
+{
+    fn derive_init(&self, dims: &[usize]) -> VolumeBlock<Meta> {
+        match self {
+            KnownGreedyFilter::Average => {
+                DerivableMetadataFilter::derive_init(&AverageFilter, dims)
+            }
+        }
+    }
+
+    fn derive_step(&self, input: Lane<'_, Meta>, output: LaneMut<'_, Meta>) {
+        match self {
+            KnownGreedyFilter::Average => {
+                DerivableMetadataFilter::derive_step(&AverageFilter, input, output)
+            }
         }
     }
 }
@@ -299,7 +331,24 @@ where
     }
 
     fn compute_metadata(&self, input: VolumeWindow<'_, T>) -> VolumeBlock<BlockCount> {
-        VolumeBlock::new_fill(input.dims(), BlockCount::new(1, 0)).unwrap()
+        self.derive_init(input.dims())
+    }
+}
+
+impl<T> DerivableMetadataFilter<BlockCount, T> for AverageFilter
+where
+    AverageFilter: GreedyFilter<BlockCount, T>,
+{
+    fn derive_init(&self, dims: &[usize]) -> VolumeBlock<BlockCount> {
+        VolumeBlock::new_fill(dims, BlockCount::new(1, 0)).unwrap()
+    }
+
+    fn derive_step(&self, input: Lane<'_, BlockCount>, mut output: LaneMut<'_, BlockCount>) {
+        for (i, out) in output.into_iter().enumerate() {
+            let left = 2 * i;
+            let right = (2 * i) + 1;
+            *out = BlockCount::new(input[left].count(), input[right].count());
+        }
     }
 }
 
@@ -398,6 +447,7 @@ where
 pub struct GreedyTransformCoefficents<Meta, T> {
     dims: Vec<usize>,
     pub(crate) low: VolumeBlock<T>,
+    pub(crate) meta: VolumeBlock<Meta>,
     levels: Vec<CoeffLevel<Meta, T>>,
 }
 
@@ -417,12 +467,20 @@ where
 {
     /// Applies the wavelet transform to the input block.
     pub fn new(input: VolumeBlock<T>, filter: &impl GreedyFilter<Meta, T>) -> Self {
+        let metadata = filter.compute_metadata(input.window());
+        Self::new_with_meta(input, metadata, filter)
+    }
+
+    pub(crate) fn new_with_meta(
+        input: VolumeBlock<T>,
+        metadata: VolumeBlock<Meta>,
+        filter: &impl GreedyFilter<Meta, T>,
+    ) -> Self {
         let steps = input
             .dims()
             .iter()
             .map(|&dim| dim.next_power_of_two().ilog2())
             .collect::<Vec<_>>();
-        let metadata = filter.compute_metadata(input.window());
         Self::apply_forwards(input, metadata, filter, &steps, false)
     }
 
@@ -440,7 +498,7 @@ where
         let mut coeff = Vec::new();
 
         for step in steps {
-            let windows = power_of_two_windows(data.dims(), Some(step.dim));
+            let windows = power_of_two_windows(data.dims(), step.dim);
 
             let data_window = data.window();
             let metadata_window = metadata.window();
@@ -518,6 +576,7 @@ where
         Self {
             dims,
             low: data,
+            meta: metadata,
             levels: coeff,
         }
     }
@@ -635,7 +694,7 @@ where
                     .map(|&dim| num_power_of_two_decompositions(dim))
                     .collect::<Vec<_>>();
 
-                let windows = power_of_two_windows(&adjusted_window_dims, Some(level.dim));
+                let windows = power_of_two_windows(&adjusted_window_dims, level.dim);
 
                 let meta_block = unroll_block(&adjusted.levels.last().unwrap().metadata);
                 let coeff_block = adjusted.low;
@@ -688,7 +747,7 @@ where
     }
 
     /// Reconstructs the data to the desired detail level
-    /// like [`reconstruct`], but resamples the output to
+    /// like [`reconstruct`](Self::reconstruct), but resamples the output to
     /// have the same size as the original data.
     pub fn reconstruct_extend(
         &self,
@@ -723,7 +782,7 @@ where
 
                 let data_window = data.window();
 
-                let windows = power_of_two_windows(&adjusted_window_dims, Some(i));
+                let windows = power_of_two_windows(&adjusted_window_dims, i);
                 let (sx, rx) = std::sync::mpsc::sync_channel(windows.len());
 
                 rayon::scope(|s| {
@@ -769,109 +828,6 @@ where
     }
 }
 
-impl<Meta, T> GreedyTransformCoefficents<Meta, T>
-where
-    Meta: Serializable + Deserializable,
-    T: Serializable + Deserializable,
-{
-    /// Writes out the coefficients to the filesystem.
-    pub fn write_out(self, path: impl AsRef<Path>) {
-        let path = path.as_ref();
-        if !path.exists() || !path.is_dir() {
-            panic!("Invalid path {path:?}");
-        }
-
-        let mut stream = SerializeStream::new();
-        self.dims.serialize(&mut stream);
-        self.low.serialize(&mut stream);
-
-        self.levels
-            .iter()
-            .map(|lvl| lvl.dim)
-            .collect::<Vec<_>>()
-            .serialize(&mut stream);
-
-        let header_path = path.join("block_header.bin");
-        let header_file = File::create(header_path).unwrap();
-        stream.write_encode(header_file).unwrap();
-
-        for (i, level) in self.levels.into_iter().enumerate() {
-            let mut stream = SerializeStream::new();
-            level.serialize(&mut stream);
-
-            let output_path = path.join(format!("block_part_{i}.bin"));
-            let output_file = File::create(output_path).unwrap();
-            stream.write_encode(output_file).unwrap();
-        }
-    }
-
-    /// Reads in a subset of the data, reconstructible to
-    /// the passed detail level, from the filesystem.
-    pub fn read_for_steps(steps: &[u32], path: impl AsRef<Path>) -> Self
-    where
-        Meta: Default,
-    {
-        let path = path.as_ref();
-        if !path.exists() || !path.is_dir() {
-            panic!("Invalid path {path:?}");
-        }
-
-        let f = std::fs::File::open(path.join("block_header.bin")).unwrap();
-        let stream = DeserializeStream::new_decode(f).unwrap();
-        let mut stream = stream.stream();
-
-        let dims = Vec::<usize>::deserialize(&mut stream);
-        let low = Deserializable::deserialize(&mut stream);
-        let level_dims = Vec::<usize>::deserialize(&mut stream);
-
-        if steps.len() != dims.len()
-            || steps
-                .iter()
-                .zip(&dims)
-                .any(|(steps, dim)| *steps > dim.next_power_of_two().ilog2())
-        {
-            panic!("Invalid number of steps {steps:?} for volume of size {dims:?}");
-        }
-
-        let num_levels = dims
-            .iter()
-            .map(|d| d.next_power_of_two().ilog2())
-            .fold(0, |acc, x| acc + (x as usize));
-
-        let mut levels = (0..num_levels)
-            .zip(level_dims)
-            .map(|(_, dim)| CoeffLevel {
-                dim,
-                dims: vec![],
-                offsets: VolumeBlock::new_default(&[1]).unwrap(),
-                metadata: VolumeBlock::new_with_data(
-                    &[1],
-                    vec![VolumeBlock::new_with_data(&[1], vec![Default::default()]).unwrap()],
-                )
-                .unwrap(),
-                coeff: VolumeBlock::new_with_data(&[1], vec![None]).unwrap(),
-            })
-            .collect::<Vec<_>>();
-
-        let mut steps_left = Vec::from(steps);
-        for (i, level) in levels.iter_mut().enumerate().rev() {
-            if steps_left[level.dim] == 0 {
-                continue;
-            } else {
-                steps_left[level.dim] -= 1;
-            }
-
-            let f = std::fs::File::open(path.join(format!("block_part_{i}.bin"))).unwrap();
-            let stream = DeserializeStream::new_decode(f).unwrap();
-            let mut stream = stream.stream();
-
-            *level = Deserializable::deserialize(&mut stream);
-        }
-
-        Self { dims, low, levels }
-    }
-}
-
 impl<Meta, T> Serializable for GreedyTransformCoefficents<Meta, T>
 where
     Meta: Serializable,
@@ -880,6 +836,7 @@ where
     fn serialize(self, stream: &mut SerializeStream) {
         self.dims.serialize(stream);
         self.low.serialize(stream);
+        self.meta.serialize(stream);
         self.levels.serialize(stream);
     }
 }
@@ -892,9 +849,15 @@ where
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let dims = Deserializable::deserialize(stream);
         let low = Deserializable::deserialize(stream);
+        let meta = Deserializable::deserialize(stream);
         let levels = Deserializable::deserialize(stream);
 
-        Self { dims, low, levels }
+        Self {
+            dims,
+            low,
+            meta,
+            levels,
+        }
     }
 }
 
@@ -929,6 +892,251 @@ where
             dims,
             offsets,
             metadata,
+            coeff,
+        }
+    }
+}
+
+/// A [`GreedyTransformCoefficients`] but without the metadata.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PartialGreedyTransformCoefficients<T> {
+    dims: Vec<usize>,
+    low: VolumeBlock<T>,
+    levels: Vec<PartialCoeffLevel<T>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PartialCoeffLevel<T> {
+    dim: usize,
+    dims: Vec<usize>,
+    offsets: VolumeBlock<Vec<usize>>,
+    coeff: VolumeBlock<Option<VolumeBlock<T>>>,
+}
+
+impl<T> PartialGreedyTransformCoefficients<T> {
+    /// Reconstructs a [`GreedyTransformCoefficents`] by deriving the metadata.
+    pub fn into_full_coeff<Meta>(
+        self,
+        filter: &impl DerivableMetadataFilter<Meta, T>,
+    ) -> GreedyTransformCoefficents<Meta, T>
+    where
+        Meta: Zero + Clone + Send + Sync,
+    {
+        let mut metadata = filter.derive_init(&self.dims);
+        let mut levels = vec![];
+
+        for level in self.levels {
+            let windows = power_of_two_windows(&level.dims, level.dim);
+            let metadata_window = metadata.window();
+
+            let (sx, rx) = std::sync::mpsc::sync_channel(windows.len());
+            rayon::scope(|s| {
+                for (i, window) in windows.into_iter().enumerate() {
+                    let (mut window_size, window_offset, _) = window;
+                    let meta = metadata_window.custom_window(&window_offset, &window_size);
+                    let meta = meta.as_block();
+                    let sx = sx.clone();
+
+                    // Block has reached minimum detail level along the dimension.
+                    if window_size[level.dim] == 1 {
+                        let _ = sx.send((i, meta));
+                        continue;
+                    }
+
+                    s.spawn(move |_| {
+                        window_size[level.dim] /= 2;
+
+                        let meta = meta.window();
+                        let mut next = VolumeBlock::new_zero(&window_size).unwrap();
+                        let mut next_window = next.window_mut();
+
+                        let lanes = meta.lanes(level.dim);
+                        let next_lanes = next_window.lanes_mut(level.dim);
+
+                        for (current, next) in lanes.zip(next_lanes) {
+                            filter.derive_step(current, next);
+                        }
+
+                        let _ = sx.send((i, next));
+                    });
+                }
+            });
+
+            let mut tmp = rx.try_iter().collect::<Vec<_>>();
+            tmp.sort_by_key(|(i, _)| *i);
+
+            let lvl_meta = tmp.into_iter().map(|(_, meta)| meta).collect::<Vec<_>>();
+            let num_windows = metadata_window
+                .dims()
+                .iter()
+                .map(|&dim| num_power_of_two_decompositions(dim))
+                .collect::<Vec<_>>();
+
+            let lvl_meta = VolumeBlock::new_with_data(&num_windows, lvl_meta).unwrap();
+            metadata = unroll_block(&lvl_meta);
+
+            levels.push(CoeffLevel {
+                dim: level.dim,
+                dims: level.dims,
+                offsets: level.offsets,
+                metadata: lvl_meta,
+                coeff: level.coeff,
+            });
+        }
+
+        GreedyTransformCoefficents {
+            dims: self.dims,
+            low: self.low,
+            meta: metadata,
+            levels,
+        }
+    }
+
+    /// Writes out the coefficients to the filesystem.
+    pub fn write_out(self, path: impl AsRef<Path>)
+    where
+        T: Serializable,
+    {
+        let path = path.as_ref();
+        if !path.exists() || !path.is_dir() {
+            panic!("Invalid path {path:?}");
+        }
+
+        let mut stream = SerializeStream::new();
+        self.dims.serialize(&mut stream);
+        self.low.serialize(&mut stream);
+
+        self.levels
+            .iter()
+            .map(|lvl| lvl.dim)
+            .collect::<Vec<_>>()
+            .serialize(&mut stream);
+
+        let header_path = path.join("block_header.bin");
+        let header_file = File::create(header_path).unwrap();
+        stream.write_encode(header_file).unwrap();
+
+        for (i, level) in self.levels.into_iter().enumerate() {
+            let mut stream = SerializeStream::new();
+            level.serialize(&mut stream);
+
+            let output_path = path.join(format!("block_part_{i}.bin"));
+            let output_file = File::create(output_path).unwrap();
+            stream.write_encode(output_file).unwrap();
+        }
+    }
+
+    /// Reads in a subset of the data, reconstructible to
+    /// the passed detail level, from the filesystem.
+    pub fn read_for_steps(steps: &[u32], path: impl AsRef<Path>) -> Self
+    where
+        T: Deserializable,
+    {
+        let path = path.as_ref();
+        if !path.exists() || !path.is_dir() {
+            panic!("Invalid path {path:?}");
+        }
+
+        let f = std::fs::File::open(path.join("block_header.bin")).unwrap();
+        let stream = DeserializeStream::new_decode(f).unwrap();
+        let mut stream = stream.stream();
+
+        let dims = Vec::<usize>::deserialize(&mut stream);
+        let low = Deserializable::deserialize(&mut stream);
+        let level_dims = Vec::<usize>::deserialize(&mut stream);
+
+        if steps.len() != dims.len()
+            || steps
+                .iter()
+                .zip(&dims)
+                .any(|(steps, dim)| *steps > dim.next_power_of_two().ilog2())
+        {
+            panic!("Invalid number of steps {steps:?} for volume of size {dims:?}");
+        }
+
+        let num_levels = dims
+            .iter()
+            .map(|d| d.next_power_of_two().ilog2())
+            .fold(0, |acc, x| acc + (x as usize));
+
+        let mut levels = (0..num_levels)
+            .zip(level_dims)
+            .map(|(_, dim)| PartialCoeffLevel {
+                dim,
+                dims: vec![],
+                offsets: VolumeBlock::new_default(&[1]).unwrap(),
+                coeff: VolumeBlock::new_with_data(&[1], vec![None]).unwrap(),
+            })
+            .collect::<Vec<_>>();
+
+        let mut steps_left = Vec::from(steps);
+        for (i, level) in levels.iter_mut().enumerate().rev() {
+            let f = std::fs::File::open(path.join(format!("block_part_{i}.bin"))).unwrap();
+            let stream = DeserializeStream::new_decode(f).unwrap();
+            let mut stream = stream.stream();
+
+            if steps_left[level.dim] == 0 {
+                let dim = Deserializable::deserialize(&mut stream);
+                let dims = Deserializable::deserialize(&mut stream);
+                level.dim = dim;
+                level.dims = dims;
+            } else {
+                steps_left[level.dim] -= 1;
+                *level = Deserializable::deserialize(&mut stream);
+            }
+        }
+
+        Self { dims, low, levels }
+    }
+}
+
+impl<Meta, T> From<GreedyTransformCoefficents<Meta, T>> for PartialGreedyTransformCoefficients<T> {
+    fn from(value: GreedyTransformCoefficents<Meta, T>) -> Self {
+        Self {
+            dims: value.dims,
+            low: value.low,
+            levels: value.levels.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl<Meta, T> From<CoeffLevel<Meta, T>> for PartialCoeffLevel<T> {
+    fn from(value: CoeffLevel<Meta, T>) -> Self {
+        Self {
+            dim: value.dim,
+            dims: value.dims,
+            offsets: value.offsets,
+            coeff: value.coeff,
+        }
+    }
+}
+
+impl<T> Serializable for PartialCoeffLevel<T>
+where
+    T: Serializable,
+{
+    fn serialize(self, stream: &mut SerializeStream) {
+        self.dim.serialize(stream);
+        self.dims.serialize(stream);
+        self.offsets.serialize(stream);
+        self.coeff.serialize(stream);
+    }
+}
+
+impl<T> Deserializable for PartialCoeffLevel<T>
+where
+    T: Deserializable,
+{
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
+        let dim = Deserializable::deserialize(stream);
+        let dims = Deserializable::deserialize(stream);
+        let offsets = Deserializable::deserialize(stream);
+        let coeff = Deserializable::deserialize(stream);
+
+        Self {
+            dim,
+            dims,
+            offsets,
             coeff,
         }
     }
@@ -1293,14 +1501,11 @@ fn power_of_two_decompositions_and_offsets(
     decomps
 }
 
-fn power_of_two_windows(
-    dims: &[usize],
-    dim: Option<usize>,
-) -> Vec<(Vec<usize>, Vec<usize>, Vec<usize>)> {
+fn power_of_two_windows(dims: &[usize], dim: usize) -> Vec<(Vec<usize>, Vec<usize>, Vec<usize>)> {
     let decomps = dims
         .iter()
         .enumerate()
-        .map(|(i, &d)| power_of_two_decompositions_and_offsets(d, i == dim.unwrap_or(!i)))
+        .map(|(i, &d)| power_of_two_decompositions_and_offsets(d, i == dim))
         .collect::<Vec<_>>();
     let ranges = decomps.iter().map(|dec| 0..dec.len()).collect::<Vec<_>>();
 

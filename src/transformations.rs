@@ -6,9 +6,9 @@ pub(crate) mod wavelet_transform;
 
 pub use basic::{Chain, Identity, Reverse};
 pub use greedy_wavelet_transform::{
-    has_known_greedy_filter, BlockCount, GreedyFilter, GreedyTransformCoefficents,
-    GreedyWaveletTransform, GreedyWaveletTransformBackwardsCfg, KnownGreedyFilter,
-    TryToKnownGreedyFilter,
+    has_known_greedy_filter, BlockCount, DerivableMetadataFilter, GreedyFilter,
+    GreedyTransformCoefficents, GreedyWaveletTransform, GreedyWaveletTransformBackwardsCfg,
+    KnownGreedyFilter, PartialGreedyTransformCoefficients, TryToKnownGreedyFilter,
 };
 pub use resample::{
     Lerp, ResampleCfg, ResampleCfgOwned, ResampleClamp, ResampleExtend, ResampleIScale,
