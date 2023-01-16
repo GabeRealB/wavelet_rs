@@ -9,7 +9,9 @@ use num_traits::Zero;
 use crate::{
     filter::{Filter, GenericFilter, ToGenericFilter},
     range::{for_each_range, for_each_range_enumerate, for_each_range_par_enumerate},
-    stream::{AnyMap, Deserializable, DeserializeStream, Serializable, SerializeStream},
+    stream::{
+        AnyMap, CompressionLevel, Deserializable, DeserializeStream, Serializable, SerializeStream,
+    },
     transformations::{
         wavelet_transform::BackwardsOperation, BlockCount, Chain, GreedyFilter,
         GreedyTransformCoefficents, KnownGreedyFilter, PartialGreedyTransformCoefficients,
@@ -231,6 +233,7 @@ where
         block_size: &[usize],
         filter: impl ToGenericFilter<T> + TryToKnownGreedyFilter + Serializable + Clone,
         use_greedy_transform: bool,
+        compression: CompressionLevel,
     ) where
         T: Sync,
         GenericFilter<T>: Filter<T>,
@@ -350,7 +353,7 @@ where
 
                         let out_path = block_dir.join(format!("block_part_{counter}.bin"));
                         let out_file = File::create(out_path).unwrap();
-                        stream.write_encode(out_file).unwrap();
+                        stream.write_encode(compression, out_file).unwrap();
 
                         counter += 1;
                     }
@@ -361,7 +364,7 @@ where
                 sx.send((i, coeff.low[0].clone(), coeff.meta[0])).unwrap();
 
                 let partial_coeff: PartialGreedyTransformCoefficients<_> = coeff.into();
-                partial_coeff.write_out(block_dir);
+                partial_coeff.write_out(block_dir, compression);
             }
         });
 
@@ -422,7 +425,7 @@ where
 
         let output_path = output.as_ref().join("output.bin");
         let output_file = File::create(output_path).unwrap();
-        stream.write_encode(output_file).unwrap();
+        stream.write_encode(compression, output_file).unwrap();
     }
 
     unsafe fn flatten_idx_full_unchecked(&self, index: &[usize]) -> usize {
@@ -1164,8 +1167,8 @@ mod test {
     use std::{fs::File, io::BufReader, path::PathBuf};
 
     use crate::{
-        filter::AverageFilter, utilities::flatten_idx_unchecked, vector::Vector,
-        volume::VolumeBlock,
+        filter::AverageFilter, stream::CompressionLevel, utilities::flatten_idx_unchecked,
+        vector::Vector, volume::VolumeBlock,
     };
 
     use super::VolumeWaveletEncoder;
@@ -1191,7 +1194,13 @@ mod test {
         encoder.insert_metadata::<String>("Test".into(), "Example metadata string".into());
 
         let block_size = [32, 32, 32, 2];
-        encoder.encode(res_path, &block_size, AverageFilter, false)
+        encoder.encode(
+            res_path,
+            &block_size,
+            AverageFilter,
+            false,
+            CompressionLevel::Default,
+        )
     }
 
     #[test]
@@ -1216,7 +1225,13 @@ mod test {
         encoder.add_fetcher(&[0], fetcher);
 
         let block_size = [4, 4, 1];
-        encoder.encode(res_path, &block_size, AverageFilter, false)
+        encoder.encode(
+            res_path,
+            &block_size,
+            AverageFilter,
+            false,
+            CompressionLevel::Default,
+        )
     }
 
     #[test]
@@ -1243,7 +1258,13 @@ mod test {
         encoder.add_fetcher(&[0], fetcher);
 
         let block_size = [256, 256, 1];
-        encoder.encode(res_path, &block_size, AverageFilter, false)
+        encoder.encode(
+            res_path,
+            &block_size,
+            AverageFilter,
+            false,
+            CompressionLevel::Default,
+        )
     }
 
     #[test]
@@ -1270,7 +1291,13 @@ mod test {
         encoder.add_fetcher(&[0], fetcher);
 
         let block_size = [256, 256, 1];
-        encoder.encode(res_path, &block_size, AverageFilter, false)
+        encoder.encode(
+            res_path,
+            &block_size,
+            AverageFilter,
+            false,
+            CompressionLevel::Default,
+        )
     }
 
     #[test]
@@ -1297,6 +1324,12 @@ mod test {
         encoder.add_fetcher(&[0], fetcher);
 
         let block_size = [256, 256, 1];
-        encoder.encode(res_path, &block_size, AverageFilter, true)
+        encoder.encode(
+            res_path,
+            &block_size,
+            AverageFilter,
+            true,
+            CompressionLevel::Default,
+        )
     }
 }

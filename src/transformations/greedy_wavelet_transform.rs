@@ -11,7 +11,9 @@ use super::{
 };
 use crate::filter::{AverageFilter, Filter};
 use crate::range::for_each_range;
-use crate::stream::{Deserializable, DeserializeStream, Serializable, SerializeStream};
+use crate::stream::{
+    CompressionLevel, Deserializable, DeserializeStream, Serializable, SerializeStream,
+};
 use crate::volume::{Lane, LaneMut, VolumeBlock, VolumeWindow, VolumeWindowMut};
 
 /// Definition of a filter to be used with the greedy wavelet transform.
@@ -993,7 +995,7 @@ impl<T> PartialGreedyTransformCoefficients<T> {
     }
 
     /// Writes out the coefficients to the filesystem.
-    pub fn write_out(self, path: impl AsRef<Path>)
+    pub fn write_out(self, path: impl AsRef<Path>, compression: CompressionLevel)
     where
         T: Serializable,
     {
@@ -1014,7 +1016,7 @@ impl<T> PartialGreedyTransformCoefficients<T> {
 
         let header_path = path.join("block_header.bin");
         let header_file = File::create(header_path).unwrap();
-        stream.write_encode(header_file).unwrap();
+        stream.write_encode(compression, header_file).unwrap();
 
         for (i, level) in self.levels.into_iter().enumerate() {
             let mut stream = SerializeStream::new();
@@ -1022,7 +1024,7 @@ impl<T> PartialGreedyTransformCoefficients<T> {
 
             let output_path = path.join(format!("block_part_{i}.bin"));
             let output_file = File::create(output_path).unwrap();
-            stream.write_encode(output_file).unwrap();
+            stream.write_encode(compression, output_file).unwrap();
         }
     }
 
