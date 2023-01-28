@@ -25,3 +25,5 @@ paste = { version = "1.0.9",  optional = true }
 
 [dev-dependencies]
 image = "0.24.3"
+fraction = "0.13.0"
+rand = { version = "0.8.5", features = ["small_rng"] }

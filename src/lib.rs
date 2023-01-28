@@ -6,6 +6,7 @@
     rustdoc::broken_intra_doc_links
 )]
 #![feature(min_specialization)]
+#![feature(int_roundings)]
 #![feature(slice_ptr_get)]
 
 #[cfg(feature = "ffi")]

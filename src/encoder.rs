@@ -13,8 +13,8 @@ use crate::{
         AnyMap, CompressionLevel, Deserializable, DeserializeStream, Serializable, SerializeStream,
     },
     transformations::{
-        wavelet_transform::BackwardsOperation, BlockCount, Chain, GreedyFilter,
-        GreedyTransformCoefficents, KnownGreedyFilter, PartialGreedyTransformCoefficients,
+        wavelet_transform::{write_out_block, BackwardsOperation},
+        BlockCount, Chain, GreedyFilter, GreedyTransformCoefficents, KnownGreedyFilter,
         ResampleCfg, ResampleClamp, ReversibleTransform, TryToKnownGreedyFilter, WaveletDecompCfg,
         WaveletTransform,
     },
@@ -40,18 +40,45 @@ pub(crate) struct OutputHeader<T> {
     pub block_blueprints: BlockBlueprints<T>,
     pub filter: GenericFilter<T>,
     pub coeff_block: CoeffBlock<T>,
+    pub block_types: VolumeBlock<BlockType>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum BlockType {
+    #[default]
+    Standard,
+    Greedy,
+}
+
+impl Serializable for BlockType {
+    fn serialize(self, stream: &mut SerializeStream) {
+        (self as u8).serialize(stream);
+    }
+}
+
+impl Deserializable for BlockType {
+    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
+        const STANDARD: u8 = BlockType::Standard as u8;
+        const GREEDY: u8 = BlockType::Greedy as u8;
+
+        match u8::deserialize(stream) {
+            STANDARD => Self::Standard,
+            GREEDY => Self::Greedy,
+            _ => unimplemented!(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum CoeffBlock<T> {
-    Standard(VolumeBlock<T>),
+    Standard(VolumeBlock<T>, KnownGreedyFilter),
     Greedy(GreedyTransformCoefficents<BlockCount, T>, KnownGreedyFilter),
 }
 
 impl<T> CoeffBlock<T> {
     pub fn is_greedy(&self) -> bool {
         match self {
-            CoeffBlock::Standard(_) => false,
+            CoeffBlock::Standard(_, _) => false,
             CoeffBlock::Greedy(_, _) => true,
         }
     }
@@ -61,7 +88,7 @@ impl<T> CoeffBlock<T> {
         T: Clone,
     {
         match self {
-            CoeffBlock::Standard(b) => b.clone(),
+            CoeffBlock::Standard(b, _) => b.clone(),
             CoeffBlock::Greedy(_, _) => panic!("Invalid block type"),
         }
     }
@@ -71,14 +98,14 @@ impl<T> CoeffBlock<T> {
         T: Clone,
     {
         match self {
-            CoeffBlock::Standard(_) => panic!("Invalid block type"),
+            CoeffBlock::Standard(_, _) => panic!("Invalid block type"),
             CoeffBlock::Greedy(b, _) => b,
         }
     }
 
     pub fn greedy_filter(&self) -> KnownGreedyFilter {
         match self {
-            CoeffBlock::Standard(_) => panic!("Invalid block type"),
+            CoeffBlock::Standard(_, f) => *f,
             CoeffBlock::Greedy(_, f) => *f,
         }
     }
@@ -92,7 +119,10 @@ where
         self.is_greedy().serialize(stream);
 
         match self {
-            CoeffBlock::Standard(block) => block.serialize(stream),
+            CoeffBlock::Standard(block, filter) => {
+                block.serialize(stream);
+                filter.serialize(stream);
+            }
             CoeffBlock::Greedy(block, filter) => {
                 block.serialize(stream);
                 filter.serialize(stream);
@@ -109,7 +139,8 @@ where
         let is_greedy = bool::deserialize(stream);
         if !is_greedy {
             let block = Deserializable::deserialize(stream);
-            Self::Standard(block)
+            let filter = Deserializable::deserialize(stream);
+            Self::Standard(block, filter)
         } else {
             let block = Deserializable::deserialize(stream);
             let filter = Deserializable::deserialize(stream);
@@ -143,6 +174,7 @@ impl<T: Serializable> Serializable for OutputHeader<T> {
         self.block_blueprints.serialize(stream);
         self.filter.serialize(stream);
         self.coeff_block.serialize(stream);
+        self.block_types.serialize(stream);
     }
 }
 
@@ -159,6 +191,7 @@ impl<T: Deserializable> Deserializable for OutputHeader<T> {
         let block_blueprints = Deserializable::deserialize(stream);
         let filter = Deserializable::deserialize(stream);
         let coeff_block = Deserializable::deserialize(stream);
+        let block_types = Deserializable::deserialize(stream);
 
         Self {
             dims,
@@ -169,6 +202,7 @@ impl<T: Deserializable> Deserializable for OutputHeader<T> {
             block_blueprints,
             filter,
             coeff_block,
+            block_types,
         }
     }
 }
@@ -295,7 +329,7 @@ where
                 .map(|((&start, &dim_size), &block_size)| (dim_size - start).min(block_size))
                 .collect();
             let block_range: Vec<_> = clamped_block_size.iter().map(|&b| 0..b).collect();
-            let transform_is_exact = clamped_block_size.iter().all(|size| size.is_power_of_two());
+            let transform_is_exact = clamped_block_size == block_size;
 
             // Fill the block with data from the dataset.
             let mut block = VolumeBlock::new_zero(&clamped_block_size).unwrap();
@@ -322,12 +356,24 @@ where
                     .iter()
                     .map(|size| size.next_power_of_two())
                     .product::<usize>();
-                let block_count = BlockCount::new(elements_in_block / 2, elements_in_block / 2);
+                let block_count = if elements_in_block == 1 {
+                    BlockCount::new(elements_in_block, 0)
+                } else {
+                    BlockCount::new(elements_in_block / 2, elements_in_block / 2)
+                };
 
                 // Transform the block and collect the first coefficient
                 // to be processed later.
                 let block_decomp = block_transform.forwards(block, block_transform_cfg);
-                sx.send((i, block_decomp[0].clone(), block_count)).unwrap();
+                sx.send((i, block_decomp[0].clone(), block_count, BlockType::Standard))
+                    .unwrap();
+
+                write_out_block(block_dir, block_decomp, compression);
+                /* // Delete directory, if it would be empty.
+                if block_decomp.dims().iter().all(|&d| d == 1) {
+                    std::fs::remove_dir(&block_dir).unwrap();
+                    return;
+                }
 
                 // Serialize the block by level of detail.
                 let mut counter = 0;
@@ -357,23 +403,25 @@ where
 
                         counter += 1;
                     }
-                }
+                } */
             } else {
                 let greedy_filter = greedy_filter.unwrap();
                 let coeff = GreedyTransformCoefficents::new(block, &greedy_filter);
-                sx.send((i, coeff.low[0].clone(), coeff.meta[0])).unwrap();
+                sx.send((i, coeff.low[0].clone(), coeff.meta[0], BlockType::Greedy))
+                    .unwrap();
 
-                let partial_coeff: PartialGreedyTransformCoefficients<_> = coeff.into();
-                partial_coeff.write_out(block_dir, compression);
+                coeff.write_out_partial(block_dir, compression);
             }
         });
 
         // Collect the first coefficient of each block into a last block.
         let mut superblock = VolumeBlock::new_zero(&block_counts).unwrap();
         let mut superblock_meta = VolumeBlock::new_zero(&block_counts).unwrap();
-        for (i, elem, meta) in rx.try_iter() {
+        let mut block_types = VolumeBlock::new_default(&block_counts).unwrap();
+        for (i, elem, meta, block_type) in rx.try_iter() {
             superblock[i] = elem;
             superblock_meta[i] = meta;
+            block_types[i] = block_type;
         }
 
         // Transform the last block similarely to the other blocks.
@@ -388,25 +436,31 @@ where
             .iter()
             .map(|d| d.next_power_of_two())
             .collect();
-        let coeff_block =
-            if !use_greedy_transform || superblock.dims().iter().all(|d| d.is_power_of_two()) {
-                let output_transform_cfg = Chain::combine(
-                    ResampleCfg::new(&resample_dims),
-                    WaveletDecompCfg::new(&steps),
-                );
-                let output_transform =
-                    Chain::combine(ResampleClamp, WaveletTransform::new(filter.clone(), false));
-                let transformed = output_transform.forwards(superblock, output_transform_cfg);
-                CoeffBlock::Standard(transformed)
-            } else {
-                let greedy_filter = greedy_filter.unwrap();
-                let coeff = GreedyTransformCoefficents::new_with_meta(
-                    superblock,
-                    superblock_meta,
-                    &greedy_filter,
-                );
-                CoeffBlock::Greedy(coeff, greedy_filter)
-            };
+
+        let mut can_use_standard_transform = superblock.dims().iter().all(|d| d.is_power_of_two());
+        can_use_standard_transform &= superblock_meta
+            .flatten()
+            .iter()
+            .all(|&x| x == superblock_meta[0]);
+
+        let greedy_filter = greedy_filter.unwrap();
+        let coeff_block = if !use_greedy_transform || can_use_standard_transform {
+            let output_transform_cfg = Chain::combine(
+                ResampleCfg::new(&resample_dims),
+                WaveletDecompCfg::new(&steps),
+            );
+            let output_transform =
+                Chain::combine(ResampleClamp, WaveletTransform::new(filter.clone(), false));
+            let transformed = output_transform.forwards(superblock, output_transform_cfg);
+            CoeffBlock::Standard(transformed, greedy_filter)
+        } else {
+            let coeff = GreedyTransformCoefficents::new_with_meta(
+                superblock,
+                superblock_meta,
+                &greedy_filter,
+            );
+            CoeffBlock::Greedy(coeff, greedy_filter)
+        };
 
         let output_header = OutputHeader {
             metadata: self.metadata.clone(),
@@ -417,6 +471,7 @@ where
             block_blueprints: BlockBlueprints::<T>::new(block_size),
             filter,
             coeff_block,
+            block_types,
         };
 
         // Serialize the header and the transformed last block.

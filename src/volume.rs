@@ -250,6 +250,48 @@ impl<T> VolumeBlock<T> {
     pub fn into_raw_parts(self) -> (Vec<T>, Vec<usize>, Vec<usize>) {
         (self.data, self.dims, self.strides)
     }
+
+    /// Mapps each element of the volume.
+    pub fn map<U>(self, f: impl Fn(T) -> U) -> VolumeBlock<U> {
+        let data = self.data.into_iter().map(f).collect();
+        VolumeBlock {
+            data,
+            dims: self.dims,
+            strides: self.strides,
+        }
+    }
+
+    /// Folds each element along a lane.
+    pub fn fold<U>(self, lane: usize, init: U, mut f: impl FnMut(U, T) -> U) -> VolumeBlock<U>
+    where
+        U: Clone,
+    {
+        let mut option = self.map(|x| Some(x));
+
+        let mut new_size = option.dims.clone();
+        new_size[lane] = 1;
+
+        let folded = (0..new_size.iter().product()).map(|_| None).collect();
+        let mut folded = VolumeBlock::new_with_data(&new_size, folded).unwrap();
+
+        let mut option_window = option.window_mut();
+        let mut folded_window = folded.window_mut();
+
+        let lanes = option_window.lanes_mut(lane);
+        let folded_lanes = folded_window.lanes_mut(lane);
+
+        for (mut src, mut folded) in lanes.zip(folded_lanes) {
+            let mut res = init.clone();
+            for item in src.into_iter() {
+                let item = item.take().unwrap();
+                res = f(res, item);
+            }
+
+            folded[0] = Some(res);
+        }
+
+        folded.map(|x| x.unwrap())
+    }
 }
 
 impl<T> Index<usize> for VolumeBlock<T> {
@@ -463,6 +505,26 @@ impl<'a, T> VolumeWindow<'a, T> {
 
     /// Borrows a subwindow in the range `[0..dims[0], ...]` from the window.
     pub fn custom_range(&self, range: &[usize]) -> VolumeWindow<'_, T> {
+        assert_eq!(self.dims.len(), range.len());
+        assert!(range
+            .iter()
+            .zip(&self.dim_offsets)
+            .zip(&self.dims)
+            .all(|((&r, &o), &d)| r + o <= d));
+
+        let dim_offsets = self.dim_offsets.clone();
+        Self {
+            dims: range.into(),
+            dim_offsets,
+            block_data: self.block_data,
+            block_dims: self.block_dims,
+            block_strides: self.block_strides,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Retrieves a subwindow in the range `[0..dims[0], ...]` from the window.
+    pub fn into_custom_range(self, range: &[usize]) -> VolumeWindow<'a, T> {
         assert_eq!(self.dims.len(), range.len());
         assert!(range
             .iter()
