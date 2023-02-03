@@ -547,26 +547,6 @@ impl<T> BlockBlueprints<T> {
         }
     }
 
-    pub fn reconstruct_full(
-        &self,
-        filter: &(impl Filter<T> + Clone),
-        block_path: impl AsRef<Path>,
-        steps: &[u32],
-    ) -> VolumeBlock<T>
-    where
-        T: Zero + Deserializable + Send + Clone,
-    {
-        assert_eq!(self.dims, steps.len());
-
-        for (k, b) in &self.blueprints {
-            if k.iter().all(|&s| s == 0) {
-                return b.reconstruct(filter, &self.layouts, block_path, steps);
-            }
-        }
-
-        unreachable!()
-    }
-
     pub fn reconstruct(
         &self,
         filter: &(impl Filter<T> + Clone),
@@ -582,38 +562,6 @@ impl<T> BlockBlueprints<T> {
 
         let blueprint = self.blueprints.get(steps).unwrap();
         blueprint.reconstruct(filter, &self.layouts, block_path, refinements)
-    }
-
-    pub fn block_decompositions_full(&self, steps: &[u32]) -> Vec<u32> {
-        assert_eq!(self.dims, steps.len());
-
-        for (k, b) in &self.blueprints {
-            if k.iter().all(|&s| s == 0) {
-                return b.block_decompositions(&self.layouts, steps);
-            }
-        }
-
-        unreachable!()
-    }
-
-    pub fn start_dim_full(&self, steps: &[u32]) -> usize {
-        assert_eq!(self.dims, steps.len());
-
-        for (k, b) in &self.blueprints {
-            if k.iter().all(|&s| s == 0) {
-                return b.start_dim(&self.layouts, steps);
-            }
-        }
-
-        unreachable!()
-    }
-
-    pub fn start_dim(&self, steps: &[u32], refinements: &[u32]) -> usize {
-        assert_eq!(self.dims, steps.len());
-        assert_eq!(self.dims, refinements.len());
-
-        let blueprint = self.blueprints.get(steps).unwrap();
-        blueprint.start_dim(&self.layouts, refinements)
     }
 }
 
@@ -761,42 +709,6 @@ impl<T> BlockBlueprint<T> {
                 .zip(&self.base_size)
                 .map(|(&st, &si)| (si << st))
                 .collect()
-        }
-    }
-
-    fn block_decompositions(&self, blocks: &[BlockLayout], steps: &[u32]) -> Vec<u32> {
-        if steps.iter().all(|&s| s == 0) {
-            vec![0; steps.len()]
-        } else {
-            let mut curr = vec![0; steps.len()];
-
-            for part in self.parts.iter().rev() {
-                curr[blocks[part.id].dim] += 1;
-
-                if steps.iter().zip(&curr).all(|(&s, &c)| c >= s) {
-                    break;
-                }
-            }
-
-            curr
-        }
-    }
-
-    fn start_dim(&self, blocks: &[BlockLayout], steps: &[u32]) -> usize {
-        if steps.iter().all(|&s| s == 0) {
-            0
-        } else {
-            let mut curr = vec![0; steps.len()];
-
-            for part in self.parts.iter().rev() {
-                curr[blocks[part.id].dim] += 1;
-
-                if steps.iter().zip(&curr).all(|(&s, &c)| c >= s) {
-                    return blocks[part.id].dim;
-                }
-            }
-
-            0
         }
     }
 

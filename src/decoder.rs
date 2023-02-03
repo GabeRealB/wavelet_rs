@@ -168,13 +168,6 @@ where
             return self.decode(writer_fetcher, output_range, &new_levels);
         }
 
-        let block_decompositions: Vec<_> = self.block_size.iter().map(|&b| b.ilog2()).collect();
-        let remaining_decompositions: Vec<_> = block_decompositions
-            .iter()
-            .zip(&block_levels)
-            .map(|(&d, &l)| d - l)
-            .collect();
-
         // We don't need to fully read a block to apply the refinement, as
         // we expect the block to contain lots of redundant data. E. g. for
         // an input with 3 detail levels and a size of 2^(3-1) we have:
@@ -490,11 +483,13 @@ where
 
                     let is_greedy = matches!(self.block_types[idx], BlockType::Greedy);
                     let coeff = if is_greedy {
-                        GreedyTransformCoefficents::read_for_steps(
+                        GreedyTransformCoefficents::read_for_steps_impl(
                             &block_backwards_steps,
+                            Some(&self.block_size),
                             block_path,
                             &self.input_block.greedy_filter(),
                         )
+                        .0
                     } else {
                         let low = first_pass[idx].clone();
                         let (block, block_decomp) =
@@ -573,14 +568,15 @@ where
 
                     block_transform.backwards(block, block_transform_cfg)
                 } else {
-                    let coeff = GreedyTransformCoefficents::read_for_steps(
+                    let (coeff, steps) = GreedyTransformCoefficents::read_for_steps_impl(
                         &block_backwards_steps,
+                        Some(&self.block_size),
                         block_path,
                         &self.input_block.greedy_filter(),
                     );
 
                     coeff.reconstruct_extend_to(
-                        &block_backwards_steps,
+                        &steps,
                         &block_size,
                         &self.input_block.greedy_filter(),
                     )

@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::Mutex,
+    time::{Duration, Instant},
 };
 
 use num_traits::{NumCast, ToPrimitive, Zero};
@@ -189,8 +190,8 @@ fn test_correctness() {
     let resource_path = resource_path.join("resources/integration");
 
     let block_sizes = [
-        //vec![1, 1, 1],
-        //vec![2, 2, 1],
+        vec![1, 1, 1],
+        vec![2, 2, 1],
         vec![4, 4, 1],
         vec![8, 8, 1],
         vec![16, 16, 1],
@@ -201,8 +202,10 @@ fn test_correctness() {
     let mut errors = Vec::new();
     let mut rng = SmallRng::seed_from_u64(123456789);
 
-    /* errors.extend(test_sample1(&resource_path));
+    errors.extend(test_sample1(&resource_path));
     errors.extend(test_sample2(&resource_path));
+    errors.extend(test_sample3(&resource_path));
+    errors.extend(test_sample4::<f64>(&resource_path));
 
     errors.extend(create_and_test::<Fraction>(
         &resource_path.join("random_64x64"),
@@ -224,7 +227,7 @@ fn test_correctness() {
         &[64, 64, 1],
         &block_sizes,
         &mut rng,
-    )); */
+    ));
 
     errors.extend(create_and_test::<Fraction>(
         &resource_path.join("random_103x96"),
@@ -261,8 +264,8 @@ fn test_sample1(
 ) -> Vec<(
     String,
     String,
-    BTreeMap<Vec<u32>, (f64, f64, f64)>,
-    BTreeMap<Vec<u32>, (f64, f64, f64)>,
+    BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
+    BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
 )> {
     let path = path.join("sample1");
     let volume = VolumeBlock::<Fraction>::new_with_data(
@@ -345,8 +348,8 @@ fn test_sample2(
 ) -> Vec<(
     String,
     String,
-    BTreeMap<Vec<u32>, (f64, f64, f64)>,
-    BTreeMap<Vec<u32>, (f64, f64, f64)>,
+    BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
+    BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
 )> {
     let path = path.join("sample2");
     let volume = VolumeBlock::<Fraction>::new_with_data(
@@ -432,6 +435,147 @@ fn test_sample2(
     test_volume(&path, "sample2", &[9, 8, 1], &blocks, volume)
 }
 
+fn test_sample3(
+    path: &Path,
+) -> Vec<(
+    String,
+    String,
+    BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
+    BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
+)> {
+    let path = path.join("sample3");
+    let volume = VolumeBlock::<Fraction>::new_with_data(
+        &[6, 1, 1],
+        vec![1.into(), 2.into(), 3.into(), 4.into(), 5.into(), 6.into()],
+    )
+    .unwrap();
+
+    let blocks = [vec![4, 4, 1]];
+    test_volume(&path, "sample3", &[6, 1, 1], &blocks, volume)
+}
+
+fn test_sample4<T>(
+    path: &Path,
+) -> Vec<(
+    String,
+    String,
+    BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
+    BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
+)>
+where
+    T: ErrorComputable + Zero + NumCast + Serializable + Deserializable + Clone + Send + Sync,
+    T: Add<Output = T> + Div<Output = T> + Mul<Output = T> + FromUsize + From<i32>,
+    GenericFilter<T>: Filter<T>,
+    KnownGreedyFilter: DerivableMetadataFilter<BlockCount, T>,
+{
+    let path = path.join("sample4");
+    let volume = VolumeBlock::<T>::new_with_data(
+        &[4, 24, 1],
+        vec![
+            1.into(),
+            2.into(),
+            3.into(),
+            4.into(),
+            5.into(),
+            6.into(),
+            7.into(),
+            8.into(),
+            2.into(),
+            1.into(),
+            3.into(),
+            4.into(),
+            5.into(),
+            6.into(),
+            7.into(),
+            8.into(),
+            2.into(),
+            3.into(),
+            1.into(),
+            4.into(),
+            5.into(),
+            6.into(),
+            7.into(),
+            8.into(),
+            2.into(),
+            3.into(),
+            4.into(),
+            1.into(),
+            5.into(),
+            6.into(),
+            7.into(),
+            8.into(),
+            2.into(),
+            3.into(),
+            4.into(),
+            5.into(),
+            1.into(),
+            6.into(),
+            7.into(),
+            8.into(),
+            2.into(),
+            3.into(),
+            4.into(),
+            5.into(),
+            6.into(),
+            1.into(),
+            7.into(),
+            8.into(),
+            2.into(),
+            3.into(),
+            4.into(),
+            5.into(),
+            6.into(),
+            7.into(),
+            1.into(),
+            8.into(),
+            2.into(),
+            3.into(),
+            4.into(),
+            5.into(),
+            6.into(),
+            7.into(),
+            8.into(),
+            1.into(),
+            1.into(),
+            2.into(),
+            3.into(),
+            4.into(),
+            5.into(),
+            6.into(),
+            8.into(),
+            7.into(),
+            1.into(),
+            2.into(),
+            3.into(),
+            4.into(),
+            5.into(),
+            8.into(),
+            6.into(),
+            7.into(),
+            1.into(),
+            2.into(),
+            3.into(),
+            4.into(),
+            8.into(),
+            5.into(),
+            6.into(),
+            7.into(),
+            1.into(),
+            2.into(),
+            3.into(),
+            8.into(),
+            4.into(),
+            5.into(),
+            6.into(),
+            7.into(),
+        ],
+    )
+    .unwrap();
+
+    let blocks = [vec![4, 4, 1]];
+    test_volume(&path, "sample4", &[4, 24, 1], &blocks, volume)
+}
+
 fn create_and_test<T>(
     path: &Path,
     name: &str,
@@ -441,8 +585,8 @@ fn create_and_test<T>(
 ) -> Vec<(
     String,
     String,
-    BTreeMap<Vec<u32>, (f64, f64, f64)>,
-    BTreeMap<Vec<u32>, (f64, f64, f64)>,
+    BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
+    BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
 )>
 where
     T: ErrorComputable + Zero + NumCast + Serializable + Deserializable + Clone + Send + Sync,
@@ -471,8 +615,8 @@ fn test_volume<T>(
 ) -> Vec<(
     String,
     String,
-    BTreeMap<Vec<u32>, (f64, f64, f64)>,
-    BTreeMap<Vec<u32>, (f64, f64, f64)>,
+    BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
+    BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
 )>
 where
     T: ErrorComputable + Zero + NumCast + Serializable + Deserializable + Clone + Send + Sync,
@@ -601,7 +745,7 @@ fn test_with_block_size<T>(
     volume_map: &BTreeMap<Vec<u32>, VolumeBlock<T>>,
     greedy: bool,
     compression: CompressionLevel,
-) -> BTreeMap<Vec<u32>, (f64, f64, f64)>
+) -> BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>
 where
     T: ErrorComputable + Zero + NumCast + Serializable + Deserializable + Clone + Send + Sync,
     GenericFilter<T>: Filter<T>,
@@ -621,7 +765,10 @@ where
     let mut error_map = BTreeMap::new();
     let decoder = VolumeWaveletDecoder::new(path.join("output.bin"));
     for (steps, truth) in volume_map.iter() {
+        let before = Instant::now();
         let decoded = decode(steps, volume.dims(), &decoder);
+        let time_required = Instant::now().duration_since(before);
+
         let num_elements = truth.dims().iter().product::<usize>();
         let (mut min, mut max, mut avg) = T::init_errors();
 
@@ -633,7 +780,7 @@ where
         }
 
         let (min, max, avg) = (min.into(), max.into(), avg.into());
-        error_map.insert(steps.clone(), (min, max, avg));
+        error_map.insert(steps.clone(), (min, max, avg, time_required));
     }
 
     error_map
@@ -801,7 +948,7 @@ fn init_error_file(path: &Path) -> BufWriter<File> {
     use std::io::Write;
     writeln!(
         &mut file,
-        "name, block size, decode steps, method, min error, max error, avg error"
+        "name, block size, decode steps, method, min error, max error, avg error, time"
     )
     .unwrap();
 
@@ -813,15 +960,16 @@ fn write_error(
     name: &str,
     block_str: &str,
     greedy: bool,
-    errors: &BTreeMap<Vec<u32>, (f64, f64, f64)>,
+    errors: &BTreeMap<Vec<u32>, (f64, f64, f64, Duration)>,
 ) {
     use std::io::Write;
     let type_str = if greedy { "greedy" } else { "standard" };
 
-    for (steps, &(min, max, avg)) in errors.iter() {
+    for (steps, &(min, max, avg, time)) in errors.iter() {
+        let msecs = time.as_secs_f64() * 1000.0;
         writeln!(
             file,
-            "{name}, {block_str}, {steps:?}, {type_str}, {min}, {max}, {avg}"
+            "{name}, {block_str}, {steps:?}, {type_str}, {min}, {max}, {avg}, {msecs}ms"
         )
         .unwrap();
     }

@@ -538,15 +538,11 @@ where
         let meta = adapted.meta;
 
         let mut levels = Vec::new();
-        for l_lvl in self.levels.into_iter().rev() {
-            let r_lvl_pos = other
-                .levels
-                .iter()
-                .rev()
-                .position(|lvl| lvl.dim == l_lvl.dim);
+        for l_lvl in self.levels {
+            let r_lvl_pos = other.levels.iter().position(|lvl| lvl.dim == l_lvl.dim);
 
             if let Some(r_lvl_pos) = r_lvl_pos {
-                let r_lvl = other.levels.remove(other.levels.len() - r_lvl_pos - 1);
+                let r_lvl = other.levels.remove(r_lvl_pos);
 
                 assert!(l_lvl
                     .dims
@@ -561,7 +557,21 @@ where
                 let mut coeff_dims = Vec::from(l_lvl.coeff.dims());
                 coeff_dims[dim] += r_lvl.coeff.dims()[dim];
 
-                let metadata = merge_block(dim, &metadata_dims, l_lvl.metadata, r_lvl.metadata);
+                let metadata = if metadata_dims
+                    .iter()
+                    .zip(l_lvl.metadata.dims())
+                    .zip(r_lvl.metadata.dims())
+                    .enumerate()
+                    .all(|(i, ((&d, &l), &r))| {
+                        (i == dim && d == l + r) || (i != dim && d == l && d == r)
+                    }) {
+                    merge_block(dim, &metadata_dims, l_lvl.metadata, r_lvl.metadata)
+                } else {
+                    let meta_window = r_lvl.metadata.window();
+                    let r_meta = meta_window.custom_range(l_lvl.metadata.dims()).as_block();
+                    merge_block(dim, &metadata_dims, l_lvl.metadata, r_meta)
+                };
+
                 let coeff = merge_block(dim, &coeff_dims, l_lvl.coeff, r_lvl.coeff);
 
                 let metadata_window = metadata.window();
@@ -599,19 +609,15 @@ where
                 let dims = l_lvl.dims;
                 let split = l_lvl.split;
 
-                levels.insert(
-                    0,
-                    CoeffLevel {
-                        dim,
-                        dims,
-                        split,
-                        coeff,
-                        metadata,
-                    },
-                );
+                levels.push(CoeffLevel {
+                    dim,
+                    dims,
+                    split,
+                    coeff,
+                    metadata,
+                });
             } else {
-                levels.insert(0, l_lvl);
-                //todo!()
+                levels.push(l_lvl);
             }
         }
 
@@ -854,10 +860,12 @@ where
             return data;
         }
 
-        let mut skipped_steps = steps
+        let mut skipped_steps = data
+            .dims()
             .iter()
             .zip(dims)
-            .map(|(&st, &dim)| {
+            .map(|(&data_dim, &dim)| {
+                let st = data_dim.next_power_of_two().ilog2();
                 let dim_steps = dim.next_power_of_two().ilog2();
                 if dim_steps <= st {
                     0
@@ -937,11 +945,7 @@ where
 
         for (&step, combined) in steps.iter().zip(&mut combined) {
             for _ in 0..step {
-                if *combined % 2 == 0 {
-                    *combined /= 2;
-                } else {
-                    *combined -= 1;
-                }
+                *combined = (*combined / 2) + (*combined % 2);
             }
         }
 
@@ -991,6 +995,19 @@ impl<Meta, T> GreedyTransformCoefficents<Meta, T> {
         T: Zero + Deserializable + Clone,
         Meta: Zero + Clone,
     {
+        Self::read_for_steps_impl(steps, None, path, filter).0
+    }
+
+    pub(crate) fn read_for_steps_impl(
+        steps: &[u32],
+        non_greedy_size: Option<&[usize]>,
+        path: impl AsRef<Path>,
+        filter: &impl DerivableMetadataFilter<Meta, T>,
+    ) -> (Self, Vec<u32>)
+    where
+        T: Zero + Deserializable + Clone,
+        Meta: Zero + Clone,
+    {
         let path = path.as_ref();
         if !path.exists() || !path.is_dir() {
             panic!("Invalid path {path:?}");
@@ -1012,27 +1029,44 @@ impl<Meta, T> GreedyTransformCoefficents<Meta, T> {
             .iter()
             .map(|&d| d.next_power_of_two().ilog2())
             .collect::<Vec<_>>();
-        let steps = steps
-            .iter()
-            .zip(&max_steps)
-            .map(|(&s, &max)| s.min(max))
-            .collect::<Vec<_>>();
+
+        let steps = if let Some(non_greedy) = non_greedy_size {
+            let steps_diff = max_steps
+                .iter()
+                .zip(non_greedy)
+                .map(|(max, dims)| dims.ilog2() - max);
+
+            steps
+                .iter()
+                .zip(steps_diff)
+                .map(|(&s, diff)| if s < diff { 0 } else { s - diff })
+                .collect::<Vec<_>>()
+        } else {
+            steps
+                .iter()
+                .zip(&max_steps)
+                .map(|(&s, &max)| s.min(max))
+                .collect::<Vec<_>>()
+        };
 
         let (level_metas, meta) = Self::derive_metadata(&dims, &level_dims, filter);
         if steps.iter().all(|&s| s == 0) {
-            return Self {
-                dims: low.dims().into(),
-                low,
-                meta,
-                levels: vec![],
-            };
+            return (
+                Self {
+                    dims: low.dims().into(),
+                    low,
+                    meta,
+                    levels: vec![],
+                },
+                steps,
+            );
         }
 
         let mut levels = Vec::new();
         let mut steps_skipped = max_steps
             .into_iter()
-            .zip(steps)
-            .map(|(max, s)| max - s)
+            .zip(&steps)
+            .map(|(max, &s)| max - s)
             .collect::<Vec<_>>();
         for (i, (dim, meta)) in level_dims.into_iter().zip(level_metas).enumerate() {
             if steps_skipped[dim] > 0 {
@@ -1046,12 +1080,15 @@ impl<Meta, T> GreedyTransformCoefficents<Meta, T> {
         }
 
         let dims = levels.first().unwrap().dims.clone();
-        Self {
-            dims,
-            low,
-            meta,
-            levels,
-        }
+        (
+            Self {
+                dims,
+                low,
+                meta,
+                levels,
+            },
+            steps,
+        )
     }
 
     /// Transforms a [`VolumeBlock`] containing the traditional wavelet

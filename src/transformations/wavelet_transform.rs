@@ -1,5 +1,5 @@
 use num_traits::Zero;
-use std::{marker::PhantomData, path::Path};
+use std::{borrow::Cow, marker::PhantomData, path::Path};
 
 use super::{Backwards, Forwards, OneWayTransform};
 use crate::{
@@ -247,7 +247,7 @@ where
 
         let mut scratch = vec![T::zero(); *input.dims().iter().max().unwrap()];
         let (ops, output_size) =
-            BackwardsOperation::new_optional_decomp(cfg.steps, cfg.decomposition, input.dims());
+            BackwardsOperation::new(cfg.steps, &*cfg.decomposition, input.dims());
         let input_window = input.window_mut();
 
         self.back_(input_window, &mut scratch, &ops);
@@ -333,10 +333,10 @@ impl Serializable for WaveletDecompCfg<'_> {
 }
 
 /// Config for recomposing a volume with the wavelet transform.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WaveletRecompCfg<'a> {
     steps: &'a [u32],
-    decomposition: Option<&'a [usize]>,
+    decomposition: Cow<'a, [usize]>,
     upscale: bool,
 }
 
@@ -352,10 +352,30 @@ impl<'a> WaveletRecompCfg<'a> {
         decomposition: Option<&'a [usize]>,
         upscale: bool,
     ) -> Self {
-        Self {
-            steps,
-            decomposition,
-            upscale,
+        if let Some(decomp) = decomposition {
+            Self {
+                steps,
+                decomposition: Cow::Borrowed(decomp),
+                upscale,
+            }
+        } else {
+            let mut remaining_steps = Vec::from(steps);
+            let mut decomp = vec![];
+
+            while remaining_steps.iter().any(|&s| s != 0) {
+                for (i, s) in remaining_steps.iter_mut().enumerate() {
+                    if *s > 0 {
+                        *s -= 1;
+                        decomp.push(i);
+                    }
+                }
+            }
+
+            Self {
+                steps,
+                decomposition: Cow::Owned(decomp),
+                upscale,
+            }
         }
     }
 }
@@ -370,7 +390,7 @@ impl<'a> From<&'a WaveletRecompCfgOwned> for WaveletRecompCfg<'a> {
     fn from(x: &'a WaveletRecompCfgOwned) -> Self {
         Self {
             steps: &x.steps,
-            decomposition: x.decomposition.as_deref(),
+            decomposition: Cow::Borrowed(&x.decomposition),
             upscale: x.upscale,
         }
     }
@@ -420,7 +440,7 @@ impl Deserializable for WaveletDecompCfgOwned {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WaveletRecompCfgOwned {
     steps: Vec<u32>,
-    decomposition: Option<Vec<usize>>,
+    decomposition: Vec<usize>,
     upscale: bool,
 }
 
@@ -436,17 +456,37 @@ impl WaveletRecompCfgOwned {
         decomposition: Option<Vec<usize>>,
         upscale: bool,
     ) -> Self {
-        Self {
-            steps,
-            decomposition,
-            upscale,
+        if let Some(decomp) = decomposition {
+            Self {
+                steps,
+                decomposition: decomp,
+                upscale,
+            }
+        } else {
+            let mut remaining_steps = steps.clone();
+            let mut decomp = vec![];
+
+            while remaining_steps.iter().any(|&s| s != 0) {
+                for (i, s) in remaining_steps.iter_mut().enumerate() {
+                    if *s > 0 {
+                        *s -= 1;
+                        decomp.push(i);
+                    }
+                }
+            }
+
+            Self {
+                steps,
+                decomposition: decomp,
+                upscale,
+            }
         }
     }
 }
 
 impl From<WaveletRecompCfg<'_>> for WaveletRecompCfgOwned {
     fn from(x: WaveletRecompCfg<'_>) -> Self {
-        Self::new_with_upsize(x.steps.into(), x.decomposition.map(Into::into), x.upscale)
+        Self::new_with_upsize(x.steps.into(), Some(x.decomposition.to_vec()), x.upscale)
     }
 }
 
@@ -546,30 +586,6 @@ impl BackwardsOperation {
         (ops, dims)
     }
 
-    fn new_optional_decomp(
-        steps: &[u32],
-        decomposition: Option<&[usize]>,
-        dims: &[usize],
-    ) -> (Vec<Self>, Vec<usize>) {
-        if let Some(decomposition) = decomposition {
-            Self::new(steps, decomposition, dims)
-        } else {
-            let mut steps_remaining = dims.iter().map(|&d| d.ilog2()).collect::<Vec<_>>();
-            let mut decomposition = Vec::new();
-
-            while steps_remaining.iter().any(|&s| s != 0) {
-                for (dim, s) in steps_remaining.iter_mut().enumerate() {
-                    if *s != 0 {
-                        *s -= 1;
-                        decomposition.push(dim);
-                    }
-                }
-            }
-
-            Self::new(steps, &decomposition, dims)
-        }
-    }
-
     fn dim(&self) -> usize {
         match self {
             BackwardsOperation::Backwards { dim, .. } => *dim,
@@ -617,7 +633,7 @@ pub(crate) fn write_out_block<T>(
                 }
             }
 
-            let part_path = path.join(format!("block_part_{part_idx}"));
+            let part_path = path.join(format!("block_part_{part_idx}.bin"));
             let part_file = std::fs::File::create(part_path).unwrap();
             stream.write_encode(compression, part_file).unwrap();
 
@@ -685,7 +701,7 @@ where
         }
         steps[dim] -= 1;
 
-        let part_path = path.join(format!("block_part_{i}"));
+        let part_path = path.join(format!("block_part_{i}.bin"));
         let f = std::fs::File::open(part_path).unwrap();
         let stream = DeserializeStream::new_decode(f).unwrap();
         let mut stream = stream.stream();
