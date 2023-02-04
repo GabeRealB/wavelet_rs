@@ -11,3 +11,6 @@ Cargo.lock
 
 # ignore cmake build director
 /build/
+
+# ignore integration test results
+/resources/integration/

@@ -2,7 +2,7 @@
 
 use std::ops::{Add, Mul, Neg, Sub};
 
-use num_traits::{Float, FloatConst, NumCast, Zero};
+use num_traits::{FloatConst, NumCast, Zero};
 
 use crate::{
     stream::{Deserializable, Serializable},
@@ -198,7 +198,7 @@ pub struct AverageFilter;
 
 impl<T> Filter<T> for AverageFilter
 where
-    T: PartialOrd + Add<Output = T> + Sub<Output = T> + Average<Output = T> + FloatConst + Clone,
+    T: PartialOrd + Add<Output = T> + Sub<Output = T> + Average<Output = T> + Clone,
 {
     fn forwards(&self, input: &Lane<'_, T>, low: &mut [T], high: &mut [T]) {
         for (i, (low, high)) in low.iter_mut().zip(high).enumerate() {
@@ -229,7 +229,7 @@ where
 
 impl<T> ToGenericFilter<T> for AverageFilter
 where
-    T: NumCast + Float,
+    T: NumCast,
 {
     fn to_generic(&self) -> GenericFilter<T> {
         GenericFilter::new(

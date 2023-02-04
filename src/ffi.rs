@@ -14,7 +14,7 @@ use crate::{
     decoder::VolumeWaveletDecoder,
     encoder::VolumeWaveletEncoder,
     filter::{AverageFilter, HaarWavelet},
-    stream::{Deserializable, Serializable},
+    stream::{CompressionLevel, Deserializable, Serializable},
 };
 
 #[cfg(feature = "ffi_vec")]
@@ -703,7 +703,7 @@ macro_rules! encoder_def {
             ) {
                 let output = CStr::from_ptr(output.cast());
                 let output = String::from_utf8_lossy(output.as_ref().to_bytes()).into_owned();
-                (*encoder).encode(output, &*block_size, HaarWavelet, use_greedy_transform)
+                (*encoder).encode(output, &*block_size, HaarWavelet, use_greedy_transform, CompressionLevel::Default)
             }
 
             /// Encodes the dataset with the specified block size and the average filter.
@@ -716,7 +716,7 @@ macro_rules! encoder_def {
             ) {
                 let output = CStr::from_ptr(output.cast());
                 let output = String::from_utf8_lossy(output.as_ref().to_bytes()).into_owned();
-                (*encoder).encode(output, &*block_size, AverageFilter, use_greedy_transform)
+                (*encoder).encode(output, &*block_size, AverageFilter, use_greedy_transform, CompressionLevel::Default)
             }
         }
 

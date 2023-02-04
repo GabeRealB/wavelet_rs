@@ -27,6 +27,20 @@ pub struct SerializeStream {
     bytes: Vec<u8>,
 }
 
+/// Zstd compression level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CompressionLevel {
+    /// No compression.
+    Off,
+    /// Default level.
+    Default,
+    /// Custom level.
+    Custom(i32),
+}
+
+const NO_COMPRESSION_MAGIC: u8 = 0;
+const ZSTD_COMPRESSION_MAGIC: u8 = 1;
+
 impl SerializeStream {
     /// Constructs a new stream.
     pub fn new() -> Self {
@@ -34,8 +48,24 @@ impl SerializeStream {
     }
 
     /// Writes the contents of the stream into a writer after compressing it.
-    pub fn write_encode(&self, x: impl Write) -> std::io::Result<()> {
-        zstd::stream::copy_encode(&*self.bytes, x, 0)
+    pub fn write_encode(
+        &self,
+        compression: CompressionLevel,
+        mut x: impl Write,
+    ) -> std::io::Result<()> {
+        let level = match compression {
+            CompressionLevel::Default => 0,
+            CompressionLevel::Custom(lvl) => lvl,
+            CompressionLevel::Off => {
+                x.write_all(&NO_COMPRESSION_MAGIC.to_le_bytes())?;
+                let mut bytes: &[u8] = &self.bytes;
+                std::io::copy(&mut bytes, &mut x)?;
+                return Ok(());
+            }
+        };
+
+        x.write_all(&ZSTD_COMPRESSION_MAGIC.to_le_bytes())?;
+        zstd::stream::copy_encode(&*self.bytes, x, level)
     }
 }
 
@@ -62,9 +92,21 @@ impl DeserializeStream {
     }
 
     /// Constructs a new stream by decompressing the contents of `x`.
-    pub fn new_decode(x: impl Read) -> std::io::Result<Self> {
+    pub fn new_decode(mut x: impl Read) -> std::io::Result<Self> {
+        let mut magic = [0u8; 1];
+        x.read_exact(&mut magic)?;
+
         let mut bytes = Vec::new();
-        zstd::stream::copy_decode(x, &mut bytes)?;
+        match magic[0] {
+            NO_COMPRESSION_MAGIC => {
+                std::io::copy(&mut x, &mut bytes)?;
+            }
+            ZSTD_COMPRESSION_MAGIC => {
+                zstd::stream::copy_decode(x, &mut bytes)?;
+            }
+            _ => panic!("Unknown format!"),
+        }
+
         Ok(Self { bytes })
     }
 

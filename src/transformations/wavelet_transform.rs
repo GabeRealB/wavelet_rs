@@ -1,10 +1,10 @@
 use num_traits::Zero;
-use std::marker::PhantomData;
+use std::{borrow::Cow, marker::PhantomData, path::Path};
 
 use super::{Backwards, Forwards, OneWayTransform};
 use crate::{
     filter::{backwards_window, forwards_window, upscale_window, Filter},
-    stream::{Deserializable, Serializable},
+    stream::{CompressionLevel, Deserializable, DeserializeStream, Serializable, SerializeStream},
     volume::{VolumeBlock, VolumeWindowMut},
 };
 
@@ -231,10 +231,9 @@ where
     fn apply(&self, mut input: VolumeBlock<T>, cfg: Self::Cfg<'_>) -> VolumeBlock<T> {
         let dims = input.dims();
 
-        assert!(dims.len() == cfg.backwards.len());
-        for ((&dim, &f), &b) in dims.iter().zip(cfg.forwards).zip(cfg.backwards) {
+        assert!(dims.len() == cfg.steps.len());
+        for (&dim, &b) in dims.iter().zip(cfg.steps) {
             let required_size = 2usize.pow(b);
-            assert!(b <= f);
             assert!(required_size <= dim);
         }
 
@@ -242,26 +241,30 @@ where
             panic!("invalid number of steps");
         }
 
-        if dims.iter().cloned().product::<usize>() == 1 || cfg.forwards.iter().all(|&f| f == 0) {
+        if dims.iter().cloned().product::<usize>() == 1 || cfg.steps.iter().all(|&f| f == 0) {
             return input;
         }
 
         let mut scratch = vec![T::zero(); *input.dims().iter().max().unwrap()];
         let (ops, output_size) =
-            BackwardsOperation::new(cfg.forwards, cfg.backwards, cfg.start_dim, input.dims());
+            BackwardsOperation::new(cfg.steps, &cfg.decomposition, input.dims());
         let input_window = input.window_mut();
 
         self.back_(input_window, &mut scratch, &ops);
 
         let mut input_window = input.window_mut();
-        for (dim, &size) in output_size.iter().enumerate() {
-            let upscale_steps = (input_window.dims()[dim] / size).ilog2();
-            for _ in 0..upscale_steps {
-                upscale_window(dim, &mut input_window);
+        if cfg.upscale {
+            for (dim, &size) in output_size.iter().enumerate() {
+                let upscale_steps = (input_window.dims()[dim] / size).ilog2();
+                for _ in 0..upscale_steps {
+                    upscale_window(dim, &mut input_window);
+                }
             }
+            input
+        } else {
+            let input_window = input_window.custom_range(&output_size);
+            input_window.as_block()
         }
-
-        input
     }
 }
 
@@ -330,49 +333,74 @@ impl Serializable for WaveletDecompCfg<'_> {
 }
 
 /// Config for recomposing a volume with the wavelet transform.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WaveletRecompCfg<'a> {
-    forwards: &'a [u32],
-    backwards: &'a [u32],
-    start_dim: usize,
+    steps: &'a [u32],
+    decomposition: Cow<'a, [usize]>,
+    upscale: bool,
 }
 
 impl<'a> WaveletRecompCfg<'a> {
     /// Constructs a new `WaveletRecompCfg`.
-    pub fn new(forwards: &'a [u32], backwards: &'a [u32]) -> Self {
-        Self::new_with_start_dim(forwards, backwards, 0)
+    pub fn new(steps: &'a [u32], decomposition: Option<&'a [usize]>) -> Self {
+        Self::new_with_upscale(steps, decomposition, true)
     }
 
-    /// Constructs a new `WaveletRecompCfg` with a custom starting direction.
-    pub fn new_with_start_dim(forwards: &'a [u32], backwards: &'a [u32], start_dim: usize) -> Self {
-        Self {
-            forwards,
-            backwards,
-            start_dim,
+    /// Constructs a new `WaveletRecompCfg`.
+    pub fn new_with_upscale(
+        steps: &'a [u32],
+        decomposition: Option<&'a [usize]>,
+        upscale: bool,
+    ) -> Self {
+        if let Some(decomp) = decomposition {
+            Self {
+                steps,
+                decomposition: Cow::Borrowed(decomp),
+                upscale,
+            }
+        } else {
+            let mut remaining_steps = Vec::from(steps);
+            let mut decomp = vec![];
+
+            while remaining_steps.iter().any(|&s| s != 0) {
+                for (i, s) in remaining_steps.iter_mut().enumerate() {
+                    if *s > 0 {
+                        *s -= 1;
+                        decomp.push(i);
+                    }
+                }
+            }
+
+            Self {
+                steps,
+                decomposition: Cow::Owned(decomp),
+                upscale,
+            }
         }
     }
 }
 
 impl<'a> From<WaveletDecompCfg<'a>> for WaveletRecompCfg<'a> {
     fn from(x: WaveletDecompCfg<'a>) -> Self {
-        Self::new(x.steps, x.steps)
+        Self::new(x.steps, None)
     }
 }
 
 impl<'a> From<&'a WaveletRecompCfgOwned> for WaveletRecompCfg<'a> {
     fn from(x: &'a WaveletRecompCfgOwned) -> Self {
         Self {
-            forwards: &x.forwards,
-            backwards: &x.backwards,
-            start_dim: x.start_dim,
+            steps: &x.steps,
+            decomposition: Cow::Borrowed(&x.decomposition),
+            upscale: x.upscale,
         }
     }
 }
 
 impl Serializable for WaveletRecompCfg<'_> {
     fn serialize(self, stream: &mut crate::stream::SerializeStream) {
-        self.forwards.serialize(stream);
-        self.backwards.serialize(stream)
+        self.steps.serialize(stream);
+        self.decomposition.serialize(stream);
+        self.upscale.serialize(stream);
     }
 }
 
@@ -411,50 +439,75 @@ impl Deserializable for WaveletDecompCfgOwned {
 /// Owned variant of a [`WaveletRecompCfg`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WaveletRecompCfgOwned {
-    forwards: Vec<u32>,
-    backwards: Vec<u32>,
-    start_dim: usize,
+    steps: Vec<u32>,
+    decomposition: Vec<usize>,
+    upscale: bool,
 }
 
 impl WaveletRecompCfgOwned {
     /// Constructs a new `WaveletRecompCfgOwned`.
-    pub fn new(forwards: Vec<u32>, backwards: Vec<u32>) -> Self {
-        Self::new_with_start_dim(forwards, backwards, 0)
+    pub fn new(steps: Vec<u32>, decomposition: Option<Vec<usize>>) -> Self {
+        Self::new_with_upsize(steps, decomposition, true)
     }
 
-    /// Constructs a new `WaveletRecompCfgOwned` with a custom starting direction.
-    pub fn new_with_start_dim(forwards: Vec<u32>, backwards: Vec<u32>, start_dim: usize) -> Self {
-        Self {
-            forwards,
-            backwards,
-            start_dim,
+    /// Constructs a new `WaveletRecompCfgOwned`.
+    pub fn new_with_upsize(
+        steps: Vec<u32>,
+        decomposition: Option<Vec<usize>>,
+        upscale: bool,
+    ) -> Self {
+        if let Some(decomp) = decomposition {
+            Self {
+                steps,
+                decomposition: decomp,
+                upscale,
+            }
+        } else {
+            let mut remaining_steps = steps.clone();
+            let mut decomp = vec![];
+
+            while remaining_steps.iter().any(|&s| s != 0) {
+                for (i, s) in remaining_steps.iter_mut().enumerate() {
+                    if *s > 0 {
+                        *s -= 1;
+                        decomp.push(i);
+                    }
+                }
+            }
+
+            Self {
+                steps,
+                decomposition: decomp,
+                upscale,
+            }
         }
     }
 }
 
 impl From<WaveletRecompCfg<'_>> for WaveletRecompCfgOwned {
     fn from(x: WaveletRecompCfg<'_>) -> Self {
-        Self::new(x.forwards.into(), x.backwards.into())
+        Self::new_with_upsize(x.steps.into(), Some(x.decomposition.to_vec()), x.upscale)
     }
 }
 
 impl Serializable for WaveletRecompCfgOwned {
     fn serialize(self, stream: &mut crate::stream::SerializeStream) {
-        self.forwards.serialize(stream);
-        self.backwards.serialize(stream);
-        self.start_dim.serialize(stream);
+        self.steps.serialize(stream);
+        self.decomposition.serialize(stream);
+        self.upscale.serialize(stream);
     }
 }
 
 impl Deserializable for WaveletRecompCfgOwned {
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
-        let forwards = Deserializable::deserialize(stream);
-        let backwards = Deserializable::deserialize(stream);
-        let start_dim = Deserializable::deserialize(stream);
+        let steps = Deserializable::deserialize(stream);
+        let decomposition = Deserializable::deserialize(stream);
+        let upscale = Deserializable::deserialize(stream);
+
         Self {
-            forwards,
-            backwards,
-            start_dim,
+            steps,
+            decomposition,
+            upscale,
         }
     }
 }
@@ -498,103 +551,39 @@ pub(crate) enum BackwardsOperation {
 }
 
 impl BackwardsOperation {
-    fn new(
-        forwards: &[u32],
-        backwards: &[u32],
-        start_dim: usize,
-        dim: &[usize],
-    ) -> (Vec<Self>, Vec<usize>) {
-        assert_eq!(backwards.len(), forwards.len());
+    fn new(steps: &[u32], decomposition: &[usize], dims: &[usize]) -> (Vec<Self>, Vec<usize>) {
+        assert_eq!(steps.len(), dims.len());
 
-        let mut ops = Vec::new();
-        let mut step = vec![0; backwards.len()];
-        let mut countdown: Vec<_> = backwards
-            .iter()
-            .zip(forwards)
-            .map(|(&b, &f)| f - b)
-            .collect();
-
-        let mut stop = false;
-        while !stop {
-            stop = true;
-
-            for (i, (step, max)) in step[start_dim..]
-                .iter_mut()
-                .zip(&forwards[start_dim..])
-                .enumerate()
-            {
-                if *step < *max {
-                    *step += 1;
-                    stop = false;
-
-                    if countdown[start_dim + i] != 0 {
-                        countdown[start_dim + i] -= 1;
-                        ops.push(BackwardsOperation::Skip { dim: start_dim + i });
-                    } else {
-                        ops.push(BackwardsOperation::Backwards {
-                            dim: start_dim + i,
-                            adapt: None,
-                        });
-                    }
-                }
-            }
-
-            for (i, (step, max)) in step[..start_dim]
-                .iter_mut()
-                .zip(&forwards[..start_dim])
-                .enumerate()
-            {
-                if *step < *max {
-                    *step += 1;
-                    stop = false;
-
-                    if countdown[i] != 0 {
-                        countdown[i] -= 1;
-                        ops.push(BackwardsOperation::Skip { dim: i });
-                    } else {
-                        ops.push(BackwardsOperation::Backwards {
-                            dim: i,
-                            adapt: None,
-                        });
-                    }
-                }
-            }
+        let mut dims = Vec::from(dims);
+        for &dim in decomposition {
+            dims[dim] /= 2;
         }
 
-        let base_size: Vec<_> = dim
+        let mut steps = Vec::from(steps);
+        let mut skipped = vec![0u32; steps.len()];
+        let ops = decomposition
             .iter()
-            .zip(forwards)
-            .map(|(&dim, &f)| dim >> f)
-            .collect();
-
-        let mut expected_size = base_size.clone();
-        let mut curr_size = base_size;
-
-        for op in ops.iter_mut().rev() {
-            match op {
-                BackwardsOperation::Backwards { dim, adapt } => {
-                    if expected_size != curr_size {
-                        let mut range = curr_size.clone();
-                        range[*dim] *= 2;
-
-                        let steps: Vec<_> = expected_size
-                            .iter()
-                            .zip(&curr_size)
-                            .map(|(&ex, &curr)| (ex / curr).ilog2())
-                            .collect();
-                        *adapt = Some((range, steps));
-                    }
-
-                    expected_size[*dim] *= 2;
-                    curr_size[*dim] *= 2;
+            .rev()
+            .map(|&dim| {
+                if steps[dim] == 0 {
+                    skipped[dim] += 1;
+                    return BackwardsOperation::Skip { dim };
                 }
-                BackwardsOperation::Skip { dim } => {
-                    expected_size[*dim] *= 2;
-                }
-            }
-        }
+                dims[dim] *= 2;
+                steps[dim] -= 1;
 
-        (ops, curr_size)
+                let adapt = if skipped.iter().all(|&s| s == 0) {
+                    None
+                } else {
+                    Some((dims.clone(), skipped.clone()))
+                };
+
+                BackwardsOperation::Backwards { dim, adapt }
+            })
+            .collect::<Vec<_>>();
+
+        let ops = ops.into_iter().rev().collect();
+        (ops, dims)
     }
 
     fn dim(&self) -> usize {
@@ -603,4 +592,157 @@ impl BackwardsOperation {
             BackwardsOperation::Skip { dim } => *dim,
         }
     }
+}
+
+pub(crate) fn write_out_block<T>(
+    path: impl AsRef<Path>,
+    block: VolumeBlock<T>,
+    compression: CompressionLevel,
+) where
+    T: Serializable + Clone,
+{
+    let path = path.as_ref();
+    if !path.exists() || !path.is_dir() {
+        panic!("Invalid path {path:?}");
+    }
+
+    let dims = Vec::from(block.dims());
+    let mut max_steps = vec![0u32; dims.len()];
+    let mut decomposition = Vec::new();
+
+    let mut part_idx = 0;
+    let mut window = block.window();
+    while window.dims().iter().any(|&d| d != 1) {
+        let num_dims = window.dims().len();
+        for (dim, max_steps) in max_steps.iter_mut().enumerate().take(num_dims) {
+            if window.dims()[dim] == 1 {
+                continue;
+            }
+
+            *max_steps += 1;
+            decomposition.push(dim);
+
+            let (low, high) = window.split_into(dim);
+            window = low;
+
+            let lanes = high.lanes(0);
+            let mut stream = SerializeStream::new();
+            for lane in lanes {
+                for elem in lane.as_slice().unwrap() {
+                    elem.clone().serialize(&mut stream);
+                }
+            }
+
+            let part_path = path.join(format!("block_part_{part_idx}.bin"));
+            let part_file = std::fs::File::create(part_path).unwrap();
+            stream.write_encode(compression, part_file).unwrap();
+
+            part_idx += 1;
+        }
+    }
+
+    let mut stream = SerializeStream::new();
+    dims.serialize(&mut stream);
+    max_steps.serialize(&mut stream);
+    decomposition.serialize(&mut stream);
+
+    let f = std::fs::File::create(path.join("block_header.bin")).unwrap();
+    stream.write_encode(compression, f).unwrap();
+}
+
+pub(crate) fn load_block<T>(
+    path: impl AsRef<Path>,
+    steps: &[u32],
+    low: T,
+    filter: &(impl Filter<T> + Clone),
+) -> (VolumeBlock<T>, Vec<usize>)
+where
+    T: Deserializable + Zero + Clone + Send,
+{
+    let path = path.as_ref();
+    if !path.exists() || !path.is_dir() {
+        panic!("Invalid path {path:?}");
+    }
+
+    let f = std::fs::File::open(path.join("block_header.bin")).unwrap();
+    let stream = DeserializeStream::new_decode(f).unwrap();
+    let mut stream = stream.stream();
+
+    let dims = Vec::<usize>::deserialize(&mut stream);
+    let max_steps = Vec::<u32>::deserialize(&mut stream);
+    let decomposition = Vec::<usize>::deserialize(&mut stream);
+
+    if steps.len() != dims.len() {
+        panic!("Invalid number of steps {steps:?} for volume of size {dims:?}");
+    }
+
+    if steps.iter().zip(&max_steps).any(|(&s, &max)| s > max) {
+        panic!("Can not load required number of steps {steps:?}, available {max_steps:?}");
+    }
+
+    let reconstructed_dims = steps.iter().map(|&s| 1 << s as usize).collect::<Vec<_>>();
+    let mut block = VolumeBlock::new_fill(&reconstructed_dims, low).unwrap();
+
+    if steps.iter().all(|&s| s == 0) {
+        return (block, vec![]);
+    }
+
+    let mut new_decomp = vec![];
+    let mut steps = Vec::from(steps);
+    let mut skipped = vec![0; steps.len()];
+    let mut block_window = block.window_mut();
+    let mut block_part_dim = vec![1; steps.len()];
+    let mut offsets = vec![1; steps.len()];
+    for (i, dim) in decomposition.into_iter().enumerate().rev() {
+        if steps[dim] == 0 {
+            skipped[dim] += 1;
+            block_part_dim[dim] *= 2;
+            continue;
+        }
+        steps[dim] -= 1;
+
+        let part_path = path.join(format!("block_part_{i}.bin"));
+        let f = std::fs::File::open(part_path).unwrap();
+        let stream = DeserializeStream::new_decode(f).unwrap();
+        let mut stream = stream.stream();
+
+        let elems = block_part_dim.iter().product::<usize>();
+        let mut part = Vec::with_capacity(elems);
+        for _ in 0..elems {
+            part.push(T::deserialize(&mut stream));
+        }
+
+        let mut part = VolumeBlock::new_with_data(&block_part_dim, part).unwrap();
+        let part_window = if skipped.iter().any(|&s| s != 0) {
+            let cfg = WaveletDecompCfg::new(&skipped);
+            let transform = WaveletTransform::new(filter.clone(), false);
+            part = <WaveletTransform<_, _> as OneWayTransform<Forwards, _>>::apply(
+                &transform, part, cfg,
+            );
+
+            let window = part.window();
+            let window_range = window
+                .dims()
+                .iter()
+                .zip(&skipped)
+                .map(|(&d, &s)| d >> s)
+                .collect::<Vec<_>>();
+
+            window.into_custom_range(&window_range)
+        } else {
+            part.window()
+        };
+
+        let mut offset = vec![0; steps.len()];
+        offset[dim] = offsets[dim];
+
+        let mut coeff_window = block_window.custom_window_mut(&offset, part_window.dims());
+        part_window.clone_to(&mut coeff_window);
+
+        offsets[dim] *= 2;
+        block_part_dim[dim] *= 2;
+        new_decomp.insert(0, dim);
+    }
+
+    (block, new_decomp)
 }

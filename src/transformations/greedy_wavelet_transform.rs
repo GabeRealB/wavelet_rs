@@ -10,9 +10,10 @@ use super::{
     Backwards, Forwards, OneWayTransform, ResampleCfg, ResampleIScale, ReversibleTransform,
 };
 use crate::filter::{AverageFilter, Filter};
-use crate::range::for_each_range;
-use crate::stream::{Deserializable, DeserializeStream, Serializable, SerializeStream};
-use crate::volume::{Lane, LaneMut, VolumeBlock, VolumeWindow, VolumeWindowMut};
+use crate::stream::{
+    CompressionLevel, Deserializable, DeserializeStream, Serializable, SerializeStream,
+};
+use crate::volume::{Lane, LaneMut, VolumeBlock, VolumeWindow};
 
 /// Definition of a filter to be used with the greedy wavelet transform.
 pub trait GreedyFilter<Meta, T>: Sync {
@@ -41,6 +42,16 @@ pub trait GreedyFilter<Meta, T>: Sync {
 
     /// Initializes a suitable metadata block from the input data.
     fn compute_metadata(&self, input: VolumeWindow<'_, T>) -> VolumeBlock<Meta>;
+}
+
+/// A [`GreedyFilter`] where the metadata can be derived from only
+/// the data size and the metadata of the previous step.
+pub trait DerivableMetadataFilter<Meta, T>: GreedyFilter<Meta, T> {
+    /// Derives the initial metadata block.
+    fn derive_init(&self, dims: &[usize]) -> VolumeBlock<Meta>;
+
+    /// Derives the metadata of the next step.
+    fn derive_step(&self, input: Lane<'_, Meta>, output: LaneMut<'_, Meta>);
 }
 
 /// Tries to construct a [`KnownGreedyFilter`] from an arbitrary type.
@@ -124,6 +135,28 @@ where
     fn compute_metadata(&self, input: VolumeWindow<'_, T>) -> VolumeBlock<Meta> {
         match self {
             KnownGreedyFilter::Average => GreedyFilter::compute_metadata(&AverageFilter, input),
+        }
+    }
+}
+
+impl<Meta, T> DerivableMetadataFilter<Meta, T> for KnownGreedyFilter
+where
+    KnownGreedyFilter: GreedyFilter<Meta, T>,
+    AverageFilter: DerivableMetadataFilter<Meta, T>,
+{
+    fn derive_init(&self, dims: &[usize]) -> VolumeBlock<Meta> {
+        match self {
+            KnownGreedyFilter::Average => {
+                DerivableMetadataFilter::derive_init(&AverageFilter, dims)
+            }
+        }
+    }
+
+    fn derive_step(&self, input: Lane<'_, Meta>, output: LaneMut<'_, Meta>) {
+        match self {
+            KnownGreedyFilter::Average => {
+                DerivableMetadataFilter::derive_step(&AverageFilter, input, output)
+            }
         }
     }
 }
@@ -299,7 +332,24 @@ where
     }
 
     fn compute_metadata(&self, input: VolumeWindow<'_, T>) -> VolumeBlock<BlockCount> {
-        VolumeBlock::new_fill(input.dims(), BlockCount::new(1, 0)).unwrap()
+        self.derive_init(input.dims())
+    }
+}
+
+impl<T> DerivableMetadataFilter<BlockCount, T> for AverageFilter
+where
+    AverageFilter: GreedyFilter<BlockCount, T>,
+{
+    fn derive_init(&self, dims: &[usize]) -> VolumeBlock<BlockCount> {
+        VolumeBlock::new_fill(dims, BlockCount::new(1, 0)).unwrap()
+    }
+
+    fn derive_step(&self, input: Lane<'_, BlockCount>, mut output: LaneMut<'_, BlockCount>) {
+        for (i, out) in output.into_iter().enumerate() {
+            let left = 2 * i;
+            let right = (2 * i) + 1;
+            *out = BlockCount::new(input[left].count(), input[right].count());
+        }
     }
 }
 
@@ -398,6 +448,7 @@ where
 pub struct GreedyTransformCoefficents<Meta, T> {
     dims: Vec<usize>,
     pub(crate) low: VolumeBlock<T>,
+    pub(crate) meta: VolumeBlock<Meta>,
     levels: Vec<CoeffLevel<Meta, T>>,
 }
 
@@ -405,25 +456,177 @@ pub struct GreedyTransformCoefficents<Meta, T> {
 struct CoeffLevel<Meta, T> {
     dim: usize,
     dims: Vec<usize>,
-    offsets: VolumeBlock<Vec<usize>>,
-    metadata: VolumeBlock<VolumeBlock<Meta>>,
-    coeff: VolumeBlock<Option<VolumeBlock<T>>>,
+    split: Option<usize>,
+    coeff: VolumeBlock<T>,
+    metadata: VolumeBlock<Meta>,
 }
 
 impl<Meta, T> GreedyTransformCoefficents<Meta, T>
 where
-    Meta: Zero + Send + Sync + Clone,
-    T: Zero + Send + Sync + Clone,
+    Meta: Zero + Clone,
+    T: Zero + Clone,
 {
     /// Applies the wavelet transform to the input block.
     pub fn new(input: VolumeBlock<T>, filter: &impl GreedyFilter<Meta, T>) -> Self {
+        let metadata = filter.compute_metadata(input.window());
+        Self::new_with_meta(input, metadata, filter)
+    }
+
+    pub(crate) fn new_with_meta(
+        input: VolumeBlock<T>,
+        metadata: VolumeBlock<Meta>,
+        filter: &impl GreedyFilter<Meta, T>,
+    ) -> Self {
         let steps = input
             .dims()
             .iter()
             .map(|&dim| dim.next_power_of_two().ilog2())
             .collect::<Vec<_>>();
-        let metadata = filter.compute_metadata(input.window());
         Self::apply_forwards(input, metadata, filter, &steps, false)
+    }
+
+    pub(crate) fn merge(
+        self,
+        mut other: Self,
+        dim: usize,
+        filter: &impl GreedyFilter<Meta, T>,
+    ) -> Self {
+        assert!(self
+            .dims
+            .iter()
+            .zip(&other.dims)
+            .enumerate()
+            .all(|(i, (&l, &r))| i == dim || l == r));
+        assert!(self.levels.len() >= other.levels.len());
+
+        let mut base_dims = Vec::from(self.low.dims());
+        base_dims[dim] += other.low.dims()[dim];
+
+        fn merge_block<T: Clone + Zero>(
+            dim: usize,
+            dims: &[usize],
+            left: VolumeBlock<T>,
+            right: VolumeBlock<T>,
+        ) -> VolumeBlock<T> {
+            let mut merged = VolumeBlock::new_zero(dims).unwrap();
+            let mut window = merged.window_mut();
+
+            let left_window = left.window();
+            let right_window = right.window();
+
+            let mut part = window.custom_window_mut(&vec![0; dims.len()], left_window.dims());
+            left_window.clone_to(&mut part);
+
+            let mut offset = vec![0; dims.len()];
+            offset[dim] = left_window.dims()[dim];
+
+            let mut part = window.custom_window_mut(&offset, right_window.dims());
+            right_window.clone_to(&mut part);
+
+            merged
+        }
+
+        let low = merge_block(dim, &base_dims, self.low, other.low);
+        let meta = merge_block(dim, &base_dims, self.meta, other.meta);
+
+        let dims = self.dims;
+        let mut steps = vec![0; dims.len()];
+        steps[dim] = 1;
+
+        let adapted = Self::apply_forwards(low, meta, filter, &steps, true);
+        let low = adapted.low;
+        let meta = adapted.meta;
+
+        let mut levels = Vec::new();
+        for l_lvl in self.levels {
+            let r_lvl_pos = other.levels.iter().position(|lvl| lvl.dim == l_lvl.dim);
+
+            if let Some(r_lvl_pos) = r_lvl_pos {
+                let r_lvl = other.levels.remove(r_lvl_pos);
+
+                assert!(l_lvl
+                    .dims
+                    .iter()
+                    .zip(&r_lvl.dims)
+                    .enumerate()
+                    .all(|(i, (&l, &r))| i == dim || l == r));
+
+                let mut metadata_dims = Vec::from(l_lvl.metadata.dims());
+                metadata_dims[dim] += r_lvl.metadata.dims()[dim];
+
+                let mut coeff_dims = Vec::from(l_lvl.coeff.dims());
+                coeff_dims[dim] += r_lvl.coeff.dims()[dim];
+
+                let metadata = if metadata_dims
+                    .iter()
+                    .zip(l_lvl.metadata.dims())
+                    .zip(r_lvl.metadata.dims())
+                    .enumerate()
+                    .all(|(i, ((&d, &l), &r))| {
+                        (i == dim && d == l + r) || (i != dim && d == l && d == r)
+                    }) {
+                    merge_block(dim, &metadata_dims, l_lvl.metadata, r_lvl.metadata)
+                } else {
+                    let meta_window = r_lvl.metadata.window();
+                    let r_meta = meta_window.custom_range(l_lvl.metadata.dims()).as_block();
+                    merge_block(dim, &metadata_dims, l_lvl.metadata, r_meta)
+                };
+
+                let coeff = merge_block(dim, &coeff_dims, l_lvl.coeff, r_lvl.coeff);
+
+                let metadata_window = metadata.window();
+                let metadata_part = metadata_window.custom_range(&coeff_dims).as_block();
+                let adapted = Self::apply_forwards(coeff, metadata_part, filter, &steps, true);
+
+                let metadata_part = adapted.meta;
+                let coeff = adapted.low;
+
+                let metadata = if coeff_dims == metadata_dims {
+                    metadata_part
+                } else {
+                    let mut meta = VolumeBlock::new_zero(&l_lvl.dims).unwrap();
+                    let mut meta_window = meta.window_mut();
+                    let metadata_part_window = metadata_part.window();
+
+                    metadata_part_window
+                        .clone_to(&mut meta_window.custom_range_mut(metadata_part_window.dims()));
+
+                    let mut offset = vec![0; metadata_window.dims().len()];
+                    offset[dim] = metadata_window.dims()[dim] - 1;
+
+                    let mut range = Vec::from(meta_window.dims());
+                    range[dim] = 1;
+
+                    let metadata_window = metadata_window.custom_window(&offset, &range);
+
+                    offset[dim] = (metadata_window.dims()[dim] - 1) / 2;
+                    metadata_window.clone_to(&mut meta_window.custom_window_mut(&offset, &range));
+
+                    meta
+                };
+
+                let dim = l_lvl.dim;
+                let dims = l_lvl.dims;
+                let split = l_lvl.split;
+
+                levels.push(CoeffLevel {
+                    dim,
+                    dims,
+                    split,
+                    coeff,
+                    metadata,
+                });
+            } else {
+                levels.push(l_lvl);
+            }
+        }
+
+        Self {
+            dims,
+            low,
+            meta,
+            levels,
+        }
     }
 
     fn apply_forwards(
@@ -440,84 +643,78 @@ where
         let mut coeff = Vec::new();
 
         for step in steps {
-            let windows = power_of_two_windows(data.dims(), Some(step.dim));
-
             let data_window = data.window();
             let metadata_window = metadata.window();
 
-            let (sx, rx) = std::sync::mpsc::sync_channel(windows.len());
-            rayon::scope(|s| {
-                for (i, window) in windows.iter().enumerate() {
-                    let (window_size, window_offset, transformed_window_offset) = &window;
+            let mut aggregated_dims = Vec::from(data.dims());
+            aggregated_dims[step.dim] =
+                (aggregated_dims[step.dim] / 2) + (aggregated_dims[step.dim] % 2);
+            let aggregated_dims = aggregated_dims;
 
-                    let data = data_window.custom_window(window_offset, window_size);
-                    let meta = metadata_window.custom_window(window_offset, window_size);
+            let (split, transform_range) = if data.dims()[step.dim] % 2 == 0 {
+                (None, Vec::from(data.dims()))
+            } else {
+                let mut range = Vec::from(data.dims());
+                range[step.dim] &= !1;
 
-                    let data = data.as_block();
-                    let meta = meta.as_block();
-                    let transformed_window_offset = transformed_window_offset.clone();
-                    let sx = sx.clone();
+                (Some(data.dims()[step.dim] & !1), range)
+            };
 
-                    // Block has reached minimum detail level along the dimension.
-                    if window_size[step.dim] == 1 {
-                        let _ = sx.send((i, transformed_window_offset, data, meta, None));
-                        continue;
-                    }
+            let transform_data = data_window.custom_range(&transform_range);
+            let transform_meta = metadata_window.custom_range(&transform_range);
+            let (low, high, mut meta) = if adapt {
+                adjust_window(filter, transform_data, transform_meta, step.dim)
+            } else {
+                forwards_window(filter, transform_data, transform_meta, step.dim)
+            };
 
-                    s.spawn(move |_| {
-                        let data = data.window();
-                        let meta = meta.window();
-                        let (low, high, meta) = if adapt {
-                            adjust_window(filter, data, meta, step.dim)
-                        } else {
-                            forwards_window(filter, data, meta, step.dim)
-                        };
-                        let _ = sx.send((i, transformed_window_offset, low, meta, Some(high)));
-                    });
-                }
-            });
+            let mut aggreagated_data = VolumeBlock::new_zero(&aggregated_dims).unwrap();
+            let mut aggreagated_meta = VolumeBlock::new_zero(&aggregated_dims).unwrap();
 
-            let mut tmp = rx.try_iter().collect::<Vec<_>>();
-            tmp.sort_by_key(|(i, _, _, _, _)| *i);
+            let mut aggreagated_data_window = aggreagated_data.window_mut();
+            let mut aggreagated_meta_window = aggreagated_meta.window_mut();
 
-            let lvl_dims = Vec::from(data.dims());
-            let mut lvl_offset = Vec::with_capacity(tmp.len());
-            let mut lvl_data = Vec::with_capacity(tmp.len());
-            let mut lvl_meta = Vec::with_capacity(tmp.len());
-            let mut lvl_coeff = Vec::with_capacity(tmp.len());
-            for (_, offset, data, meta, coeff) in tmp {
-                lvl_offset.push(offset);
-                lvl_data.push(data);
-                lvl_meta.push(meta);
-                lvl_coeff.push(coeff);
+            let low_window = low.window();
+            let meta_window = meta.window();
+
+            low_window.clone_to(&mut aggreagated_data_window.custom_range_mut(low_window.dims()));
+            meta_window.clone_to(&mut aggreagated_meta_window.custom_range_mut(meta_window.dims()));
+
+            if let Some(split) = split {
+                let mut offset = vec![0; transform_range.len()];
+                offset[step.dim] = split;
+
+                let mut range = Vec::from(data.dims());
+                range[step.dim] = 1;
+
+                let data_window_part = data_window.custom_window(&offset, &range);
+                let metadata_window_part = metadata_window.custom_window(&offset, &range);
+
+                offset[step.dim] = split / 2;
+                data_window_part
+                    .clone_to(&mut aggreagated_data_window.custom_window_mut(&offset, &range));
+                metadata_window_part
+                    .clone_to(&mut aggreagated_meta_window.custom_window_mut(&offset, &range));
+
+                meta = aggreagated_meta_window.as_block();
             }
-
-            let num_windows = data_window
-                .dims()
-                .iter()
-                .map(|&dim| num_power_of_two_decompositions(dim))
-                .collect::<Vec<_>>();
-
-            let lvl_offset = VolumeBlock::new_with_data(&num_windows, lvl_offset).unwrap();
-            let lvl_data = VolumeBlock::new_with_data(&num_windows, lvl_data).unwrap();
-            let lvl_meta = VolumeBlock::new_with_data(&num_windows, lvl_meta).unwrap();
-            let lvl_coeff = VolumeBlock::new_with_data(&num_windows, lvl_coeff).unwrap();
-
-            data = unroll_block(&lvl_data);
-            metadata = unroll_block(&lvl_meta);
 
             coeff.push(CoeffLevel {
                 dim: step.dim,
-                dims: lvl_dims,
-                offsets: lvl_offset,
-                metadata: lvl_meta,
-                coeff: lvl_coeff,
+                dims: data.dims().into(),
+                split,
+                coeff: high,
+                metadata: meta,
             });
+
+            data = aggreagated_data;
+            metadata = aggreagated_meta;
         }
 
         Self {
             dims,
             low: data,
+            meta: metadata,
             levels: coeff,
         }
     }
@@ -529,21 +726,28 @@ where
         steps: &[u32],
         filter: &impl GreedyFilter<Meta, T>,
     ) -> VolumeBlock<T> {
-        if steps.len() != self.dims.len()
-            || steps
-                .iter()
-                .zip(&self.dims)
-                .any(|(steps, dim)| *steps > dim.next_power_of_two().ilog2())
-        {
+        self.reconstruct_with_low(self.low.clone(), steps, filter)
+    }
+
+    pub(crate) fn reconstruct_with_low(
+        &self,
+        low: VolumeBlock<T>,
+        steps: &[u32],
+        filter: &impl GreedyFilter<Meta, T>,
+    ) -> VolumeBlock<T> {
+        assert_eq!(low.dims(), self.low.dims());
+
+        if steps.len() != self.dims.len() {
             panic!(
                 "Invalid number of steps {steps:?} for volume of size {:?}",
                 self.dims
             );
         }
 
-        let mut data = self.low.clone();
+        let mut data = low;
         let mut steps_left = Vec::from(steps);
         let mut steps_skipped = vec![0; steps.len()];
+
         for level in self.levels.iter().rev() {
             if steps_left[level.dim] == 0 {
                 steps_skipped[level.dim] += 1;
@@ -552,135 +756,72 @@ where
 
             steps_left[level.dim] -= 1;
 
-            let offsets = level.offsets.flatten();
-            let metadata = level.metadata.flatten();
-            let coeff = level.coeff.flatten();
-
             let data_window = data.window();
-            let (sx, rx) = std::sync::mpsc::sync_channel(metadata.len());
+            let metadata_window = level.metadata.window();
+            let reconstructed = if steps_skipped.iter().all(|&skipped| skipped == 0) {
+                let data_window_part = data_window.custom_range(level.coeff.dims());
+                let metadata_window = metadata_window.custom_range(level.coeff.dims());
+                let coeff_window = level.coeff.window();
 
-            if steps_skipped.iter().all(|&skipped| skipped == 0) {
-                rayon::scope(|s| {
-                    for (i, ((offset, metadata), coeff)) in
-                        offsets.iter().zip(metadata).zip(coeff).enumerate()
-                    {
-                        let window = data_window
-                            .custom_window(offset, metadata.dims())
-                            .as_block();
-                        if let Some(coeff) = coeff {
-                            let sx = sx.clone();
-                            s.spawn(move |_| {
-                                let window = window.window();
-                                let metadata = metadata.window();
-                                let coeff = coeff.window();
-                                let window =
-                                    backwards_window(filter, window, metadata, coeff, level.dim);
-                                let _ = sx.send((i, window));
-                            });
-                        } else {
-                            let _ = sx.send((i, window));
-                        }
-                    }
-                });
-
-                let mut windows = rx.try_iter().collect::<Vec<_>>();
-                windows.sort_by_key(|(i, _)| *i);
-
-                let data_vec = windows
-                    .into_iter()
-                    .map(|(_, window)| window)
-                    .collect::<Vec<_>>();
-                let data_tmp = VolumeBlock::new_with_data(level.offsets.dims(), data_vec).unwrap();
-                data = unroll_block(&data_tmp);
+                backwards_window(
+                    filter,
+                    data_window_part,
+                    metadata_window,
+                    coeff_window,
+                    level.dim,
+                )
             } else {
-                let window_dims = level
-                    .dims
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &dim)| {
-                        if i == level.dim {
-                            adjustment_block_dim(dim)
-                        } else {
-                            dim
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let coeff_block_dims = window_dims
-                    .iter()
-                    .map(|&dim| num_power_of_two_decompositions(dim))
-                    .collect::<Vec<_>>();
+                let coeff = level.coeff.clone();
+                let metadata = level.metadata.window();
+                let metadata = metadata.custom_range(coeff.dims()).as_block();
 
-                let metadata_window = level.metadata.window();
-                let coeff_vec = coeff.iter().flatten().cloned().collect();
+                let aggreagated =
+                    Self::apply_forwards(coeff, metadata, filter, &steps_skipped, true);
 
-                let coeff_block = unroll_block(
-                    &VolumeBlock::new_with_data(&coeff_block_dims, coeff_vec).unwrap(),
+                let coeff = aggreagated.low;
+                let metadata = aggreagated.meta;
+
+                let data_window_part = data_window.custom_range(coeff.dims());
+                let metadata_window = metadata.window();
+                let coeff_window = coeff.window();
+
+                backwards_window(
+                    filter,
+                    data_window_part,
+                    metadata_window,
+                    coeff_window,
+                    level.dim,
+                )
+            };
+
+            if let Some(split) = level.split {
+                let reconstructed_window = reconstructed.window();
+
+                let mut reconstructed_dims = Vec::from(reconstructed_window.dims());
+                reconstructed_dims[level.dim] = level.dims[level.dim];
+
+                let mut reconstructed_data = VolumeBlock::new_zero(&reconstructed_dims).unwrap();
+                let mut reconstructed_data_window = reconstructed_data.window_mut();
+
+                reconstructed_window.clone_to(
+                    &mut reconstructed_data_window.custom_range_mut(reconstructed_window.dims()),
                 );
 
-                let meta_block = unroll_block(&metadata_window.as_block());
-                let meta_block = meta_block.window();
-                let meta_block = meta_block.custom_range(coeff_block.dims()).as_block();
+                let mut offset = vec![0; reconstructed_data_window.dims().len()];
+                offset[level.dim] = split / 2;
 
-                let adjusted =
-                    Self::apply_forwards(coeff_block, meta_block, filter, &steps_skipped, true);
+                let mut range = Vec::from(reconstructed_data_window.dims());
+                range[level.dim] = 1;
 
-                let adjusted_window_dims = level
-                    .dims
-                    .iter()
-                    .zip(&steps_skipped)
-                    .map(|(&dim, &skipped)| adjust_block_size(dim, skipped))
-                    .collect::<Vec<_>>();
-                let data_dims = adjusted_window_dims
-                    .iter()
-                    .map(|&dim| num_power_of_two_decompositions(dim))
-                    .collect::<Vec<_>>();
+                let data_window = data_window.custom_window(&offset, &range);
 
-                let windows = power_of_two_windows(&adjusted_window_dims, Some(level.dim));
+                offset[level.dim] = split;
+                data_window
+                    .clone_to(&mut reconstructed_data_window.custom_window_mut(&offset, &range));
 
-                let meta_block = unroll_block(&adjusted.levels.last().unwrap().metadata);
-                let coeff_block = adjusted.low;
-
-                let metadata = meta_block.window();
-                let coeff = coeff_block.window();
-
-                rayon::scope(|s| {
-                    for (i, window) in windows.into_iter().enumerate() {
-                        let (mut window_size, _, window_offset) = window;
-                        let passthrough = window_size[level.dim] < 2;
-
-                        if !passthrough {
-                            let sx = sx.clone();
-                            let metadata = metadata.clone();
-                            let coeff = coeff.clone();
-                            let data_window = data_window.clone();
-                            s.spawn(move |_| {
-                                window_size[level.dim] /= 2;
-                                let window =
-                                    data_window.custom_window(&window_offset, &window_size);
-                                let metadata = metadata.custom_window(&window_offset, &window_size);
-                                let coeff = coeff.custom_window(&window_offset, &window_size);
-                                let window =
-                                    backwards_window(filter, window, metadata, coeff, level.dim);
-                                let _ = sx.send((i, window));
-                            });
-                        } else {
-                            let window = data_window
-                                .custom_window(&window_offset, &window_size)
-                                .as_block();
-                            let _ = sx.send((i, window));
-                        }
-                    }
-                });
-
-                let mut windows = rx.try_iter().collect::<Vec<_>>();
-                windows.sort_by_key(|(i, _)| *i);
-
-                let data_vec = windows
-                    .into_iter()
-                    .map(|(_, window)| window)
-                    .collect::<Vec<_>>();
-                let data_tmp = VolumeBlock::new_with_data(&data_dims, data_vec).unwrap();
-                data = unroll_block(&data_tmp);
+                data = reconstructed_data;
+            } else {
+                data = reconstructed;
             }
         }
 
@@ -688,94 +829,136 @@ where
     }
 
     /// Reconstructs the data to the desired detail level
-    /// like [`reconstruct`], but resamples the output to
+    /// like [`reconstruct`](Self::reconstruct), but resamples the output to
     /// have the same size as the original data.
     pub fn reconstruct_extend(
         &self,
         steps: &[u32],
         filter: &impl GreedyFilter<Meta, T>,
     ) -> VolumeBlock<T> {
-        let mut data = self.reconstruct(steps, filter);
-        if data.dims() == self.dims {
+        self.reconstruct_extend_to(steps, &self.dims, filter)
+    }
+
+    pub(crate) fn reconstruct_extend_to(
+        &self,
+        steps: &[u32],
+        dims: &[usize],
+        filter: &impl GreedyFilter<Meta, T>,
+    ) -> VolumeBlock<T> {
+        self.reconstruct_extend_to_with_low(self.low.clone(), steps, dims, filter)
+    }
+
+    pub(crate) fn reconstruct_extend_to_with_low(
+        &self,
+        low: VolumeBlock<T>,
+        steps: &[u32],
+        dims: &[usize],
+        filter: &impl GreedyFilter<Meta, T>,
+    ) -> VolumeBlock<T> {
+        let mut data = self.reconstruct_with_low(low, steps, filter);
+        if data.dims() == dims {
             return data;
         }
 
-        let mut skipped_steps = steps
+        let mut skipped_steps = data
+            .dims()
             .iter()
-            .zip(&self.dims)
-            .map(|(&st, &dim)| dim.next_power_of_two().ilog2() - st)
+            .zip(dims)
+            .map(|(&data_dim, &dim)| {
+                let st = data_dim.next_power_of_two().ilog2();
+                let dim_steps = dim.next_power_of_two().ilog2();
+                if dim_steps <= st {
+                    0
+                } else {
+                    dim_steps - st
+                }
+            })
             .collect::<Vec<_>>();
 
-        for i in 0..self.dims.len() {
+        for i in 0..dims.len() {
             while skipped_steps[i] != 0 {
                 skipped_steps[i] -= 1;
 
-                let adjusted_window_dims = self
-                    .dims
-                    .iter()
-                    .zip(&skipped_steps)
-                    .map(|(&dim, &skipped)| adjust_block_size(dim, skipped))
-                    .collect::<Vec<_>>();
-                let data_dims = adjusted_window_dims
-                    .iter()
-                    .map(|&dim| num_power_of_two_decompositions(dim))
-                    .collect::<Vec<_>>();
+                let mut extended_dims = Vec::from(data.dims());
+                extended_dims[i] = adjust_block_size(dims[i], skipped_steps[i]);
 
                 let data_window = data.window();
+                if extended_dims[i] % 2 == 0 {
+                    let extended_range = extended_dims[i];
+                    extended_dims[i] = extended_range.next_multiple_of(data_window.dims()[i]);
 
-                let windows = power_of_two_windows(&adjusted_window_dims, Some(i));
-                let (sx, rx) = std::sync::mpsc::sync_channel(windows.len());
+                    let extended = ResampleIScale
+                        .forwards(data_window.as_block(), ResampleCfg::new(&extended_dims));
+                    let extended_window = extended.window();
 
-                rayon::scope(|s| {
-                    for (j, window) in windows.into_iter().enumerate() {
-                        let (mut window_size, _, window_offset) = window;
-                        let passthrough = window_size[i] < 2;
+                    extended_dims[i] = extended_range;
+                    data = extended_window.into_custom_range(&extended_dims).as_block();
 
-                        if !passthrough {
-                            let sx = sx.clone();
-                            let data_window = data_window.clone();
-                            s.spawn(move |_| {
-                                let dst_size = window_size.clone();
-                                let cfg = ResampleCfg::new(&dst_size);
-                                window_size[i] /= 2;
-                                let window =
-                                    data_window.custom_window(&window_offset, &window_size);
+                    /* data = ResampleIScale
+                    .forwards(data_window.as_block(), ResampleCfg::new(&extended_dims)); */
+                } else {
+                    let mut extend_to_dims = extended_dims.clone();
+                    let extended_range = extend_to_dims[i] - 1;
+                    extend_to_dims[i] = extended_range.next_multiple_of(data_window.dims()[i] - 1);
 
-                                let scaled = ResampleIScale.forwards(window.as_block(), cfg);
-                                let _ = sx.send((j, scaled));
-                            });
-                        } else {
-                            let window = data_window
-                                .custom_window(&window_offset, &window_size)
-                                .as_block();
-                            let _ = sx.send((j, window));
-                        }
-                    }
-                });
+                    let mut extend_range = Vec::from(data_window.dims());
+                    extend_range[i] -= 1;
 
-                let mut windows = rx.try_iter().collect::<Vec<_>>();
-                windows.sort_by_key(|(i, _)| *i);
+                    let data_window_part = data_window.custom_range(&extend_range);
+                    let extended_part = ResampleIScale.forwards(
+                        data_window_part.as_block(),
+                        ResampleCfg::new(&extend_to_dims),
+                    );
+                    let extended_part_window = extended_part.window();
 
-                let data_vec = windows
-                    .into_iter()
-                    .map(|(_, window)| window)
-                    .collect::<Vec<_>>();
-                let data_tmp = VolumeBlock::new_with_data(&data_dims, data_vec).unwrap();
-                data = unroll_block(&data_tmp);
+                    extend_to_dims[i] = extended_range;
+                    let extended_part_window =
+                        extended_part_window.into_custom_range(&extend_to_dims);
+
+                    let mut extended = VolumeBlock::new_zero(&extended_dims).unwrap();
+                    let mut extended_window = extended.window_mut();
+
+                    extended_part_window
+                        .clone_to(&mut extended_window.custom_range_mut(&extend_to_dims));
+
+                    let mut offset = vec![0; extended_window.dims().len()];
+                    offset[i] = extend_to_dims[i] / 2;
+
+                    let mut range = Vec::from(extended_window.dims());
+                    range[i] = 1;
+
+                    let data_window = data_window.custom_window(&offset, &range);
+
+                    offset[i] = extend_to_dims[i];
+                    data_window.clone_to(&mut extended_window.custom_window_mut(&offset, &range));
+
+                    data = extended;
+                }
             }
         }
 
         data
     }
+
+    pub(crate) fn combined_blocks(&self, steps: &[u32]) -> Vec<usize> {
+        let mut combined = self.dims.clone();
+
+        for (&step, combined) in steps.iter().zip(&mut combined) {
+            for _ in 0..step {
+                *combined = (*combined / 2) + (*combined % 2);
+            }
+        }
+
+        combined
+    }
 }
 
-impl<Meta, T> GreedyTransformCoefficents<Meta, T>
-where
-    Meta: Serializable + Deserializable,
-    T: Serializable + Deserializable,
-{
+impl<Meta, T> GreedyTransformCoefficents<Meta, T> {
     /// Writes out the coefficients to the filesystem.
-    pub fn write_out(self, path: impl AsRef<Path>) {
+    pub fn write_out_partial(self, path: impl AsRef<Path>, compression: CompressionLevel)
+    where
+        T: Serializable,
+    {
         let path = path.as_ref();
         if !path.exists() || !path.is_dir() {
             panic!("Invalid path {path:?}");
@@ -793,23 +976,37 @@ where
 
         let header_path = path.join("block_header.bin");
         let header_file = File::create(header_path).unwrap();
-        stream.write_encode(header_file).unwrap();
+        stream.write_encode(compression, header_file).unwrap();
 
         for (i, level) in self.levels.into_iter().enumerate() {
-            let mut stream = SerializeStream::new();
-            level.serialize(&mut stream);
-
             let output_path = path.join(format!("block_part_{i}.bin"));
-            let output_file = File::create(output_path).unwrap();
-            stream.write_encode(output_file).unwrap();
+            level.write_out_partial(output_path, compression);
         }
     }
 
     /// Reads in a subset of the data, reconstructible to
     /// the passed detail level, from the filesystem.
-    pub fn read_for_steps(steps: &[u32], path: impl AsRef<Path>) -> Self
+    pub fn read_for_steps(
+        steps: &[u32],
+        path: impl AsRef<Path>,
+        filter: &impl DerivableMetadataFilter<Meta, T>,
+    ) -> Self
     where
-        Meta: Default,
+        T: Zero + Deserializable + Clone,
+        Meta: Zero + Clone,
+    {
+        Self::read_for_steps_impl(steps, None, path, filter).0
+    }
+
+    pub(crate) fn read_for_steps_impl(
+        steps: &[u32],
+        non_greedy_size: Option<&[usize]>,
+        path: impl AsRef<Path>,
+        filter: &impl DerivableMetadataFilter<Meta, T>,
+    ) -> (Self, Vec<u32>)
+    where
+        T: Zero + Deserializable + Clone,
+        Meta: Zero + Clone,
     {
         let path = path.as_ref();
         if !path.exists() || !path.is_dir() {
@@ -821,54 +1018,306 @@ where
         let mut stream = stream.stream();
 
         let dims = Vec::<usize>::deserialize(&mut stream);
-        let low = Deserializable::deserialize(&mut stream);
+        let low = VolumeBlock::<T>::deserialize(&mut stream);
         let level_dims = Vec::<usize>::deserialize(&mut stream);
 
-        if steps.len() != dims.len()
-            || steps
-                .iter()
-                .zip(&dims)
-                .any(|(steps, dim)| *steps > dim.next_power_of_two().ilog2())
-        {
+        if steps.len() != dims.len() {
             panic!("Invalid number of steps {steps:?} for volume of size {dims:?}");
         }
 
-        let num_levels = dims
+        let max_steps = dims
             .iter()
-            .map(|d| d.next_power_of_two().ilog2())
-            .fold(0, |acc, x| acc + (x as usize));
-
-        let mut levels = (0..num_levels)
-            .zip(level_dims)
-            .map(|(_, dim)| CoeffLevel {
-                dim,
-                dims: vec![],
-                offsets: VolumeBlock::new_default(&[1]).unwrap(),
-                metadata: VolumeBlock::new_with_data(
-                    &[1],
-                    vec![VolumeBlock::new_with_data(&[1], vec![Default::default()]).unwrap()],
-                )
-                .unwrap(),
-                coeff: VolumeBlock::new_with_data(&[1], vec![None]).unwrap(),
-            })
+            .map(|&d| d.next_power_of_two().ilog2())
             .collect::<Vec<_>>();
 
-        let mut steps_left = Vec::from(steps);
-        for (i, level) in levels.iter_mut().enumerate().rev() {
-            if steps_left[level.dim] == 0 {
-                continue;
-            } else {
-                steps_left[level.dim] -= 1;
-            }
+        let steps = if let Some(non_greedy) = non_greedy_size {
+            let steps_diff = max_steps
+                .iter()
+                .zip(non_greedy)
+                .map(|(max, dims)| dims.ilog2() - max);
 
-            let f = std::fs::File::open(path.join(format!("block_part_{i}.bin"))).unwrap();
-            let stream = DeserializeStream::new_decode(f).unwrap();
-            let mut stream = stream.stream();
+            steps
+                .iter()
+                .zip(steps_diff)
+                .map(|(&s, diff)| if s < diff { 0 } else { s - diff })
+                .collect::<Vec<_>>()
+        } else {
+            steps
+                .iter()
+                .zip(&max_steps)
+                .map(|(&s, &max)| s.min(max))
+                .collect::<Vec<_>>()
+        };
 
-            *level = Deserializable::deserialize(&mut stream);
+        let (level_metas, meta) = Self::derive_metadata(&dims, &level_dims, filter);
+        if steps.iter().all(|&s| s == 0) {
+            return (
+                Self {
+                    dims: low.dims().into(),
+                    low,
+                    meta,
+                    levels: vec![],
+                },
+                steps,
+            );
         }
 
-        Self { dims, low, levels }
+        let mut levels = Vec::new();
+        let mut steps_skipped = max_steps
+            .into_iter()
+            .zip(&steps)
+            .map(|(max, &s)| max - s)
+            .collect::<Vec<_>>();
+        for (i, (dim, meta)) in level_dims.into_iter().zip(level_metas).enumerate() {
+            if steps_skipped[dim] > 0 {
+                steps_skipped[dim] -= 1;
+                continue;
+            }
+
+            let block_path = path.join(format!("block_part_{i}.bin"));
+            let level = CoeffLevel::read_in_adapt(block_path, meta, &steps_skipped, filter);
+            levels.push(level);
+        }
+
+        let dims = levels.first().unwrap().dims.clone();
+        (
+            Self {
+                dims,
+                low,
+                meta,
+                levels,
+            },
+            steps,
+        )
+    }
+
+    /// Transforms a [`VolumeBlock`] containing the traditional wavelet
+    /// transform into the greedy format.
+    pub fn new_from_volume(
+        volume: VolumeBlock<T>,
+        decomposition: &[usize],
+        filter: &impl DerivableMetadataFilter<Meta, T>,
+    ) -> Self
+    where
+        T: Clone,
+        Meta: Zero + Clone,
+    {
+        let dims = Vec::from(volume.dims());
+        Self::new_from_volume_custom_size(volume, &dims, decomposition, filter)
+    }
+
+    pub(crate) fn new_from_volume_custom_size(
+        volume: VolumeBlock<T>,
+        dims: &[usize],
+        decomposition: &[usize],
+        filter: &impl DerivableMetadataFilter<Meta, T>,
+    ) -> Self
+    where
+        T: Clone,
+        Meta: Zero + Clone,
+    {
+        assert!(volume.dims().iter().all(|d| d.is_power_of_two()));
+        assert!(dims.iter().all(|d| d.is_power_of_two()));
+        assert!(volume.dims().iter().zip(dims).all(|(v, c)| v <= c));
+        assert_eq!(volume.dims().len(), dims.len());
+
+        let mut metadata = filter.derive_init(dims);
+
+        fn adapt_metadata<Meta, T>(
+            meta: VolumeWindow<'_, Meta>,
+            filter: &impl DerivableMetadataFilter<Meta, T>,
+            dim: usize,
+        ) -> VolumeBlock<Meta>
+        where
+            Meta: Zero + Clone,
+        {
+            let mut dims = Vec::from(meta.dims());
+            dims[dim] /= 2;
+
+            let mut adapted = VolumeBlock::new_zero(&dims).unwrap();
+            let mut adapted_window = adapted.window_mut();
+
+            let meta_lanes = meta.lanes(dim);
+            let adapted_lanes = adapted_window.lanes_mut(dim);
+
+            for (meta, adapted) in meta_lanes.zip(adapted_lanes) {
+                filter.derive_step(meta, adapted);
+            }
+
+            adapted
+        }
+
+        let adapt_steps = volume
+            .dims()
+            .iter()
+            .zip(dims)
+            .map(|(&v, &d)| d.ilog2() - v.ilog2());
+        for (i, steps) in adapt_steps.enumerate() {
+            for _ in 0..steps {
+                let metadata_window = metadata.window();
+                metadata = adapt_metadata(metadata_window, filter, i);
+            }
+        }
+
+        let dims = Vec::from(volume.dims());
+        let low = VolumeBlock::new_fill(&vec![1; dims.len()], volume[0].clone()).unwrap();
+        let mut levels = Vec::new();
+
+        let mut volume_window = volume.window();
+        for &dim in decomposition {
+            let dims = Vec::from(volume_window.dims());
+            let (left, right) = volume_window.split_into(dim);
+
+            let metadata_window = metadata.window();
+            let meta = adapt_metadata(metadata_window, filter, dim);
+
+            levels.push(CoeffLevel {
+                dim,
+                dims: dims.clone(),
+                split: None,
+                coeff: right.as_block(),
+                metadata: meta.clone(),
+            });
+
+            volume_window = left;
+            metadata = meta;
+        }
+
+        Self {
+            dims,
+            low,
+            meta: metadata,
+            levels,
+        }
+    }
+
+    fn derive_metadata(
+        dims: &[usize],
+        steps: &[usize],
+        filter: &impl DerivableMetadataFilter<Meta, T>,
+    ) -> (Vec<VolumeBlock<Meta>>, VolumeBlock<Meta>)
+    where
+        Meta: Zero + Clone,
+    {
+        let mut metadata = filter.derive_init(dims);
+        let mut level_meta = vec![];
+
+        for &step in steps {
+            let metadata_window = metadata.window();
+
+            let mut aggregated_dims = Vec::from(metadata_window.dims());
+            aggregated_dims[step] = (aggregated_dims[step] / 2) + (aggregated_dims[step] % 2);
+            let aggregated_dims = aggregated_dims;
+
+            let mut aggregation_range = Vec::from(metadata_window.dims());
+            aggregation_range[step] /= 2;
+
+            let (split, transform_range) = if metadata_window.dims()[step] % 2 == 0 {
+                (None, Vec::from(metadata_window.dims()))
+            } else {
+                let mut range = Vec::from(metadata_window.dims());
+                range[step] -= 1;
+
+                (Some(metadata_window.dims()[step] - 1), range)
+            };
+            let transform_meta = metadata_window.custom_range(&transform_range);
+
+            let mut aggreagated_meta = VolumeBlock::new_zero(&aggregated_dims).unwrap();
+            let mut aggreagated_meta_window = aggreagated_meta.window_mut();
+            let mut aggreagated_meta_window_part =
+                aggreagated_meta_window.custom_range_mut(&aggregation_range);
+
+            let meta_lanes = transform_meta.lanes(step);
+            let aggregated_meta_lanes = aggreagated_meta_window_part.lanes_mut(step);
+            for (meta, aggregated) in meta_lanes.zip(aggregated_meta_lanes) {
+                filter.derive_step(meta, aggregated);
+            }
+
+            if let Some(split) = split {
+                let mut offset = vec![0; transform_range.len()];
+                offset[step] = split;
+
+                let mut range = Vec::from(metadata.dims());
+                range[step] = 1;
+
+                let metadata_window_part = metadata_window.custom_window(&offset, &range);
+
+                offset[step] = split / 2;
+                metadata_window_part
+                    .clone_to(&mut aggreagated_meta_window.custom_window_mut(&offset, &range));
+            }
+
+            metadata = aggreagated_meta.clone();
+            level_meta.push(aggreagated_meta);
+        }
+
+        (level_meta, metadata)
+    }
+}
+
+impl<Meta, T> CoeffLevel<Meta, T> {
+    fn write_out_partial(self, path: impl AsRef<Path>, compression: CompressionLevel)
+    where
+        T: Serializable,
+    {
+        let mut stream = SerializeStream::new();
+        self.dim.serialize(&mut stream);
+        self.dims.serialize(&mut stream);
+        self.split.serialize(&mut stream);
+        self.coeff.serialize(&mut stream);
+
+        let output_file = File::create(path).unwrap();
+        stream.write_encode(compression, output_file).unwrap();
+    }
+
+    fn read_in_adapt(
+        path: impl AsRef<Path>,
+        meta: VolumeBlock<Meta>,
+        skipped: &[u32],
+        filter: &impl GreedyFilter<Meta, T>,
+    ) -> Self
+    where
+        T: Zero + Deserializable + Clone,
+        Meta: Zero + Clone,
+    {
+        let f = std::fs::File::open(path).unwrap();
+        let stream = DeserializeStream::new_decode(f).unwrap();
+        let mut stream = stream.stream();
+
+        let dim = Deserializable::deserialize(&mut stream);
+        let dims = Deserializable::deserialize(&mut stream);
+        let split = Deserializable::deserialize(&mut stream);
+        let coeff = Deserializable::deserialize(&mut stream);
+
+        if skipped.iter().all(|&s| s == 0) {
+            return Self {
+                dim,
+                dims,
+                split,
+                coeff,
+                metadata: meta,
+            };
+        }
+
+        let meta_window = meta.window();
+        let meta = meta_window.custom_range(coeff.dims()).as_block();
+        let adapted =
+            GreedyTransformCoefficents::apply_forwards(coeff, meta, filter, skipped, true);
+
+        let coeff = adapted.low;
+        let meta = adapted.meta;
+
+        let mut adapted_dims = Vec::from(coeff.dims());
+        adapted_dims[dim] = dims[dim];
+        let dims = adapted_dims;
+
+        Self {
+            dim,
+            dims,
+            split,
+            coeff,
+            metadata: meta,
+        }
     }
 }
 
@@ -880,6 +1329,7 @@ where
     fn serialize(self, stream: &mut SerializeStream) {
         self.dims.serialize(stream);
         self.low.serialize(stream);
+        self.meta.serialize(stream);
         self.levels.serialize(stream);
     }
 }
@@ -892,9 +1342,15 @@ where
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let dims = Deserializable::deserialize(stream);
         let low = Deserializable::deserialize(stream);
+        let meta = Deserializable::deserialize(stream);
         let levels = Deserializable::deserialize(stream);
 
-        Self { dims, low, levels }
+        Self {
+            dims,
+            low,
+            meta,
+            levels,
+        }
     }
 }
 
@@ -906,9 +1362,9 @@ where
     fn serialize(self, stream: &mut crate::stream::SerializeStream) {
         self.dim.serialize(stream);
         self.dims.serialize(stream);
-        self.offsets.serialize(stream);
-        self.metadata.serialize(stream);
+        self.split.serialize(stream);
         self.coeff.serialize(stream);
+        self.metadata.serialize(stream);
     }
 }
 
@@ -920,16 +1376,16 @@ where
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         let dim = Deserializable::deserialize(stream);
         let dims = Deserializable::deserialize(stream);
-        let offsets = Deserializable::deserialize(stream);
-        let metadata = Deserializable::deserialize(stream);
+        let split = Deserializable::deserialize(stream);
         let coeff = Deserializable::deserialize(stream);
+        let metadata = Deserializable::deserialize(stream);
 
         Self {
             dim,
             dims,
-            offsets,
-            metadata,
+            split,
             coeff,
+            metadata,
         }
     }
 }
@@ -1067,179 +1523,33 @@ where
     output_size[dim] *= 2;
 
     let mut output = VolumeBlock::new_zero(&output_size).unwrap();
-    let output_window = output.window_mut();
+    let mut output_window = output.window_mut();
 
-    let apply = |data: VolumeWindow<'_, T>,
-                 coeff: VolumeWindow<'_, T>,
-                 meta: VolumeWindow<'_, Meta>,
-                 low: &mut [T],
-                 high: &mut [T],
-                 meta_scratch: &mut [Meta],
-                 mut output: VolumeWindowMut<'_, T>| {
-        let data_lanes = data.lanes(dim);
-        let coeff_lanes = coeff.lanes(dim);
-        let meta_lanes = meta.lanes(dim);
+    let data_lanes = data.lanes(dim);
+    let coeff_lanes = coeff.lanes(dim);
+    let meta_lanes = meta.lanes(dim);
 
-        let output_lanes = output.lanes_mut(dim);
+    let output_lanes = output_window.lanes_mut(dim);
 
-        for (((data, coeff), meta), mut output) in data_lanes
-            .zip(coeff_lanes)
-            .zip(meta_lanes)
-            .zip(output_lanes)
-        {
-            for (src, dst) in data.iter().zip(low.iter_mut()) {
-                *dst = src.clone();
-            }
-            for (src, dst) in coeff.iter().zip(high.iter_mut()) {
-                *dst = src.clone();
-            }
-            for (src, dst) in meta.iter().zip(meta_scratch.iter_mut()) {
-                *dst = src.clone();
-            }
-
-            f.backwards(&mut output, low, high, meta_scratch);
+    for (((data, coeff), meta), mut output) in data_lanes
+        .zip(coeff_lanes)
+        .zip(meta_lanes)
+        .zip(output_lanes)
+    {
+        for (src, dst) in data.iter().zip(data_low.iter_mut()) {
+            *dst = src.clone();
         }
-    };
+        for (src, dst) in coeff.iter().zip(data_high.iter_mut()) {
+            *dst = src.clone();
+        }
+        for (src, dst) in meta.iter().zip(meta_scratch.iter_mut()) {
+            *dst = src.clone();
+        }
 
-    // if data.dims() != coeff.dims() {
-    //     let mut meta = meta.as_block();
-    //     let mut coeff = coeff.as_block();
-
-    //     let skipped = data
-    //         .dims()
-    //         .iter()
-    //         .zip(coeff.dims())
-    //         .map(|(&data, &coeff)| (coeff / data).ilog2())
-    //         .collect::<Vec<_>>();
-    //     for (dim, skipped) in skipped.into_iter().enumerate() {
-    //         for _ in 0..skipped {
-    //             let (low, _, meta_) = adjust_window(f, coeff.window(), meta.window(), dim);
-    //             meta = meta_;
-    //             coeff = low;
-    //         }
-    //     }
-
-    //     apply(
-    //         data,
-    //         coeff.window(),
-    //         meta.window(),
-    //         data_low,
-    //         data_high,
-    //         &mut meta_scratch,
-    //         output_window,
-    //     );
-    // } else {
-    //     apply(
-    //         data,
-    //         coeff,
-    //         meta,
-    //         data_low,
-    //         data_high,
-    //         &mut meta_scratch,
-    //         output_window,
-    //     );
-    // }
-
-    apply(
-        data,
-        coeff,
-        meta,
-        data_low,
-        data_high,
-        &mut meta_scratch,
-        output_window,
-    );
+        f.backwards(&mut output, data_low, data_high, &meta_scratch);
+    }
 
     output
-}
-
-fn unroll_block<T>(block: &VolumeBlock<VolumeBlock<T>>) -> VolumeBlock<T>
-where
-    T: Zero + Clone,
-{
-    let range = block.dims().iter().map(|&d| 0..d).collect::<Vec<_>>();
-    let mut offsets = VolumeBlock::<Vec<usize>>::new_default(block.dims()).unwrap();
-
-    let last_idx = |idx: &[usize]| {
-        let mut idx = Vec::from(idx);
-
-        for (i, dim_idx) in idx.iter_mut().enumerate().rev() {
-            if *dim_idx > 0 {
-                *dim_idx -= 1;
-                return (idx, i);
-            }
-        }
-
-        (idx, 0)
-    };
-
-    for_each_range(range.iter().cloned(), |idx| {
-        if idx.iter().all(|&i| i == 0) {
-            offsets[idx] = vec![0; offsets.dims().len()];
-            return;
-        }
-
-        let (last_idx, dim) = last_idx(idx);
-        let mut offset = offsets[&*last_idx].clone();
-        offset[dim] += block[&*last_idx].dims()[dim];
-
-        offsets[idx] = offset;
-    });
-
-    let last_offset = offsets.flatten().last().unwrap();
-    let last_block_size = block.flatten().last().unwrap().dims();
-
-    let dims = last_offset
-        .iter()
-        .zip(last_block_size)
-        .map(|(off, size)| off + size)
-        .collect::<Vec<_>>();
-
-    let mut data = VolumeBlock::<T>::new_zero(&dims).unwrap();
-    let mut data_window = data.window_mut();
-
-    for_each_range(range.into_iter(), |idx| {
-        let block = &block[idx];
-        let block_window = block.window();
-
-        let block_offset = &offsets[idx];
-        let block_size = block_window.dims();
-
-        let mut window = data_window.custom_window_mut(block_offset, block_size);
-        block_window.clone_to(&mut window);
-    });
-
-    data
-}
-
-fn num_power_of_two_decompositions(num: usize) -> usize {
-    let mut rest = num;
-    let mut count = 0;
-
-    while rest > 0 {
-        let last_pow2: usize =
-            1 << ((8 * std::mem::size_of::<usize>() - 1) - rest.leading_zeros() as usize);
-
-        rest -= last_pow2;
-        count += 1;
-    }
-
-    count
-}
-
-fn adjustment_block_dim(dim: usize) -> usize {
-    let mut rest = dim & !1;
-    let mut dim = 0;
-
-    while rest > 0 {
-        let last_pow2: usize =
-            1 << ((8 * std::mem::size_of::<usize>() - 1) - rest.leading_zeros() as usize);
-
-        rest -= last_pow2;
-        dim += last_pow2 / 2;
-    }
-
-    dim
 }
 
 fn adjust_block_size(mut size: usize, skipped: u32) -> usize {
@@ -1264,55 +1574,6 @@ fn adjust_block_size(mut size: usize, skipped: u32) -> usize {
     }
 
     size
-}
-
-fn power_of_two_decompositions_and_offsets(
-    num: usize,
-    transform: bool,
-) -> Vec<(usize, usize, usize)> {
-    let mut rest = num;
-    let mut offset = 0;
-    let mut transformed_offset = 0;
-    let mut decomps = Vec::new();
-
-    while rest > 0 {
-        let last_pow2: usize =
-            1 << ((8 * std::mem::size_of::<usize>() - 1) - rest.leading_zeros() as usize);
-
-        decomps.push((last_pow2, offset, transformed_offset));
-        rest -= last_pow2;
-        offset += last_pow2;
-
-        if last_pow2 > 1 && transform {
-            transformed_offset += last_pow2 / 2;
-        } else {
-            transformed_offset += last_pow2;
-        }
-    }
-
-    decomps
-}
-
-fn power_of_two_windows(
-    dims: &[usize],
-    dim: Option<usize>,
-) -> Vec<(Vec<usize>, Vec<usize>, Vec<usize>)> {
-    let decomps = dims
-        .iter()
-        .enumerate()
-        .map(|(i, &d)| power_of_two_decompositions_and_offsets(d, i == dim.unwrap_or(!i)))
-        .collect::<Vec<_>>();
-    let ranges = decomps.iter().map(|dec| 0..dec.len()).collect::<Vec<_>>();
-
-    let mut windows = Vec::new();
-    for_each_range(ranges.into_iter(), |idx| {
-        let size = idx.iter().zip(&decomps).map(|(&i, dec)| dec[i].0).collect();
-        let offset = idx.iter().zip(&decomps).map(|(&i, dec)| dec[i].1).collect();
-        let transformed_offset = idx.iter().zip(&decomps).map(|(&i, dec)| dec[i].2).collect();
-        windows.push((size, offset, transformed_offset))
-    });
-
-    windows
 }
 
 #[cfg(test)]
