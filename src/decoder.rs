@@ -718,7 +718,6 @@ mod test {
     }
 
     #[test]
-    #[ignore]
     fn decode_sample() {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test/decode_sample/");

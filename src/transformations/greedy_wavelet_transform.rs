@@ -726,7 +726,7 @@ where
         steps: &[u32],
         filter: &impl GreedyFilter<Meta, T>,
     ) -> VolumeBlock<T> {
-        Self::reconstruct_with_low(&self, self.low.clone(), steps, filter)
+        self.reconstruct_with_low(self.low.clone(), steps, filter)
     }
 
     pub(crate) fn reconstruct_with_low(
@@ -845,7 +845,7 @@ where
         dims: &[usize],
         filter: &impl GreedyFilter<Meta, T>,
     ) -> VolumeBlock<T> {
-        Self::reconstruct_extend_to_with_low(&self, self.low.clone(), steps, dims, filter)
+        self.reconstruct_extend_to_with_low(self.low.clone(), steps, dims, filter)
     }
 
     pub(crate) fn reconstruct_extend_to_with_low(
@@ -1546,7 +1546,7 @@ where
             *dst = src.clone();
         }
 
-        f.backwards(&mut output, data_low, data_high, &mut meta_scratch);
+        f.backwards(&mut output, data_low, data_high, &meta_scratch);
     }
 
     output

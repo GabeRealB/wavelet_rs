@@ -57,14 +57,14 @@ impl SerializeStream {
             CompressionLevel::Default => 0,
             CompressionLevel::Custom(lvl) => lvl,
             CompressionLevel::Off => {
-                x.write(&NO_COMPRESSION_MAGIC.to_le_bytes())?;
+                x.write_all(&NO_COMPRESSION_MAGIC.to_le_bytes())?;
                 let mut bytes: &[u8] = &self.bytes;
                 std::io::copy(&mut bytes, &mut x)?;
                 return Ok(());
             }
         };
 
-        x.write(&ZSTD_COMPRESSION_MAGIC.to_le_bytes())?;
+        x.write_all(&ZSTD_COMPRESSION_MAGIC.to_le_bytes())?;
         zstd::stream::copy_encode(&*self.bytes, x, level)
     }
 }
@@ -94,15 +94,15 @@ impl DeserializeStream {
     /// Constructs a new stream by decompressing the contents of `x`.
     pub fn new_decode(mut x: impl Read) -> std::io::Result<Self> {
         let mut magic = [0u8; 1];
-        x.read(&mut magic)?;
+        x.read_exact(&mut magic)?;
 
         let mut bytes = Vec::new();
         match magic[0] {
             NO_COMPRESSION_MAGIC => {
-                let _ = std::io::copy(&mut x, &mut bytes)?;
+                std::io::copy(&mut x, &mut bytes)?;
             }
             ZSTD_COMPRESSION_MAGIC => {
-                let _ = zstd::stream::copy_decode(x, &mut bytes)?;
+                zstd::stream::copy_decode(x, &mut bytes)?;
             }
             _ => panic!("Unknown format!"),
         }

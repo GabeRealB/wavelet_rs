@@ -369,41 +369,6 @@ where
                     .unwrap();
 
                 write_out_block(block_dir, block_decomp, compression);
-                /* // Delete directory, if it would be empty.
-                if block_decomp.dims().iter().all(|&d| d == 1) {
-                    std::fs::remove_dir(&block_dir).unwrap();
-                    return;
-                }
-
-                // Serialize the block by level of detail.
-                let mut counter = 0;
-                let mut block_decomp_window = block_decomp.window();
-                while block_decomp_window.dims().iter().any(|&d| d != 1) {
-                    let num_dims = block_decomp_window.dims().len();
-
-                    for dim in 0..num_dims {
-                        if block_decomp_window.dims()[dim] == 1 {
-                            continue;
-                        }
-
-                        let (low, high) = block_decomp_window.split_into(dim);
-                        block_decomp_window = low;
-
-                        let lanes = high.lanes(0);
-                        let mut stream = SerializeStream::new();
-                        for lane in lanes {
-                            for elem in lane.as_slice().unwrap() {
-                                elem.clone().serialize(&mut stream);
-                            }
-                        }
-
-                        let out_path = block_dir.join(format!("block_part_{counter}.bin"));
-                        let out_file = File::create(out_path).unwrap();
-                        stream.write_encode(compression, out_file).unwrap();
-
-                        counter += 1;
-                    }
-                } */
             } else {
                 let greedy_filter = greedy_filter.unwrap();
                 let coeff = GreedyTransformCoefficents::new(block, &greedy_filter);

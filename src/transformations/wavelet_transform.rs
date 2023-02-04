@@ -247,7 +247,7 @@ where
 
         let mut scratch = vec![T::zero(); *input.dims().iter().max().unwrap()];
         let (ops, output_size) =
-            BackwardsOperation::new(cfg.steps, &*cfg.decomposition, input.dims());
+            BackwardsOperation::new(cfg.steps, &cfg.decomposition, input.dims());
         let input_window = input.window_mut();
 
         self.back_(input_window, &mut scratch, &ops);
@@ -614,12 +614,12 @@ pub(crate) fn write_out_block<T>(
     let mut window = block.window();
     while window.dims().iter().any(|&d| d != 1) {
         let num_dims = window.dims().len();
-        for dim in 0..num_dims {
+        for (dim, max_steps) in max_steps.iter_mut().enumerate().take(num_dims) {
             if window.dims()[dim] == 1 {
                 continue;
             }
 
-            max_steps[dim] += 1;
+            *max_steps += 1;
             decomposition.push(dim);
 
             let (low, high) = window.split_into(dim);
