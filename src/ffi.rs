@@ -8,13 +8,15 @@ use std::{
     ops::{Deref, DerefMut, Range},
 };
 
+use num_traits::Zero;
 use paste::paste;
 
 use crate::{
     decoder::VolumeWaveletDecoder,
-    encoder::VolumeWaveletEncoder,
-    filter::{AverageFilter, HaarWavelet},
+    encoder::{UnknownData, UnknownFilter, UnknownMeta, VolumeWaveletEncoder},
+    filter::AverageFilter,
     stream::{CompressionLevel, Deserializable, Serializable},
+    transformations::{BlockCount, DerivableMetadataFilter},
 };
 
 #[cfg(feature = "ffi_vec")]
@@ -646,6 +648,198 @@ impl<'a, T> Drop for BlockWriterFetcherBuilder<'a, T> {
     }
 }
 
+macro_rules! decoder_meta {
+    (def) => {
+        decoder_meta! { def_ u8 }
+        decoder_meta! { def_ u16 }
+        decoder_meta! { def_ u32 }
+        decoder_meta! { def_ u64 }
+        decoder_meta! { def_ i8 }
+        decoder_meta! { def_ i16 }
+        decoder_meta! { def_ i32 }
+        decoder_meta! { def_ i64 }
+        decoder_meta! { def_ f32 }
+        decoder_meta! { def_ f64 }
+        decoder_meta! { def_ CString }
+    };
+
+    (imp) => {
+        decoder_meta! { imp_ u8 }
+        decoder_meta! { imp_ u16 }
+        decoder_meta! { imp_ u32 }
+        decoder_meta! { imp_ u64 }
+        decoder_meta! { imp_ i8 }
+        decoder_meta! { imp_ i16 }
+        decoder_meta! { imp_ i32 }
+        decoder_meta! { imp_ i64 }
+        decoder_meta! { imp_ f32 }
+        decoder_meta! { imp_ f64 }
+        decoder_meta! { imp_ CString }
+    };
+
+    (def_ $U:ty) => {
+        decoder_meta! { def__ $U, $U }
+
+        #[cfg(feature = "ffi_metadata_arr")]
+        decoder_meta! { def__ CArray<$U, 1>, $U _arr_1 }
+        #[cfg(feature = "ffi_metadata_arr")]
+        decoder_meta! { def__ CArray<$U, 2>, $U _arr_2 }
+        #[cfg(feature = "ffi_metadata_arr")]
+        decoder_meta! { def__ CArray<$U, 3>, $U _arr_3 }
+        #[cfg(feature = "ffi_metadata_arr")]
+        decoder_meta! { def__ CArray<$U, 4>, $U _arr_4 }
+
+        #[cfg(feature = "ffi_metadata_slice")]
+        decoder_meta! { def__ OwnedCSlice<$U>, $U _slice }
+    };
+
+    (imp_ $U:ty) => {
+        decoder_meta! { imp__ $U, $U }
+
+        #[cfg(feature = "ffi_metadata_arr")]
+        decoder_meta! { imp__ CArray<$U, 1>, $U _arr_1 }
+        #[cfg(feature = "ffi_metadata_arr")]
+        decoder_meta! { imp__ CArray<$U, 2>, $U _arr_2 }
+        #[cfg(feature = "ffi_metadata_arr")]
+        decoder_meta! { imp__ CArray<$U, 3>, $U _arr_3 }
+        #[cfg(feature = "ffi_metadata_arr")]
+        decoder_meta! { imp__ CArray<$U, 4>, $U _arr_4 }
+
+        #[cfg(feature = "ffi_metadata_slice")]
+        decoder_meta! { imp__ OwnedCSlice<$U>, $U _slice }
+    };
+
+    (def__ $U:ty, $($M:tt)*) => {
+        paste! {
+            #[allow(non_snake_case)]
+            /// Fetch metadata from the encoded dataset.
+            fn [<get_metadata_$($M)*>](&self, key: &str) -> Option<$U>;
+        }
+    };
+
+    (imp__ $U:ty, $($M:tt)*) => {
+        paste! {
+            fn [<get_metadata_$($M)*>](&self, key: &str) -> Option<$U> {
+                self.get_metadata(key)
+            }
+        }
+    };
+
+}
+
+/// Type erased decoder.
+pub trait Decoder<T> {
+    /// Constructs a new instance.
+    fn new_erased(p: &str) -> Self
+    where
+        Self: Sized;
+
+    /// Fetches the dimensions of the dataset.
+    fn dims(&self) -> &[usize];
+
+    /// Fetches the dimensions of the block.
+    fn block_size(&self) -> &[usize];
+
+    /// Fetches the number of blocks along each dimension.
+    fn block_counts(&self) -> &[usize];
+
+    /// Decodes the dataset.
+    fn decode(
+        &self,
+        writer_fetcher: BlockWriterFetcherBuilder<'_, T>,
+        roi: &[Range<usize>],
+        levels: &[u32],
+    );
+
+    /// Refines an already partially decoded dataset.
+    fn refine(
+        &self,
+        reader_fetcher: BlockReaderFetcherBuilder<'_, T>,
+        writer_fetcher: BlockWriterFetcherBuilder<'_, T>,
+        input_range: &[Range<usize>],
+        output_range: &[Range<usize>],
+        curr_levels: &[u32],
+        refinements: &[u32],
+    );
+
+    decoder_meta! { def }
+}
+
+impl<Meta, T, F> Decoder<T> for VolumeWaveletDecoder<Meta, T, F>
+where
+    Meta: Zero + Deserializable + Clone + Send + Sync,
+    T: Zero + Deserializable + Clone + Send + Sync,
+    F: DerivableMetadataFilter<Meta, T> + Deserializable + Clone + Sync,
+{
+    fn new_erased(p: &str) -> Self {
+        VolumeWaveletDecoder::new(p)
+    }
+
+    fn dims(&self) -> &[usize] {
+        self.dims()
+    }
+
+    fn block_size(&self) -> &[usize] {
+        self.block_size()
+    }
+
+    fn block_counts(&self) -> &[usize] {
+        self.block_counts()
+    }
+
+    fn decode(
+        &self,
+        writer_fetcher: BlockWriterFetcherBuilder<'_, T>,
+        roi: &[Range<usize>],
+        levels: &[u32],
+    ) {
+        let writer_fetcher = move |index: &[usize], block_size: &[usize]| {
+            let fetcher = writer_fetcher.call(index, block_size);
+            move |index: usize| {
+                let mut writer = fetcher.call(index);
+                move |index: &[usize], val: T| writer.call(index, val)
+            }
+        };
+        self.decode(writer_fetcher, roi, levels)
+    }
+
+    fn refine(
+        &self,
+        reader_fetcher: BlockReaderFetcherBuilder<'_, T>,
+        writer_fetcher: BlockWriterFetcherBuilder<'_, T>,
+        input_range: &[Range<usize>],
+        output_range: &[Range<usize>],
+        curr_levels: &[u32],
+        refinements: &[u32],
+    ) {
+        let reader_fetcher = move |index: &[usize], block_size: &[usize]| {
+            let fetcher = reader_fetcher.call(index, block_size);
+            move |index: usize| {
+                let reader = fetcher.call(index);
+                move |index: &[usize]| reader.call(index)
+            }
+        };
+        let writer_fetcher = move |index: &[usize], block_size: &[usize]| {
+            let fetcher = writer_fetcher.call(index, block_size);
+            move |index: usize| {
+                let mut writer = fetcher.call(index);
+                move |index: &[usize], val: T| writer.call(index, val)
+            }
+        };
+
+        self.refine(
+            reader_fetcher,
+            writer_fetcher,
+            input_range,
+            output_range,
+            curr_levels,
+            refinements,
+        )
+    }
+
+    decoder_meta! { imp }
+}
+
 /////////////////////////////// Encoder ///////////////////////////////
 
 macro_rules! encoder_def {
@@ -691,19 +885,6 @@ macro_rules! encoder_def {
                 let fetcher = (*fetcher).assume_init_read();
                 let f = move |index: &[usize]| fetcher.call(index);
                 (*encoder).add_fetcher(&*index, f);
-            }
-
-            /// Encodes the dataset with the specified block size and the haar wavelet.
-            #[no_mangle]
-            pub unsafe extern "C" fn [<$($N)* _encode_haar>](
-                encoder: *const VolumeWaveletEncoder<'_, $T>,
-                output: *const std::os::raw::c_char,
-                block_size: *const CSlice<'_, usize>,
-                use_greedy_transform: bool,
-            ) {
-                let output = CStr::from_ptr(output.cast());
-                let output = String::from_utf8_lossy(output.as_ref().to_bytes()).into_owned();
-                (*encoder).encode(output, &*block_size, HaarWavelet, use_greedy_transform, CompressionLevel::Default)
             }
 
             /// Encodes the dataset with the specified block size and the average filter.
@@ -808,22 +989,23 @@ macro_rules! decoder_def {
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _new>](
                 input: *const std::os::raw::c_char,
-            ) -> Box<VolumeWaveletDecoder<$T>> {
+            ) -> Box<Box<dyn Decoder<$T>>> {
                 let input = CStr::from_ptr(input.cast());
                 let input = String::from_utf8_lossy(input.as_ref().to_bytes());
-                Box::new(VolumeWaveletDecoder::new(&*input))
+                let dec = VolumeWaveletDecoder::<BlockCount, $T, AverageFilter>::new_erased(&*input);
+                Box::new(Box::new(dec))
             }
 
             /// Deallocates and destructs an decoder.
             #[no_mangle]
             pub extern "C" fn [<$($N)* _free>](
-                _: Box<VolumeWaveletDecoder<$T>>,
+                _: Box<Box<dyn Decoder<$T>>>,
             ) {}
 
             /// Fetches the dimensions of the encoded dataset.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _dims>](
-                decoder: *const VolumeWaveletDecoder<$T>,
+                decoder: *const Box<dyn Decoder<$T>>,
                 output: *mut MaybeUninit<CSlice<'_, usize>>
             ) {
                 let dims = (*decoder).dims().into();
@@ -833,7 +1015,7 @@ macro_rules! decoder_def {
             /// Fetches the blocksize used to encode the dataset.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _block_size>](
-                decoder: *const VolumeWaveletDecoder<$T>,
+                decoder: *const Box<dyn Decoder<$T>>,
                 output: *mut MaybeUninit<CSlice<'_, usize>>
             ) {
                 let size = (*decoder).block_size().into();
@@ -843,7 +1025,7 @@ macro_rules! decoder_def {
             /// Fetches the number of blocks used for encoding the dataset.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _block_counts>](
-                decoder: *const VolumeWaveletDecoder<$T>,
+                decoder: *const Box<dyn Decoder<$T>>,
                 output: *mut MaybeUninit<CSlice<'_, usize>>
             ) {
                 let counts = (*decoder).block_counts().into();
@@ -853,20 +1035,12 @@ macro_rules! decoder_def {
             /// Decodes the dataset.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _decode>](
-                decoder: *const VolumeWaveletDecoder<$T>,
+                decoder: *const Box<dyn Decoder<$T>>,
                 writer_fetcher: *const MaybeUninit<BlockWriterFetcherBuilder<'_, $T>>,
                 roi: *const CSlice<'_, CRange<usize>>,
                 levels: *const CSlice<'_, u32>
             ) {
                 let writer_fetcher = (*writer_fetcher).assume_init_read();
-                let writer_fetcher = move |index: &[usize], block_size: &[usize]| {
-                    let fetcher = writer_fetcher.call(index, block_size);
-                    move |index: usize| {
-                        let mut writer = fetcher.call(index);
-                        move |index: &[usize], val: $T| writer.call(index, val)
-                    }
-                };
-
                 let roi: Vec<Range<_>> = (*roi).iter().cloned().map(|r| r.into()).collect();
                 (*decoder).decode(writer_fetcher, &roi, &*levels);
             }
@@ -874,7 +1048,7 @@ macro_rules! decoder_def {
             /// Applies a partial decoding to a partially decoded dataset.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _refine>](
-                decoder: *const VolumeWaveletDecoder<$T>,
+                decoder: *const Box<dyn Decoder<$T>>,
                 reader_fetcher: *const MaybeUninit<BlockReaderFetcherBuilder<'_, $T>>,
                 writer_fetcher: *const MaybeUninit<BlockWriterFetcherBuilder<'_, $T>>,
                 input_range: *const CSlice<'_, CRange<usize>>,
@@ -884,22 +1058,6 @@ macro_rules! decoder_def {
             ) {
                 let reader_fetcher = (*reader_fetcher).assume_init_read();
                 let writer_fetcher = (*writer_fetcher).assume_init_read();
-                let reader_fetcher = move |index: &[usize], block_size: &[usize]| {
-                    let fetcher = reader_fetcher.call(index, block_size);
-                    move |index: usize| {
-                        let reader = fetcher.call(index);
-                        move |index: &[usize]| reader.call(index)
-                    }
-                };
-
-                let writer_fetcher = move |index: &[usize], block_size: &[usize]| {
-                    let fetcher = writer_fetcher.call(index, block_size);
-                    move |index: usize| {
-                        let mut writer = fetcher.call(index);
-                        move |index: &[usize], val: $T| writer.call(index, val)
-                    }
-                };
-
                 let input_range: Vec<Range<_>> = (*input_range)
                     .iter()
                     .cloned()
@@ -956,13 +1114,13 @@ macro_rules! decoder_def {
             /// Fetches a value inserted into the metadata.
             #[no_mangle]
             pub unsafe extern "C" fn [<$($N)* _metadata_get_ $($M)*>](
-                decoder: *const VolumeWaveletDecoder<$T>,
+                decoder: *const Box<dyn Decoder<$T>>,
                 key: *const std::ffi::c_char,
                 res: *mut MaybeUninit<COption<$U>>
             ) {
                 let key = CStr::from_ptr(key.cast());
                 let key = String::from_utf8_lossy(key.as_ref().to_bytes());
-                let x = (*decoder).get_metadata(&*key).into();
+                let x = (*decoder).[<get_metadata_ $($M)*>](&*key).into();
                 (*res).write(x);
             }
         }
@@ -989,7 +1147,8 @@ pub unsafe extern "C" fn wavelet_rs_get_decoder_info(
     let f = std::fs::File::open(&*path).unwrap();
     let stream = DeserializeStream::new_decode(f).unwrap();
     let mut stream = stream.stream();
-    let (elem_type, dims, block_size) = OutputHeader::<()>::deserialize_info(&mut stream);
+    let (elem_type, dims, block_size) =
+        OutputHeader::<UnknownMeta, UnknownData, UnknownFilter>::deserialize_info(&mut stream);
 
     let elem_type: ElemType = (*elem_type).into();
     let dims: OwnedCSlice<usize> = dims.into_boxed_slice().into();
@@ -1012,11 +1171,17 @@ pub unsafe extern "C" fn wavelet_rs_get_decoder_info(
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn wavelet_rs_allowed_block_sizes(
     dim: usize,
+    use_exact_method: u8,
     allow_l0_error: u8,
     allow_l1_error: u8,
     output: *mut MaybeUninit<COption<OwnedCSlice<usize>>>,
 ) {
-    let sizes = crate::encoder::allowed_block_sizes(dim, allow_l0_error != 0, allow_l1_error != 0);
+    let sizes = crate::encoder::allowed_block_sizes(
+        dim,
+        use_exact_method != 0,
+        allow_l0_error != 0,
+        allow_l1_error != 0,
+    );
     let sizes: Option<OwnedCSlice<usize>> = sizes.map(|sizes| sizes.into());
 
     (*output).write(sizes.into());

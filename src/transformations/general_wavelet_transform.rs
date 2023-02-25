@@ -16,9 +16,9 @@ use crate::stream::{
 use crate::volume::{Lane, LaneMut, VolumeBlock, VolumeWindow};
 
 /// Definition of a filter to be used with the general wavelet transform.
-pub trait GeneralFilter<Meta, T>: Sync {
+pub trait GeneralFilter<Meta, T>: Filter<T> {
     /// Applies a forward pass.
-    fn forwards(
+    fn forwards_general(
         &self,
         input: &Lane<'_, T>,
         meta_in: &Lane<'_, Meta>,
@@ -38,7 +38,13 @@ pub trait GeneralFilter<Meta, T>: Sync {
     );
 
     /// Applies a backwards pass, is the inverse of the forwards pass.
-    fn backwards(&self, output: &mut LaneMut<'_, T>, low: &[T], high: &[T], meta_curr: &[Meta]);
+    fn backwards_general(
+        &self,
+        output: &mut LaneMut<'_, T>,
+        low: &[T],
+        high: &[T],
+        meta_curr: &[Meta],
+    );
 
     /// Initializes a suitable metadata block from the input data.
     fn compute_metadata(&self, input: VolumeWindow<'_, T>) -> VolumeBlock<Meta>;
@@ -52,132 +58,6 @@ pub trait DerivableMetadataFilter<Meta, T>: GeneralFilter<Meta, T> {
 
     /// Derives the metadata of the next step.
     fn derive_step(&self, input: Lane<'_, Meta>, output: LaneMut<'_, Meta>);
-}
-
-/// Tries to construct a [`KnownGeneralFilter`] from an arbitrary type.
-pub trait TryToKnownGeneralFilter {
-    /// Fetches the [`KnownGeneralFilter`] which describes the desired operation.
-    fn to_known_general_filter(&self) -> Option<KnownGeneralFilter>;
-}
-
-impl<T> TryToKnownGeneralFilter for T {
-    default fn to_known_general_filter(&self) -> Option<KnownGeneralFilter> {
-        None
-    }
-}
-
-impl TryToKnownGeneralFilter for AverageFilter {
-    fn to_known_general_filter(&self) -> Option<KnownGeneralFilter> {
-        Some(KnownGeneralFilter::Average)
-    }
-}
-
-impl TryToKnownGeneralFilter for KnownGeneralFilter {
-    fn to_known_general_filter(&self) -> Option<KnownGeneralFilter> {
-        Some(*self)
-    }
-}
-
-/// Checks whether a type is associated with a [`KnownGeneralFilter`].
-pub fn has_known_general_filter<T>(x: &T) -> bool {
-    x.to_known_general_filter().is_some()
-}
-
-/// Known types of preimplemented general filters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum KnownGeneralFilter {
-    /// Filter computing the average.
-    Average,
-}
-
-impl<Meta, T> GeneralFilter<Meta, T> for KnownGeneralFilter
-where
-    AverageFilter: GeneralFilter<Meta, T>,
-{
-    fn forwards(
-        &self,
-        input: &Lane<'_, T>,
-        meta_in: &Lane<'_, Meta>,
-        low: &mut [T],
-        high: &mut [T],
-        meta: &mut [Meta],
-    ) {
-        match self {
-            KnownGeneralFilter::Average => {
-                GeneralFilter::forwards(&AverageFilter, input, meta_in, low, high, meta)
-            }
-        }
-    }
-
-    fn merge(
-        &self,
-        input: &Lane<'_, T>,
-        meta_in: &Lane<'_, Meta>,
-        low: &mut [T],
-        high: &mut [T],
-        meta: &mut [Meta],
-    ) {
-        match self {
-            KnownGeneralFilter::Average => {
-                GeneralFilter::merge(&AverageFilter, input, meta_in, low, high, meta)
-            }
-        }
-    }
-
-    fn backwards(&self, output: &mut LaneMut<'_, T>, low: &[T], high: &[T], meta_curr: &[Meta]) {
-        match self {
-            KnownGeneralFilter::Average => {
-                GeneralFilter::backwards(&AverageFilter, output, low, high, meta_curr)
-            }
-        }
-    }
-
-    fn compute_metadata(&self, input: VolumeWindow<'_, T>) -> VolumeBlock<Meta> {
-        match self {
-            KnownGeneralFilter::Average => GeneralFilter::compute_metadata(&AverageFilter, input),
-        }
-    }
-}
-
-impl<Meta, T> DerivableMetadataFilter<Meta, T> for KnownGeneralFilter
-where
-    KnownGeneralFilter: GeneralFilter<Meta, T>,
-    AverageFilter: DerivableMetadataFilter<Meta, T>,
-{
-    fn derive_init(&self, dims: &[usize]) -> VolumeBlock<Meta> {
-        match self {
-            KnownGeneralFilter::Average => {
-                DerivableMetadataFilter::derive_init(&AverageFilter, dims)
-            }
-        }
-    }
-
-    fn derive_step(&self, input: Lane<'_, Meta>, output: LaneMut<'_, Meta>) {
-        match self {
-            KnownGeneralFilter::Average => {
-                DerivableMetadataFilter::derive_step(&AverageFilter, input, output)
-            }
-        }
-    }
-}
-
-impl Serializable for KnownGeneralFilter {
-    fn serialize(self, stream: &mut SerializeStream) {
-        let num = self as i32;
-        num.serialize(stream);
-    }
-}
-
-impl Deserializable for KnownGeneralFilter {
-    fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
-        const AVERAGE_DISC: i32 = KnownGeneralFilter::Average as i32;
-
-        let num = i32::deserialize(stream);
-        match num {
-            AVERAGE_DISC => Self::Average,
-            _ => panic!(),
-        }
-    }
 }
 
 /// Metadata which keeps track of the number of elements contained in a block.
@@ -252,7 +132,7 @@ where
         + NumCast
         + Clone,
 {
-    fn forwards(
+    fn forwards_general(
         &self,
         input: &Lane<'_, T>,
         weight_in: &Lane<'_, BlockCount>,
@@ -314,7 +194,13 @@ where
         }
     }
 
-    fn backwards(&self, output: &mut LaneMut<'_, T>, low: &[T], high: &[T], meta: &[BlockCount]) {
+    fn backwards_general(
+        &self,
+        output: &mut LaneMut<'_, T>,
+        low: &[T],
+        high: &[T],
+        meta: &[BlockCount],
+    ) {
         for (i, ((average, diff), &count)) in low.iter().zip(high).zip(meta).enumerate() {
             let idx_left = 2 * i;
             let idx_right = (2 * i) + 1;
@@ -1430,7 +1316,7 @@ where
         .zip(high_lanes)
         .zip(meta_lanes_out)
     {
-        f.forwards(&data, &meta, data_low, data_high, &mut meta_scratch);
+        f.forwards_general(&data, &meta, data_low, data_high, &mut meta_scratch);
 
         for (src, dst) in data_low.iter().zip(low.into_iter()) {
             *dst = src.clone();
@@ -1546,7 +1432,7 @@ where
             *dst = src.clone();
         }
 
-        f.backwards(&mut output, data_low, data_high, &meta_scratch);
+        f.backwards_general(&mut output, data_low, data_high, &meta_scratch);
     }
 
     output

@@ -6,9 +6,8 @@ pub(crate) mod wavelet_transform;
 
 pub use basic::{Chain, Identity, Reverse};
 pub use general_wavelet_transform::{
-    has_known_general_filter, BlockCount, DerivableMetadataFilter, GeneralFilter,
-    GeneralTransformCoefficents, GeneralWaveletTransform, GeneralWaveletTransformBackwardsCfg,
-    KnownGeneralFilter, TryToKnownGeneralFilter,
+    BlockCount, DerivableMetadataFilter, GeneralFilter, GeneralTransformCoefficents,
+    GeneralWaveletTransform, GeneralWaveletTransformBackwardsCfg,
 };
 pub use resample::{
     Lerp, ResampleCfg, ResampleCfgOwned, ResampleClamp, ResampleExtend, ResampleIScale,

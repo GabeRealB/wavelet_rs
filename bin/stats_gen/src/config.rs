@@ -15,10 +15,10 @@ use std::{
 use wavelet_rs::{
     decoder::VolumeWaveletDecoder,
     encoder::VolumeWaveletEncoder,
-    filter::{AverageFilter, Filter, GenericFilter},
+    filter::AverageFilter,
     range::for_each_range,
     stream::{CompressionLevel, Deserializable, DeserializeStream, Serializable, SerializeStream},
-    transformations::{BlockCount, DerivableMetadataFilter, KnownGeneralFilter},
+    transformations::{BlockCount, DerivableMetadataFilter},
     volume::VolumeBlock,
 };
 
@@ -195,8 +195,7 @@ impl DataStats {
     where
         T: ErrorComputable + Zero + NumCast + Serializable + Deserializable + Clone + Send + Sync,
         T: Zero + Add<Output = T> + Div<Output = T> + Mul<Output = T> + FromUsize + Clone,
-        GenericFilter<T>: Filter<T>,
-        KnownGeneralFilter: DerivableMetadataFilter<BlockCount, T>,
+        AverageFilter: DerivableMetadataFilter<BlockCount, T>,
     {
         info!("Creating intermediates");
 
@@ -616,8 +615,7 @@ fn test_with_block_size<T>(
 ) -> Result<RunStats, Box<dyn Error>>
 where
     T: ErrorComputable + Zero + NumCast + Serializable + Deserializable + Clone + Send + Sync,
-    GenericFilter<T>: Filter<T>,
-    KnownGeneralFilter: DerivableMetadataFilter<BlockCount, T>,
+    AverageFilter: DerivableMetadataFilter<BlockCount, T>,
 {
     info!("Creating stats, exact: {exact:?}");
     trace!("Creating directory: {output_path:?}");
@@ -674,11 +672,14 @@ where
     Ok(stats)
 }
 
-fn decode<T>(steps: &[u32], dims: &[usize], decoder: &VolumeWaveletDecoder<T>) -> VolumeBlock<T>
+fn decode<T>(
+    steps: &[u32],
+    dims: &[usize],
+    decoder: &VolumeWaveletDecoder<BlockCount, T, AverageFilter>,
+) -> VolumeBlock<T>
 where
     T: Zero + Deserializable + Clone + Send + Sync,
-    GenericFilter<T>: Filter<T>,
-    KnownGeneralFilter: DerivableMetadataFilter<BlockCount, T>,
+    AverageFilter: DerivableMetadataFilter<BlockCount, T>,
 {
     let range = dims.iter().map(|&d| 0..d).collect::<Vec<_>>();
     let mut data = VolumeBlock::new_zero(dims).unwrap();

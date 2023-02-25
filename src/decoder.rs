@@ -8,37 +8,37 @@ use std::{
 };
 
 use crate::{
-    encoder::{BlockBlueprints, BlockType, CoeffBlock, OutputHeader},
-    filter::{Filter, GenericFilter},
+    encoder::{BlockBlueprints, BlockType, OutputHeader, SecondPhaseBlock},
     range::{for_each_range, for_each_range_par_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream},
     transformations::{
-        wavelet_transform::load_block, BlockCount, Chain, DerivableMetadataFilter,
-        GeneralTransformCoefficents, KnownGeneralFilter, ResampleCfg, ResampleExtend,
-        ResampleIScale, Reverse, ReversibleTransform, WaveletRecompCfg, WaveletTransform,
+        wavelet_transform::load_block, Chain, DerivableMetadataFilter, GeneralTransformCoefficents,
+        ResampleCfg, ResampleExtend, ResampleIScale, Reverse, ReversibleTransform,
+        WaveletRecompCfg, WaveletTransform,
     },
     volume::VolumeBlock,
 };
 
 /// Decoder for a dataset encoded with a wavelet transform.
 #[derive(Debug)]
-pub struct VolumeWaveletDecoder<T> {
+pub struct VolumeWaveletDecoder<Meta, T, F: DerivableMetadataFilter<Meta, T>> {
     path: PathBuf,
     metadata: AnyMap,
     dims: Vec<usize>,
     block_size: Vec<usize>,
     block_counts: Vec<usize>,
     input_block_dims: Vec<usize>,
-    input_block: CoeffBlock<T>,
     block_blueprints: BlockBlueprints<T>,
-    filter: GenericFilter<T>,
+    filter: F,
+    second_phase_block: SecondPhaseBlock<Meta, T>,
     block_types: VolumeBlock<BlockType>,
 }
 
-impl<T> VolumeWaveletDecoder<T>
+impl<Meta, T, F> VolumeWaveletDecoder<Meta, T, F>
 where
+    Meta: Zero + Deserializable + Clone + Send + Sync,
     T: Zero + Deserializable + Clone + Send + Sync,
-    GenericFilter<T>: Filter<T>,
+    F: DerivableMetadataFilter<Meta, T> + Deserializable + Clone + Sync,
 {
     /// Constructs a new decoder.
     ///
@@ -51,7 +51,7 @@ where
         let f = std::fs::File::open(p).unwrap();
         let stream = DeserializeStream::new_decode(f).unwrap();
         let mut stream = stream.stream();
-        let header: OutputHeader<T> = Deserializable::deserialize(&mut stream);
+        let header: OutputHeader<Meta, T, F> = Deserializable::deserialize(&mut stream);
 
         assert_eq!(header.dims.len(), header.block_size.len());
         assert_eq!(header.block_counts.len(), header.block_size.len());
@@ -66,7 +66,7 @@ where
             input_block_dims: header.input_block_dims,
             block_blueprints: header.block_blueprints,
             filter: header.filter,
-            input_block: header.coeff_block,
+            second_phase_block: header.second_phase_block,
             block_types: header.block_types,
         }
     }
@@ -106,7 +106,6 @@ where
         curr_levels: &[u32],
         refinements: &[u32],
     ) where
-        KnownGeneralFilter: DerivableMetadataFilter<BlockCount, T>,
         BR: Fn(usize) -> R + Sync,
         R: Fn(&[usize]) -> T,
         BW: Fn(usize) -> W + Sync,
@@ -158,7 +157,7 @@ where
             .iter()
             .zip(&input_levels)
             .any(|(&r, &l)| r < l)
-            || self.input_block.is_exact();
+            || self.second_phase_block.is_exact();
         if requires_input_pass {
             let new_levels: Vec<_> = curr_levels
                 .iter()
@@ -324,7 +323,6 @@ where
         roi: &[Range<usize>],
         levels: &[u32],
     ) where
-        KnownGeneralFilter: DerivableMetadataFilter<BlockCount, T>,
         BW: Fn(usize) -> W + Sync,
         W: FnMut(&[usize], T),
     {
@@ -373,15 +371,17 @@ where
             ResampleExtend,
             WaveletTransform::new(self.filter.clone(), false),
         );
-        let first_pass = if !self.input_block.is_exact() {
-            input_transform.backwards(self.input_block.standard_block(), input_transform_cfg)
+        let first_pass = if !self.second_phase_block.is_exact() {
+            input_transform.backwards(
+                self.second_phase_block.standard_block(),
+                input_transform_cfg,
+            )
         } else {
-            let coeff = self.input_block.general_coeff();
-            let filter = self.input_block.general_filter();
-            coeff.reconstruct_extend(&input_backwards_steps, &filter)
+            let coeff = self.second_phase_block.general_coeff();
+            coeff.reconstruct_extend(&input_backwards_steps, &self.filter)
         };
 
-        let combined_blocks = if !self.input_block.is_exact() {
+        let combined_blocks = if !self.second_phase_block.is_exact() {
             input_backwards_steps
                 .iter()
                 .zip(&self.block_counts)
@@ -389,7 +389,7 @@ where
                 .map(|(contained, count)| (count + contained - 1) / contained)
                 .collect::<Vec<_>>()
         } else {
-            self.input_block
+            self.second_phase_block
                 .general_coeff()
                 .combined_blocks(&input_backwards_steps)
         };
@@ -475,7 +475,7 @@ where
                     // pass.
                     let block_path = self.path.join(format!("block_{block_idx}"));
 
-                    let block = if transform_is_exact || !self.input_block.is_exact() {
+                    let block = if transform_is_exact || !self.second_phase_block.is_exact() {
                         let low = first_pass[block_idx].clone();
                         let (block, block_decomp) =
                             load_block(block_path, &block_backwards_steps, low, &self.filter);
@@ -495,14 +495,10 @@ where
                             &block_backwards_steps,
                             Some(&self.block_size),
                             block_path,
-                            &self.input_block.general_filter(),
+                            &self.filter,
                         );
 
-                        coeff.reconstruct_extend_to(
-                            &steps,
-                            &block_size,
-                            &self.input_block.general_filter(),
-                        )
+                        coeff.reconstruct_extend_to(&steps, &block_size, &self.filter)
                     };
 
                     block
@@ -570,7 +566,7 @@ where
                                 &block_backwards_steps,
                                 Some(&self.block_size),
                                 block_path,
-                                &self.input_block.general_filter(),
+                                &self.filter,
                             )
                             .0
                         } else {
@@ -582,7 +578,7 @@ where
                                 block,
                                 &self.block_size,
                                 &block_decomp,
-                                &self.input_block.general_filter(),
+                                &self.filter,
                             )
                         };
 
@@ -591,7 +587,7 @@ where
                                 acc,
                                 coeff,
                                 0,
-                                &self.input_block.general_filter(),
+                                &self.filter,
                             ))
                         } else {
                             Some(coeff)
@@ -602,7 +598,7 @@ where
                         block_coeffs = block_coeffs.fold(lane, None, |acc, coeff| {
                             if let Some(acc) = acc {
                                 let coeff = coeff.unwrap();
-                                Some(acc.merge(coeff, lane, &self.input_block.general_filter()))
+                                Some(acc.merge(coeff, lane, &self.filter))
                             } else {
                                 coeff
                             }
@@ -686,7 +682,7 @@ where
                         block,
                         &block_backwards_steps,
                         &block_size,
-                        &self.input_block.general_filter(),
+                        &self.filter,
                     )
                 };
 
@@ -754,7 +750,10 @@ pub fn max_range(dim: usize, block_size: usize, allow_l1_error: bool) -> Range<u
 mod test {
     use std::{path::PathBuf, sync::Mutex};
 
-    use crate::{decoder::VolumeWaveletDecoder, vector::Vector, volume::VolumeBlock};
+    use crate::{
+        decoder::VolumeWaveletDecoder, filter::AverageFilter, transformations::BlockCount,
+        vector::Vector, volume::VolumeBlock,
+    };
 
     const TRANSFORM_ERROR: f32 = 0.001;
 
@@ -769,7 +768,7 @@ mod test {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test/decode/output.bin");
 
-        let decoder = VolumeWaveletDecoder::<f32>::new(res_path);
+        let decoder = VolumeWaveletDecoder::<BlockCount, f32, AverageFilter>::new(res_path);
 
         let dims = [256, 256, 256];
         let num_elements = dims.iter().product();
@@ -829,7 +828,7 @@ mod test {
         res_path.push("resources/test/decode_sample/");
 
         let data_path = res_path.join("output.bin");
-        let decoder = VolumeWaveletDecoder::<f32>::new(data_path);
+        let decoder = VolumeWaveletDecoder::<BlockCount, f32, AverageFilter>::new(data_path);
 
         let dims = [4, 4, 1];
         let range = dims.map(|d| 0..d);
@@ -910,7 +909,8 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+        let decoder =
+            VolumeWaveletDecoder::<BlockCount, Vector<f32, 3>, AverageFilter>::new(data_path);
 
         let dims = [2048, 2048, 1];
         let range = dims.map(|d| 0..d);
@@ -954,7 +954,8 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+        let decoder =
+            VolumeWaveletDecoder::<BlockCount, Vector<f32, 3>, AverageFilter>::new(data_path);
 
         let dims = [2048, 2048, 1];
         let range = [500..500 + 1080, 128..128 + 1920, 0..1];
@@ -999,7 +1000,8 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+        let decoder =
+            VolumeWaveletDecoder::<BlockCount, Vector<f32, 3>, AverageFilter>::new(data_path);
 
         let dims = [2048, 2048, 1];
         let range = dims.map(|d| 0..d);
@@ -1094,7 +1096,8 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+        let decoder =
+            VolumeWaveletDecoder::<BlockCount, Vector<f32, 3>, AverageFilter>::new(data_path);
 
         let dims = [2048, 2048, 1];
         let range = [500..500 + 1080, 128..128 + 1920, 0..1];
@@ -1189,7 +1192,8 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+        let decoder =
+            VolumeWaveletDecoder::<BlockCount, Vector<f32, 3>, AverageFilter>::new(data_path);
 
         let dims = [3024, 4032, 1];
         let range = dims.map(|d| 0..d);
@@ -1233,7 +1237,8 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+        let decoder =
+            VolumeWaveletDecoder::<BlockCount, Vector<f32, 3>, AverageFilter>::new(data_path);
 
         let dims = [3024, 4032, 1];
         let range = dims.map(|d| 0..d);
