@@ -378,6 +378,29 @@ impl<'a> WaveletRecompCfg<'a> {
             }
         }
     }
+
+    /// Constructs a new `WaveletRecompCfg`.
+    pub fn new_with_upscale_from_dims(steps: &'a [u32], dims: &'a [usize], upscale: bool) -> Self {
+        assert_eq!(steps.len(), dims.len());
+
+        let mut decomp = vec![];
+        let mut dims = Vec::from(dims);
+
+        while dims.iter().any(|&d| d > 1) {
+            for (i, d) in dims.iter_mut().enumerate() {
+                if *d > 1 {
+                    *d /= 2;
+                    decomp.push(i);
+                }
+            }
+        }
+
+        Self {
+            steps,
+            decomposition: Cow::Owned(decomp),
+            upscale,
+        }
+    }
 }
 
 impl<'a> From<WaveletDecompCfg<'a>> for WaveletRecompCfg<'a> {

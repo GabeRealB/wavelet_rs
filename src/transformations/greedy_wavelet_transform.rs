@@ -945,7 +945,7 @@ where
 
         for (&step, combined) in steps.iter().zip(&mut combined) {
             for _ in 0..step {
-                *combined = (*combined / 2) + (*combined % 2);
+                *combined = ((*combined / 2) + (*combined % 2)).next_power_of_two()
             }
         }
 
