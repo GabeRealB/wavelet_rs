@@ -8,37 +8,37 @@ use std::{
 };
 
 use crate::{
-    encoder::{BlockBlueprints, BlockType, CoeffBlock, OutputHeader},
-    filter::{Filter, GenericFilter},
+    encoder::{BlockBlueprints, BlockType, OutputHeader, SecondPhaseBlock},
     range::{for_each_range, for_each_range_par_enumerate},
     stream::{AnyMap, Deserializable, DeserializeStream},
     transformations::{
-        wavelet_transform::load_block, BlockCount, Chain, DerivableMetadataFilter,
-        GreedyTransformCoefficents, KnownGreedyFilter, ResampleCfg, ResampleExtend, ResampleIScale,
-        Reverse, ReversibleTransform, WaveletRecompCfg, WaveletTransform,
+        wavelet_transform::load_block, Chain, DerivableMetadataFilter, GeneralTransformCoefficents,
+        ResampleCfg, ResampleExtend, ResampleIScale, Reverse, ReversibleTransform,
+        WaveletRecompCfg, WaveletTransform,
     },
     volume::VolumeBlock,
 };
 
 /// Decoder for a dataset encoded with a wavelet transform.
 #[derive(Debug)]
-pub struct VolumeWaveletDecoder<T> {
+pub struct VolumeWaveletDecoder<Meta, T, F: DerivableMetadataFilter<Meta, T>> {
     path: PathBuf,
     metadata: AnyMap,
     dims: Vec<usize>,
     block_size: Vec<usize>,
     block_counts: Vec<usize>,
     input_block_dims: Vec<usize>,
-    input_block: CoeffBlock<T>,
     block_blueprints: BlockBlueprints<T>,
-    filter: GenericFilter<T>,
+    filter: F,
+    second_phase_block: SecondPhaseBlock<Meta, T>,
     block_types: VolumeBlock<BlockType>,
 }
 
-impl<T> VolumeWaveletDecoder<T>
+impl<Meta, T, F> VolumeWaveletDecoder<Meta, T, F>
 where
+    Meta: Zero + Deserializable + Clone + Send + Sync,
     T: Zero + Deserializable + Clone + Send + Sync,
-    GenericFilter<T>: Filter<T>,
+    F: DerivableMetadataFilter<Meta, T> + Deserializable + Clone + Sync,
 {
     /// Constructs a new decoder.
     ///
@@ -51,7 +51,7 @@ where
         let f = std::fs::File::open(p).unwrap();
         let stream = DeserializeStream::new_decode(f).unwrap();
         let mut stream = stream.stream();
-        let header: OutputHeader<T> = Deserializable::deserialize(&mut stream);
+        let header: OutputHeader<Meta, T, F> = Deserializable::deserialize(&mut stream);
 
         assert_eq!(header.dims.len(), header.block_size.len());
         assert_eq!(header.block_counts.len(), header.block_size.len());
@@ -66,7 +66,7 @@ where
             input_block_dims: header.input_block_dims,
             block_blueprints: header.block_blueprints,
             filter: header.filter,
-            input_block: header.coeff_block,
+            second_phase_block: header.second_phase_block,
             block_types: header.block_types,
         }
     }
@@ -106,7 +106,6 @@ where
         curr_levels: &[u32],
         refinements: &[u32],
     ) where
-        KnownGreedyFilter: DerivableMetadataFilter<BlockCount, T>,
         BR: Fn(usize) -> R + Sync,
         R: Fn(&[usize]) -> T,
         BW: Fn(usize) -> W + Sync,
@@ -158,7 +157,7 @@ where
             .iter()
             .zip(&input_levels)
             .any(|(&r, &l)| r < l)
-            || self.input_block.is_greedy();
+            || self.second_phase_block.is_exact();
         if requires_input_pass {
             let new_levels: Vec<_> = curr_levels
                 .iter()
@@ -185,7 +184,11 @@ where
 
         let refinement_cfg = Chain::combine(
             ResampleCfg::new(&self.block_size),
-            WaveletRecompCfg::new_with_upscale(&block_refinements, None, true),
+            WaveletRecompCfg::new_with_upscale_from_dims(
+                &block_refinements,
+                &block_input_dims,
+                true,
+            ),
         );
         let refinement_pass = Chain::combine(
             Reverse::new(ResampleIScale),
@@ -320,7 +323,6 @@ where
         roi: &[Range<usize>],
         levels: &[u32],
     ) where
-        KnownGreedyFilter: DerivableMetadataFilter<BlockCount, T>,
         BW: Fn(usize) -> W + Sync,
         W: FnMut(&[usize], T),
     {
@@ -359,21 +361,27 @@ where
         // follow the same procedure backwards.
         let input_transform_cfg = Chain::combine(
             ResampleCfg::new(&self.block_counts),
-            WaveletRecompCfg::new_with_upscale(&input_backwards_steps, None, true),
+            WaveletRecompCfg::new_with_upscale_from_dims(
+                &input_backwards_steps,
+                &self.input_block_dims,
+                true,
+            ),
         );
         let input_transform = Chain::combine(
             ResampleExtend,
             WaveletTransform::new(self.filter.clone(), false),
         );
-        let first_pass = if !self.input_block.is_greedy() {
-            input_transform.backwards(self.input_block.standard_block(), input_transform_cfg)
+        let first_pass = if !self.second_phase_block.is_exact() {
+            input_transform.backwards(
+                self.second_phase_block.standard_block(),
+                input_transform_cfg,
+            )
         } else {
-            let coeff = self.input_block.greedy_coeff();
-            let filter = self.input_block.greedy_filter();
-            coeff.reconstruct_extend(&input_backwards_steps, &filter)
+            let coeff = self.second_phase_block.general_coeff();
+            coeff.reconstruct_extend(&input_backwards_steps, &self.filter)
         };
 
-        let combined_blocks = if !self.input_block.is_greedy() {
+        let combined_blocks = if !self.second_phase_block.is_exact() {
             input_backwards_steps
                 .iter()
                 .zip(&self.block_counts)
@@ -381,11 +389,11 @@ where
                 .map(|(contained, count)| (count + contained - 1) / contained)
                 .collect::<Vec<_>>()
         } else {
-            self.input_block
-                .greedy_coeff()
+            self.second_phase_block
+                .general_coeff()
                 .combined_blocks(&input_backwards_steps)
         };
-        let second_pass_requires = block_backwards_steps.iter().any(|&s| s != 0);
+        let second_pass_required = block_backwards_steps.iter().any(|&s| s != 0);
         let merge_required = combined_blocks.iter().any(|&c| c != 1);
 
         // Iterate over each block and decode it, if it is part of the requested data range.
@@ -397,209 +405,303 @@ where
 
         let writers = writer_fetcher(&self.block_counts, &self.block_size);
 
-        for_each_range_par_enumerate(block_range.into_iter(), |block_idx, block_iter_idx| {
-            let blocks_end = block_iter_idx
-                .iter()
-                .zip(&self.block_counts)
-                .map(|(&start, &count)| (start + 1).min(count))
-                .collect::<Vec<_>>();
-
-            // Each block, appart from the ones on the end boundary, is of
-            // uniform size `block_size`, therefore we can compute the start
-            // of a block by multiplying the multidimensional index by the
-            // block size along the dimension.
-            let block_offset: Vec<_> = block_iter_idx
-                .iter()
-                .zip(&self.block_size)
-                .map(|(&idx, &size)| idx * size)
-                .collect();
-
-            // Compute the range of the input data the block spans.
-            // A block begins at position `block_offset` and can take a size of
-            // up to `block_size`, if the dataset is large enough. In case of
-            // overhang, we shorten the block size.
-            let block_range: Vec<_> = block_iter_idx
-                .iter()
-                .zip(&blocks_end)
-                .zip(&self.block_size)
-                .zip(&self.dims)
-                .map(|(((&start, &end), &size), &dims)| (start * size, (end * size).min(dims)))
-                .map(|(start, end)| start..end)
-                .collect();
-
-            // Compute the subrange that we are interested in, that lies inside the block.
-            let block_roi: Vec<_> = roi
-                .iter()
-                .zip(&block_range)
-                .map(|(r1, r2)| r1.start.max(r2.start)..r1.end.min(r2.end))
-                .collect();
-
-            let block_size: Vec<_> = block_range
-                .iter()
-                .map(|range| range.end - range.start)
-                .collect();
-
-            // Check whether the block contains data in the requested range.
-            let block_contained_in_roi = block_roi.iter().all(|r| !r.is_empty());
-            if !block_contained_in_roi {
-                return;
-            }
-
-            let block = if !second_pass_requires {
-                let block = VolumeBlock::new_fill(
-                    &vec![1; block_size.len()],
-                    first_pass[block_idx].clone(),
-                )
-                .unwrap();
-                ResampleIScale.forwards(block, ResampleCfg::new(&block_size))
-            } else if merge_required {
-                let blocks_start = block_iter_idx
+        let use_standard_pipeline = !(second_pass_required && merge_required);
+        if use_standard_pipeline {
+            for_each_range_par_enumerate(block_range.into_iter(), |block_idx, block_iter_idx| {
+                let blocks_end = block_iter_idx
                     .iter()
-                    .zip(&combined_blocks)
-                    .map(|(&idx, &comb)| (idx / comb) * comb)
-                    .collect::<Vec<_>>();
-
-                let blocks_end = blocks_start
-                    .iter()
-                    .zip(&combined_blocks)
                     .zip(&self.block_counts)
-                    .map(|((&start, &comb), &count)| (start + comb).min(count))
+                    .map(|(&start, &count)| (start + 1).min(count))
                     .collect::<Vec<_>>();
 
-                let block_idx_size: Vec<_> = blocks_start
+                // Each block, appart from the ones on the end boundary, is of
+                // uniform size `block_size`, therefore we can compute the start
+                // of a block by multiplying the multidimensional index by the
+                // block size along the dimension.
+                let block_offset: Vec<_> = block_iter_idx
                     .iter()
-                    .zip(&blocks_end)
-                    .map(|(&s, &e)| e - s)
+                    .zip(&self.block_size)
+                    .map(|(&idx, &size)| idx * size)
                     .collect();
 
-                let block_indices = block_indices_window
-                    .custom_window(&blocks_start, &block_idx_size)
-                    .as_block();
+                // Compute the range of the input data the block spans.
+                // A block begins at position `block_offset` and can take a size of
+                // up to `block_size`, if the dataset is large enough. In case of
+                // overhang, we shorten the block size.
+                let block_range: Vec<_> = block_iter_idx
+                    .iter()
+                    .zip(&blocks_end)
+                    .zip(&self.block_size)
+                    .zip(&self.dims)
+                    .map(|(((&start, &end), &size), &dims)| (start * size, (end * size).min(dims)))
+                    .map(|(start, end)| start..end)
+                    .collect();
 
-                let mut block_coeffs = block_indices.fold(0, None, |acc, idx| {
-                    // To recompose a block we need to reconstruct the block of
-                    // coefficients and merge them.
-                    let block_path = self.path.join(format!("block_{idx}"));
+                // Compute the subrange that we are interested in, that lies inside the block.
+                let block_roi: Vec<_> = roi
+                    .iter()
+                    .zip(&block_range)
+                    .map(|(r1, r2)| r1.start.max(r2.start)..r1.end.min(r2.end))
+                    .collect();
 
-                    let is_greedy = matches!(self.block_types[idx], BlockType::Greedy);
-                    let coeff = if is_greedy {
-                        GreedyTransformCoefficents::read_for_steps_impl(
-                            &block_backwards_steps,
-                            Some(&self.block_size),
-                            block_path,
-                            &self.input_block.greedy_filter(),
-                        )
-                        .0
-                    } else {
-                        let low = first_pass[idx].clone();
+                let block_size: Vec<_> = block_range
+                    .iter()
+                    .map(|range| range.end - range.start)
+                    .collect();
+
+                // Check whether the block contains data in the requested range.
+                let block_contained_in_roi = block_roi.iter().all(|r| !r.is_empty());
+                if !block_contained_in_roi {
+                    return;
+                }
+
+                let block = if !second_pass_required {
+                    let block = VolumeBlock::new_fill(
+                        &vec![1; block_size.len()],
+                        first_pass[block_idx].clone(),
+                    )
+                    .unwrap();
+                    ResampleIScale.forwards(block, ResampleCfg::new(&block_size))
+                } else {
+                    let transform_is_exact = block_range
+                        .iter()
+                        .map(|range| range.clone().count())
+                        .zip(&self.block_size)
+                        .all(|(size, &block_size)| size == block_size);
+
+                    // To recompose a block we need to reconstruct the block of coefficients.
+                    // The detail coefficients are stored on disk, while the approximation coefficient
+                    // (i.e. the first element) is contained in the block from the first reconstruction
+                    // pass.
+                    let block_path = self.path.join(format!("block_{block_idx}"));
+
+                    let block = if transform_is_exact || !self.second_phase_block.is_exact() {
+                        let low = first_pass[block_idx].clone();
                         let (block, block_decomp) =
                             load_block(block_path, &block_backwards_steps, low, &self.filter);
 
-                        GreedyTransformCoefficents::new_from_volume_custom_size(
-                            block,
-                            &self.block_size,
-                            &block_decomp,
-                            &self.input_block.greedy_filter(),
-                        )
+                        let block_transform_cfg = Chain::combine(
+                            ResampleCfg::new(&self.block_size),
+                            WaveletRecompCfg::new_with_upscale(
+                                &block_backwards_steps,
+                                Some(&block_decomp),
+                                true,
+                            ),
+                        );
+
+                        block_transform.backwards(block, block_transform_cfg)
+                    } else {
+                        let (coeff, steps) = GeneralTransformCoefficents::read_for_steps_impl(
+                            &block_backwards_steps,
+                            Some(&self.block_size),
+                            block_path,
+                            &self.filter,
+                        );
+
+                        coeff.reconstruct_extend_to(&steps, &block_size, &self.filter)
                     };
 
-                    if let Some(acc) = acc {
-                        Some(GreedyTransformCoefficents::merge(
-                            acc,
-                            coeff,
-                            0,
-                            &self.input_block.greedy_filter(),
-                        ))
-                    } else {
-                        Some(coeff)
-                    }
-                });
+                    block
+                };
 
-                for lane in 1..block_coeffs.dims().len() {
-                    block_coeffs = block_coeffs.fold(lane, None, |acc, coeff| {
-                        if let Some(acc) = acc {
-                            let coeff = coeff.unwrap();
-                            Some(acc.merge(coeff, lane, &self.input_block.greedy_filter()))
+                // Fetch the writer for the current block.
+                let mut writer = writers(block_idx);
+
+                // Write back all elements of required range, which are contained in the reconstructed block.
+                for_each_range(block_roi.into_iter(), |idx| {
+                    let local_idx: Vec<_> = idx
+                        .iter()
+                        .zip(&block_offset)
+                        .map(|(&global, &offset)| global - offset)
+                        .collect();
+
+                    let elem = block[&*local_idx].clone();
+                    writer(&local_idx, elem);
+                });
+            });
+        } else {
+            let num_coefficients = self
+                .block_counts
+                .iter()
+                .zip(&combined_blocks)
+                .map(|(&blocks, &combined)| (blocks + combined - 1) / combined)
+                .collect::<Vec<_>>();
+            let coefficients_range: Vec<_> = num_coefficients.iter().map(|&c| 0..c).collect();
+
+            let (sx, rx) = std::sync::mpsc::sync_channel(num_coefficients.iter().product());
+            for_each_range_par_enumerate(
+                coefficients_range.into_iter(),
+                |coeff_idx, coeff_iter_idx| {
+                    let coeff_start = coeff_iter_idx
+                        .iter()
+                        .zip(&combined_blocks)
+                        .map(|(&idx, &comb)| idx * comb)
+                        .collect::<Vec<_>>();
+
+                    let coeff_end = coeff_start
+                        .iter()
+                        .zip(&combined_blocks)
+                        .zip(&self.block_counts)
+                        .map(|((&start, &comb), &count)| (start + comb).min(count))
+                        .collect::<Vec<_>>();
+
+                    let block_idx_size: Vec<_> = coeff_start
+                        .iter()
+                        .zip(&coeff_end)
+                        .map(|(&s, &e)| e - s)
+                        .collect();
+
+                    let block_indices = block_indices_window
+                        .custom_window(&coeff_start, &block_idx_size)
+                        .as_block();
+
+                    let mut block_coeffs = block_indices.fold(0, None, |acc, idx| {
+                        // To recompose a block we need to reconstruct the block of
+                        // coefficients and merge them.
+                        let block_path = self.path.join(format!("block_{idx}"));
+
+                        let is_exact = matches!(self.block_types[idx], BlockType::General);
+                        let coeff = if is_exact {
+                            GeneralTransformCoefficents::read_for_steps_impl(
+                                &block_backwards_steps,
+                                Some(&self.block_size),
+                                block_path,
+                                &self.filter,
+                            )
+                            .0
                         } else {
-                            coeff
+                            let low = first_pass[idx].clone();
+                            let (block, block_decomp) =
+                                load_block(block_path, &block_backwards_steps, low, &self.filter);
+
+                            GeneralTransformCoefficents::new_from_volume_custom_size(
+                                block,
+                                &self.block_size,
+                                &block_decomp,
+                                &self.filter,
+                            )
+                        };
+
+                        if let Some(acc) = acc {
+                            Some(GeneralTransformCoefficents::merge(
+                                acc,
+                                coeff,
+                                0,
+                                &self.filter,
+                            ))
+                        } else {
+                            Some(coeff)
                         }
                     });
+
+                    for lane in 1..block_coeffs.dims().len() {
+                        block_coeffs = block_coeffs.fold(lane, None, |acc, coeff| {
+                            if let Some(acc) = acc {
+                                let coeff = coeff.unwrap();
+                                Some(acc.merge(coeff, lane, &self.filter))
+                            } else {
+                                coeff
+                            }
+                        });
+                    }
+
+                    let coeff = block_coeffs[0].take().unwrap();
+                    sx.send((coeff_idx, coeff)).unwrap();
+                },
+            );
+
+            let mut coefficients = VolumeBlock::new_fill(&num_coefficients, None).unwrap();
+            for (i, coeff) in rx.try_iter() {
+                coefficients[i] = Some(coeff);
+            }
+            let coefficients = coefficients.map(|x| x.unwrap());
+
+            for_each_range_par_enumerate(block_range.into_iter(), |block_idx, block_iter_idx| {
+                let blocks_end = block_iter_idx
+                    .iter()
+                    .zip(&self.block_counts)
+                    .map(|(&start, &count)| (start + 1).min(count))
+                    .collect::<Vec<_>>();
+
+                // Each block, appart from the ones on the end boundary, is of
+                // uniform size `block_size`, therefore we can compute the start
+                // of a block by multiplying the multidimensional index by the
+                // block size along the dimension.
+                let block_offset: Vec<_> = block_iter_idx
+                    .iter()
+                    .zip(&self.block_size)
+                    .map(|(&idx, &size)| idx * size)
+                    .collect();
+
+                // Compute the range of the input data the block spans.
+                // A block begins at position `block_offset` and can take a size of
+                // up to `block_size`, if the dataset is large enough. In case of
+                // overhang, we shorten the block size.
+                let block_range: Vec<_> = block_iter_idx
+                    .iter()
+                    .zip(&blocks_end)
+                    .zip(&self.block_size)
+                    .zip(&self.dims)
+                    .map(|(((&start, &end), &size), &dims)| (start * size, (end * size).min(dims)))
+                    .map(|(start, end)| start..end)
+                    .collect();
+
+                // Compute the subrange that we are interested in, that lies inside the block.
+                let block_roi: Vec<_> = roi
+                    .iter()
+                    .zip(&block_range)
+                    .map(|(r1, r2)| r1.start.max(r2.start)..r1.end.min(r2.end))
+                    .collect();
+
+                let block_size: Vec<_> = block_range
+                    .iter()
+                    .map(|range| range.end - range.start)
+                    .collect();
+
+                // Check whether the block contains data in the requested range.
+                let block_contained_in_roi = block_roi.iter().all(|r| !r.is_empty());
+                if !block_contained_in_roi {
+                    return;
                 }
 
-                let block = VolumeBlock::new_fill(
-                    &vec![1; block_size.len()],
-                    first_pass[block_idx].clone(),
-                )
-                .unwrap();
+                let block = {
+                    let coeff_idx = block_iter_idx
+                        .iter()
+                        .zip(&combined_blocks)
+                        .map(|(&idx, &comb)| idx / comb)
+                        .collect::<Vec<_>>();
 
-                let coeff = block_coeffs[0].take().unwrap();
-                coeff.reconstruct_extend_to_with_low(
-                    block,
-                    &block_backwards_steps,
-                    &block_size,
-                    &self.input_block.greedy_filter(),
-                )
-            } else {
-                let transform_is_exact = block_range
-                    .iter()
-                    .map(|range| range.clone().count())
-                    .zip(&self.block_size)
-                    .all(|(size, &block_size)| size == block_size);
+                    let block = VolumeBlock::new_fill(
+                        &vec![1; block_size.len()],
+                        first_pass[block_idx].clone(),
+                    )
+                    .unwrap();
 
-                // To recompose a block we need to reconstruct the block of coefficients.
-                // The detail coefficients are stored on disk, while the approximation coefficient
-                // (i.e. the first element) is contained in the block from the first reconstruction
-                // pass.
-                let block_path = self.path.join(format!("block_{block_idx}"));
-
-                let block = if transform_is_exact || !self.input_block.is_greedy() {
-                    let low = first_pass[block_idx].clone();
-                    let (block, block_decomp) =
-                        load_block(block_path, &block_backwards_steps, low, &self.filter);
-
-                    let block_transform_cfg = Chain::combine(
-                        ResampleCfg::new(&self.block_size),
-                        WaveletRecompCfg::new_with_upscale(
-                            &block_backwards_steps,
-                            Some(&block_decomp),
-                            true,
-                        ),
-                    );
-
-                    block_transform.backwards(block, block_transform_cfg)
-                } else {
-                    let (coeff, steps) = GreedyTransformCoefficents::read_for_steps_impl(
+                    let coeff = &coefficients[&*coeff_idx];
+                    coeff.reconstruct_extend_to_with_low(
+                        block,
                         &block_backwards_steps,
-                        Some(&self.block_size),
-                        block_path,
-                        &self.input_block.greedy_filter(),
-                    );
-
-                    coeff.reconstruct_extend_to(
-                        &steps,
                         &block_size,
-                        &self.input_block.greedy_filter(),
+                        &self.filter,
                     )
                 };
 
-                block
-            };
+                // Fetch the writer for the current block.
+                let mut writer = writers(block_idx);
 
-            // Fetch the writer for the current block.
-            let mut writer = writers(block_idx);
+                // Write back all elements of required range, which are contained in the reconstructed block.
+                for_each_range(block_roi.into_iter(), |idx| {
+                    let local_idx: Vec<_> = idx
+                        .iter()
+                        .zip(&block_offset)
+                        .map(|(&global, &offset)| global - offset)
+                        .collect();
 
-            // Write back all elements of required range, which are contained in the reconstructed block.
-            for_each_range(block_roi.into_iter(), |idx| {
-                let local_idx: Vec<_> = idx
-                    .iter()
-                    .zip(&block_offset)
-                    .map(|(&global, &offset)| global - offset)
-                    .collect();
-
-                let elem = block[&*local_idx].clone();
-                writer(&local_idx, elem);
+                    let elem = block[&*local_idx].clone();
+                    writer(&local_idx, elem);
+                });
             });
-        });
+        }
     }
 }
 
@@ -648,7 +750,10 @@ pub fn max_range(dim: usize, block_size: usize, allow_l1_error: bool) -> Range<u
 mod test {
     use std::{path::PathBuf, sync::Mutex};
 
-    use crate::{decoder::VolumeWaveletDecoder, vector::Vector, volume::VolumeBlock};
+    use crate::{
+        decoder::VolumeWaveletDecoder, filter::AverageFilter, transformations::BlockCount,
+        vector::Vector, volume::VolumeBlock,
+    };
 
     const TRANSFORM_ERROR: f32 = 0.001;
 
@@ -663,7 +768,7 @@ mod test {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         res_path.push("resources/test/decode/output.bin");
 
-        let decoder = VolumeWaveletDecoder::<f32>::new(res_path);
+        let decoder = VolumeWaveletDecoder::<BlockCount, f32, AverageFilter>::new(res_path);
 
         let dims = [256, 256, 256];
         let num_elements = dims.iter().product();
@@ -723,7 +828,7 @@ mod test {
         res_path.push("resources/test/decode_sample/");
 
         let data_path = res_path.join("output.bin");
-        let decoder = VolumeWaveletDecoder::<f32>::new(data_path);
+        let decoder = VolumeWaveletDecoder::<BlockCount, f32, AverageFilter>::new(data_path);
 
         let dims = [4, 4, 1];
         let range = dims.map(|d| 0..d);
@@ -804,7 +909,8 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+        let decoder =
+            VolumeWaveletDecoder::<BlockCount, Vector<f32, 3>, AverageFilter>::new(data_path);
 
         let dims = [2048, 2048, 1];
         let range = dims.map(|d| 0..d);
@@ -848,7 +954,8 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+        let decoder =
+            VolumeWaveletDecoder::<BlockCount, Vector<f32, 3>, AverageFilter>::new(data_path);
 
         let dims = [2048, 2048, 1];
         let range = [500..500 + 1080, 128..128 + 1920, 0..1];
@@ -893,7 +1000,8 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+        let decoder =
+            VolumeWaveletDecoder::<BlockCount, Vector<f32, 3>, AverageFilter>::new(data_path);
 
         let dims = [2048, 2048, 1];
         let range = dims.map(|d| 0..d);
@@ -988,7 +1096,8 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+        let decoder =
+            VolumeWaveletDecoder::<BlockCount, Vector<f32, 3>, AverageFilter>::new(data_path);
 
         let dims = [2048, 2048, 1];
         let range = [500..500 + 1080, 128..128 + 1920, 0..1];
@@ -1083,7 +1192,8 @@ mod test {
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+        let decoder =
+            VolumeWaveletDecoder::<BlockCount, Vector<f32, 3>, AverageFilter>::new(data_path);
 
         let dims = [3024, 4032, 1];
         let range = dims.map(|d| 0..d);
@@ -1121,13 +1231,14 @@ mod test {
     }
 
     #[test]
-    fn decode_img_2_greedy() {
+    fn decode_img_2_general() {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        res_path.push("resources/test/decode_img_2_greedy/");
+        res_path.push("resources/test/decode_img_2_general/");
 
         let data_path = res_path.join("output.bin");
 
-        let decoder = VolumeWaveletDecoder::<Vector<f32, 3>>::new(data_path);
+        let decoder =
+            VolumeWaveletDecoder::<BlockCount, Vector<f32, 3>, AverageFilter>::new(data_path);
 
         let dims = [3024, 4032, 1];
         let range = dims.map(|d| 0..d);

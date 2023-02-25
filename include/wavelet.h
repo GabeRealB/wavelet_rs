@@ -1745,9 +1745,6 @@ template <typename T>
 using writer_fetcher = callable<FnOnce, block_writer_fetcher<T>, slice<const std::size_t>, slice<const std::size_t>>;
 
 namespace filters {
-    /// Marker type for the haar wavelet.
-    struct haar_wavelet;
-
     /// Marker type for the average filter.
     struct average_filter;
 }
@@ -1820,8 +1817,6 @@ namespace enc_priv_ {
     extern "C" void wavelet_rs_encoder_##N##_add_fetcher(encoder_*,                  \
         const slice<const std::size_t>*,                                             \
         const priv_::maybe_uninit<volume_fetcher<T>>*);                              \
-    extern "C" void wavelet_rs_encoder_##N##_encode_haar(const encoder_*,            \
-        const char*, const slice<const std::size_t>*, bool);                         \
     extern "C" void wavelet_rs_encoder_##N##_encode_average(const encoder_*,         \
         const char*, const slice<const std::size_t>*, bool);                         \
     ENCODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                                  \
@@ -1841,11 +1836,6 @@ namespace enc_priv_ {
         static constexpr auto new_fn = wavelet_rs_encoder_##N##_new;                 \
         static constexpr auto free_fn = wavelet_rs_encoder_##N##_free;               \
         static constexpr auto add_fetcher_fn = wavelet_rs_encoder_##N##_add_fetcher; \
-    };                                                                               \
-    template <>                                                                      \
-    struct encoder_enc_impl<T, filters::haar_wavelet> {                              \
-        static constexpr bool implemented = true;                                    \
-        static constexpr auto encode_fn = wavelet_rs_encoder_##N##_encode_haar;      \
     };                                                                               \
     template <>                                                                      \
     struct encoder_enc_impl<T, filters::average_filter> {                            \
@@ -2098,6 +2088,7 @@ namespace dec_priv_ {
         priv_::maybe_uninit<decoder_info>*);
 
     extern "C" void wavelet_rs_allowed_block_sizes(std::size_t,
+        std::uint8_t,
         std::uint8_t,
         std::uint8_t,
         priv_::maybe_uninit<option<owned_slice<std::size_t>>>*);
@@ -2389,12 +2380,16 @@ inline decoder_info get_decoder_info(const char* path)
 ///
 /// A `L0` error occurs when the size of the second pass is not a power of two,
 /// while a `L1` error occurs when the block size does not divide into `dim`.
-inline option<owned_slice<std::size_t>> allowed_block_sizes(std::size_t dim, bool allow_l0_error, bool allow_l1_error)
+inline option<owned_slice<std::size_t>> allowed_block_sizes(std::size_t dim,
+    bool use_exact_method,
+    bool allow_l0_error,
+    bool allow_l1_error)
 {
     static_assert(std::is_standard_layout<priv_::maybe_uninit<option<owned_slice<std::size_t>>>>::value, "invalid layout");
 
     priv_::maybe_uninit<option<owned_slice<std::size_t>>> res {};
     dec_priv_::wavelet_rs_allowed_block_sizes(dim,
+        static_cast<std::uint8_t>(use_exact_method),
         static_cast<std::uint8_t>(allow_l0_error),
         static_cast<std::uint8_t>(allow_l1_error),
         &res);

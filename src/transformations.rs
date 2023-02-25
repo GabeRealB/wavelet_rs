@@ -1,14 +1,13 @@
 //! Wavelet based transformations.
 mod basic;
-pub(crate) mod greedy_wavelet_transform;
+pub(crate) mod general_wavelet_transform;
 mod resample;
 pub(crate) mod wavelet_transform;
 
 pub use basic::{Chain, Identity, Reverse};
-pub use greedy_wavelet_transform::{
-    has_known_greedy_filter, BlockCount, DerivableMetadataFilter, GreedyFilter,
-    GreedyTransformCoefficents, GreedyWaveletTransform, GreedyWaveletTransformBackwardsCfg,
-    KnownGreedyFilter, TryToKnownGreedyFilter,
+pub use general_wavelet_transform::{
+    BlockCount, DerivableMetadataFilter, GeneralFilter, GeneralTransformCoefficents,
+    GeneralWaveletTransform, GeneralWaveletTransformBackwardsCfg,
 };
 pub use resample::{
     Lerp, ResampleCfg, ResampleCfgOwned, ResampleClamp, ResampleExtend, ResampleIScale,
@@ -296,7 +295,7 @@ mod tests {
         let img_backwards_path = res_path.join("img_2_backwards_haar_custom_steps.png");
 
         let f_cfg = WaveletDecompCfg::new(&[2, 2]);
-        let b_cfg = WaveletRecompCfg::new(&[1, 2], None);
+        let b_cfg = WaveletRecompCfg::new(&[1, 2], Some(&[0, 1, 0, 1]));
         let transform = WaveletTransform::new(HaarWavelet, false);
         build_img(
             true,
@@ -319,7 +318,7 @@ mod tests {
         let img_backwards_path = res_path.join("img_2_backwards_average_filter_custom_steps.png");
 
         let f_cfg = WaveletDecompCfg::new(&[2, 2]);
-        let b_cfg = WaveletRecompCfg::new(&[1, 2], None);
+        let b_cfg = WaveletRecompCfg::new(&[1, 2], Some(&[0, 1, 0, 1]));
         let transform = WaveletTransform::new(AverageFilter, false);
         build_img(
             true,
