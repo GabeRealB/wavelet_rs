@@ -15,8 +15,8 @@ use crate::stream::{
 };
 use crate::volume::{Lane, LaneMut, VolumeBlock, VolumeWindow};
 
-/// Definition of a filter to be used with the greedy wavelet transform.
-pub trait GreedyFilter<Meta, T>: Sync {
+/// Definition of a filter to be used with the general wavelet transform.
+pub trait GeneralFilter<Meta, T>: Sync {
     /// Applies a forward pass.
     fn forwards(
         &self,
@@ -44,9 +44,9 @@ pub trait GreedyFilter<Meta, T>: Sync {
     fn compute_metadata(&self, input: VolumeWindow<'_, T>) -> VolumeBlock<Meta>;
 }
 
-/// A [`GreedyFilter`] where the metadata can be derived from only
+/// A [`GeneralFilter`] where the metadata can be derived from only
 /// the data size and the metadata of the previous step.
-pub trait DerivableMetadataFilter<Meta, T>: GreedyFilter<Meta, T> {
+pub trait DerivableMetadataFilter<Meta, T>: GeneralFilter<Meta, T> {
     /// Derives the initial metadata block.
     fn derive_init(&self, dims: &[usize]) -> VolumeBlock<Meta>;
 
@@ -54,45 +54,45 @@ pub trait DerivableMetadataFilter<Meta, T>: GreedyFilter<Meta, T> {
     fn derive_step(&self, input: Lane<'_, Meta>, output: LaneMut<'_, Meta>);
 }
 
-/// Tries to construct a [`KnownGreedyFilter`] from an arbitrary type.
-pub trait TryToKnownGreedyFilter {
-    /// Fetches the [`KnownGreedyFilter`] which describes the desired operation.
-    fn to_known_greedy_filter(&self) -> Option<KnownGreedyFilter>;
+/// Tries to construct a [`KnownGeneralFilter`] from an arbitrary type.
+pub trait TryToKnownGeneralFilter {
+    /// Fetches the [`KnownGeneralFilter`] which describes the desired operation.
+    fn to_known_general_filter(&self) -> Option<KnownGeneralFilter>;
 }
 
-impl<T> TryToKnownGreedyFilter for T {
-    default fn to_known_greedy_filter(&self) -> Option<KnownGreedyFilter> {
+impl<T> TryToKnownGeneralFilter for T {
+    default fn to_known_general_filter(&self) -> Option<KnownGeneralFilter> {
         None
     }
 }
 
-impl TryToKnownGreedyFilter for AverageFilter {
-    fn to_known_greedy_filter(&self) -> Option<KnownGreedyFilter> {
-        Some(KnownGreedyFilter::Average)
+impl TryToKnownGeneralFilter for AverageFilter {
+    fn to_known_general_filter(&self) -> Option<KnownGeneralFilter> {
+        Some(KnownGeneralFilter::Average)
     }
 }
 
-impl TryToKnownGreedyFilter for KnownGreedyFilter {
-    fn to_known_greedy_filter(&self) -> Option<KnownGreedyFilter> {
+impl TryToKnownGeneralFilter for KnownGeneralFilter {
+    fn to_known_general_filter(&self) -> Option<KnownGeneralFilter> {
         Some(*self)
     }
 }
 
-/// Checks whether a type is associated with a [`KnownGreedyFilter`].
-pub fn has_known_greedy_filter<T>(x: &T) -> bool {
-    x.to_known_greedy_filter().is_some()
+/// Checks whether a type is associated with a [`KnownGeneralFilter`].
+pub fn has_known_general_filter<T>(x: &T) -> bool {
+    x.to_known_general_filter().is_some()
 }
 
-/// Known types of preimplemented greedy filters.
+/// Known types of preimplemented general filters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum KnownGreedyFilter {
+pub enum KnownGeneralFilter {
     /// Filter computing the average.
     Average,
 }
 
-impl<Meta, T> GreedyFilter<Meta, T> for KnownGreedyFilter
+impl<Meta, T> GeneralFilter<Meta, T> for KnownGeneralFilter
 where
-    AverageFilter: GreedyFilter<Meta, T>,
+    AverageFilter: GeneralFilter<Meta, T>,
 {
     fn forwards(
         &self,
@@ -103,8 +103,8 @@ where
         meta: &mut [Meta],
     ) {
         match self {
-            KnownGreedyFilter::Average => {
-                GreedyFilter::forwards(&AverageFilter, input, meta_in, low, high, meta)
+            KnownGeneralFilter::Average => {
+                GeneralFilter::forwards(&AverageFilter, input, meta_in, low, high, meta)
             }
         }
     }
@@ -118,35 +118,35 @@ where
         meta: &mut [Meta],
     ) {
         match self {
-            KnownGreedyFilter::Average => {
-                GreedyFilter::merge(&AverageFilter, input, meta_in, low, high, meta)
+            KnownGeneralFilter::Average => {
+                GeneralFilter::merge(&AverageFilter, input, meta_in, low, high, meta)
             }
         }
     }
 
     fn backwards(&self, output: &mut LaneMut<'_, T>, low: &[T], high: &[T], meta_curr: &[Meta]) {
         match self {
-            KnownGreedyFilter::Average => {
-                GreedyFilter::backwards(&AverageFilter, output, low, high, meta_curr)
+            KnownGeneralFilter::Average => {
+                GeneralFilter::backwards(&AverageFilter, output, low, high, meta_curr)
             }
         }
     }
 
     fn compute_metadata(&self, input: VolumeWindow<'_, T>) -> VolumeBlock<Meta> {
         match self {
-            KnownGreedyFilter::Average => GreedyFilter::compute_metadata(&AverageFilter, input),
+            KnownGeneralFilter::Average => GeneralFilter::compute_metadata(&AverageFilter, input),
         }
     }
 }
 
-impl<Meta, T> DerivableMetadataFilter<Meta, T> for KnownGreedyFilter
+impl<Meta, T> DerivableMetadataFilter<Meta, T> for KnownGeneralFilter
 where
-    KnownGreedyFilter: GreedyFilter<Meta, T>,
+    KnownGeneralFilter: GeneralFilter<Meta, T>,
     AverageFilter: DerivableMetadataFilter<Meta, T>,
 {
     fn derive_init(&self, dims: &[usize]) -> VolumeBlock<Meta> {
         match self {
-            KnownGreedyFilter::Average => {
+            KnownGeneralFilter::Average => {
                 DerivableMetadataFilter::derive_init(&AverageFilter, dims)
             }
         }
@@ -154,23 +154,23 @@ where
 
     fn derive_step(&self, input: Lane<'_, Meta>, output: LaneMut<'_, Meta>) {
         match self {
-            KnownGreedyFilter::Average => {
+            KnownGeneralFilter::Average => {
                 DerivableMetadataFilter::derive_step(&AverageFilter, input, output)
             }
         }
     }
 }
 
-impl Serializable for KnownGreedyFilter {
+impl Serializable for KnownGeneralFilter {
     fn serialize(self, stream: &mut SerializeStream) {
         let num = self as i32;
         num.serialize(stream);
     }
 }
 
-impl Deserializable for KnownGreedyFilter {
+impl Deserializable for KnownGeneralFilter {
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
-        const AVERAGE_DISC: i32 = KnownGreedyFilter::Average as i32;
+        const AVERAGE_DISC: i32 = KnownGeneralFilter::Average as i32;
 
         let num = i32::deserialize(stream);
         match num {
@@ -241,7 +241,7 @@ impl Deserializable for BlockCount {
     }
 }
 
-impl<T> GreedyFilter<BlockCount, T> for AverageFilter
+impl<T> GeneralFilter<BlockCount, T> for AverageFilter
 where
     AverageFilter: Filter<T>,
     T: PartialOrd
@@ -338,7 +338,7 @@ where
 
 impl<T> DerivableMetadataFilter<BlockCount, T> for AverageFilter
 where
-    AverageFilter: GreedyFilter<BlockCount, T>,
+    AverageFilter: GeneralFilter<BlockCount, T>,
 {
     fn derive_init(&self, dims: &[usize]) -> VolumeBlock<BlockCount> {
         VolumeBlock::new_fill(dims, BlockCount::new(1, 0)).unwrap()
@@ -353,31 +353,31 @@ where
     }
 }
 
-/// Implementation of the greedy wavelet transform
+/// Implementation of the general wavelet transform
 /// which computes the wavelet transform for sizes other
 /// than powers of two by decomposing the input into powers of two
 /// and greedily recombining them when the combined size is a power
 /// of two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GreedyWaveletTransform<F, Meta> {
+pub struct GeneralWaveletTransform<F, Meta> {
     filter: F,
     _phantom: PhantomData<fn() -> Meta>,
 }
 
-/// Data needed to compute the inverse of the greedy wavelet transform.
+/// Data needed to compute the inverse of the general wavelet transform.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GreedyWaveletTransformBackwardsCfg<'a> {
+pub struct GeneralWaveletTransformBackwardsCfg<'a> {
     steps: &'a [u32],
 }
 
-impl<'a> GreedyWaveletTransformBackwardsCfg<'a> {
+impl<'a> GeneralWaveletTransformBackwardsCfg<'a> {
     /// Constructs a new instance.
     pub fn new(steps: &'a [u32]) -> Self {
         Self { steps }
     }
 }
 
-impl<F, Meta> GreedyWaveletTransform<F, Meta> {
+impl<F, Meta> GeneralWaveletTransform<F, Meta> {
     /// Constructs a new instance which will use the provided filter.
     pub fn new(filter: F) -> Self {
         Self {
@@ -387,55 +387,55 @@ impl<F, Meta> GreedyWaveletTransform<F, Meta> {
     }
 }
 
-impl<Meta, T, F> OneWayTransform<Forwards, VolumeBlock<T>> for GreedyWaveletTransform<F, Meta>
+impl<Meta, T, F> OneWayTransform<Forwards, VolumeBlock<T>> for GeneralWaveletTransform<F, Meta>
 where
     Meta: Zero + Send + Sync + Clone,
     T: Zero + Send + Sync + Clone,
-    F: GreedyFilter<Meta, T>,
+    F: GeneralFilter<Meta, T>,
 {
-    type Result = GreedyTransformCoefficents<Meta, T>;
+    type Result = GeneralTransformCoefficents<Meta, T>;
 
     type Cfg<'a> = ();
 
     fn apply(&self, input: VolumeBlock<T>, _: Self::Cfg<'_>) -> Self::Result {
-        GreedyTransformCoefficents::new(input, &self.filter)
+        GeneralTransformCoefficents::new(input, &self.filter)
     }
 }
 
-impl<Meta, T, F> OneWayTransform<Backwards, &GreedyTransformCoefficents<Meta, T>>
-    for GreedyWaveletTransform<F, Meta>
+impl<Meta, T, F> OneWayTransform<Backwards, &GeneralTransformCoefficents<Meta, T>>
+    for GeneralWaveletTransform<F, Meta>
 where
     Meta: Zero + Send + Sync + Clone,
     T: Zero + Send + Sync + Clone,
-    F: GreedyFilter<Meta, T>,
+    F: GeneralFilter<Meta, T>,
 {
     type Result = VolumeBlock<T>;
 
-    type Cfg<'a> = GreedyWaveletTransformBackwardsCfg<'a>;
+    type Cfg<'a> = GeneralWaveletTransformBackwardsCfg<'a>;
 
     fn apply(
         &self,
-        input: &GreedyTransformCoefficents<Meta, T>,
+        input: &GeneralTransformCoefficents<Meta, T>,
         cfg: Self::Cfg<'_>,
     ) -> Self::Result {
         input.reconstruct(cfg.steps, &self.filter)
     }
 }
 
-impl<Meta, T, F> OneWayTransform<Backwards, GreedyTransformCoefficents<Meta, T>>
-    for GreedyWaveletTransform<F, Meta>
+impl<Meta, T, F> OneWayTransform<Backwards, GeneralTransformCoefficents<Meta, T>>
+    for GeneralWaveletTransform<F, Meta>
 where
     Meta: Zero + Send + Sync + Clone,
     T: Zero + Send + Sync + Clone,
-    F: GreedyFilter<Meta, T>,
+    F: GeneralFilter<Meta, T>,
 {
     type Result = VolumeBlock<T>;
 
-    type Cfg<'a> = GreedyWaveletTransformBackwardsCfg<'a>;
+    type Cfg<'a> = GeneralWaveletTransformBackwardsCfg<'a>;
 
     fn apply(
         &self,
-        input: GreedyTransformCoefficents<Meta, T>,
+        input: GeneralTransformCoefficents<Meta, T>,
         cfg: Self::Cfg<'_>,
     ) -> Self::Result {
         input.reconstruct(cfg.steps, &self.filter)
@@ -445,7 +445,7 @@ where
 /// Result of a variant of the wavelet transform which works
 /// with sizes other than powers of two.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct GreedyTransformCoefficents<Meta, T> {
+pub struct GeneralTransformCoefficents<Meta, T> {
     dims: Vec<usize>,
     pub(crate) low: VolumeBlock<T>,
     pub(crate) meta: VolumeBlock<Meta>,
@@ -461,13 +461,13 @@ struct CoeffLevel<Meta, T> {
     metadata: VolumeBlock<Meta>,
 }
 
-impl<Meta, T> GreedyTransformCoefficents<Meta, T>
+impl<Meta, T> GeneralTransformCoefficents<Meta, T>
 where
     Meta: Zero + Clone,
     T: Zero + Clone,
 {
     /// Applies the wavelet transform to the input block.
-    pub fn new(input: VolumeBlock<T>, filter: &impl GreedyFilter<Meta, T>) -> Self {
+    pub fn new(input: VolumeBlock<T>, filter: &impl GeneralFilter<Meta, T>) -> Self {
         let metadata = filter.compute_metadata(input.window());
         Self::new_with_meta(input, metadata, filter)
     }
@@ -475,7 +475,7 @@ where
     pub(crate) fn new_with_meta(
         input: VolumeBlock<T>,
         metadata: VolumeBlock<Meta>,
-        filter: &impl GreedyFilter<Meta, T>,
+        filter: &impl GeneralFilter<Meta, T>,
     ) -> Self {
         let steps = input
             .dims()
@@ -489,7 +489,7 @@ where
         self,
         mut other: Self,
         dim: usize,
-        filter: &impl GreedyFilter<Meta, T>,
+        filter: &impl GeneralFilter<Meta, T>,
     ) -> Self {
         assert!(self
             .dims
@@ -632,7 +632,7 @@ where
     fn apply_forwards(
         input: VolumeBlock<T>,
         mut metadata: VolumeBlock<Meta>,
-        filter: &impl GreedyFilter<Meta, T>,
+        filter: &impl GeneralFilter<Meta, T>,
         steps: &[u32],
         adapt: bool,
     ) -> Self {
@@ -724,7 +724,7 @@ where
     pub fn reconstruct(
         &self,
         steps: &[u32],
-        filter: &impl GreedyFilter<Meta, T>,
+        filter: &impl GeneralFilter<Meta, T>,
     ) -> VolumeBlock<T> {
         self.reconstruct_with_low(self.low.clone(), steps, filter)
     }
@@ -733,7 +733,7 @@ where
         &self,
         low: VolumeBlock<T>,
         steps: &[u32],
-        filter: &impl GreedyFilter<Meta, T>,
+        filter: &impl GeneralFilter<Meta, T>,
     ) -> VolumeBlock<T> {
         assert_eq!(low.dims(), self.low.dims());
 
@@ -834,7 +834,7 @@ where
     pub fn reconstruct_extend(
         &self,
         steps: &[u32],
-        filter: &impl GreedyFilter<Meta, T>,
+        filter: &impl GeneralFilter<Meta, T>,
     ) -> VolumeBlock<T> {
         self.reconstruct_extend_to(steps, &self.dims, filter)
     }
@@ -843,7 +843,7 @@ where
         &self,
         steps: &[u32],
         dims: &[usize],
-        filter: &impl GreedyFilter<Meta, T>,
+        filter: &impl GeneralFilter<Meta, T>,
     ) -> VolumeBlock<T> {
         self.reconstruct_extend_to_with_low(self.low.clone(), steps, dims, filter)
     }
@@ -853,7 +853,7 @@ where
         low: VolumeBlock<T>,
         steps: &[u32],
         dims: &[usize],
-        filter: &impl GreedyFilter<Meta, T>,
+        filter: &impl GeneralFilter<Meta, T>,
     ) -> VolumeBlock<T> {
         let mut data = self.reconstruct_with_low(low, steps, filter);
         if data.dims() == dims {
@@ -953,7 +953,7 @@ where
     }
 }
 
-impl<Meta, T> GreedyTransformCoefficents<Meta, T> {
+impl<Meta, T> GeneralTransformCoefficents<Meta, T> {
     /// Writes out the coefficients to the filesystem.
     pub fn write_out_partial(self, path: impl AsRef<Path>, compression: CompressionLevel)
     where
@@ -1000,7 +1000,7 @@ impl<Meta, T> GreedyTransformCoefficents<Meta, T> {
 
     pub(crate) fn read_for_steps_impl(
         steps: &[u32],
-        non_greedy_size: Option<&[usize]>,
+        non_general_size: Option<&[usize]>,
         path: impl AsRef<Path>,
         filter: &impl DerivableMetadataFilter<Meta, T>,
     ) -> (Self, Vec<u32>)
@@ -1030,10 +1030,10 @@ impl<Meta, T> GreedyTransformCoefficents<Meta, T> {
             .map(|&d| d.next_power_of_two().ilog2())
             .collect::<Vec<_>>();
 
-        let steps = if let Some(non_greedy) = non_greedy_size {
+        let steps = if let Some(non_general) = non_general_size {
             let steps_diff = max_steps
                 .iter()
-                .zip(non_greedy)
+                .zip(non_general)
                 .map(|(max, dims)| dims.ilog2() - max);
 
             steps
@@ -1092,7 +1092,7 @@ impl<Meta, T> GreedyTransformCoefficents<Meta, T> {
     }
 
     /// Transforms a [`VolumeBlock`] containing the traditional wavelet
-    /// transform into the greedy format.
+    /// transform into the general format.
     pub fn new_from_volume(
         volume: VolumeBlock<T>,
         decomposition: &[usize],
@@ -1274,7 +1274,7 @@ impl<Meta, T> CoeffLevel<Meta, T> {
         path: impl AsRef<Path>,
         meta: VolumeBlock<Meta>,
         skipped: &[u32],
-        filter: &impl GreedyFilter<Meta, T>,
+        filter: &impl GeneralFilter<Meta, T>,
     ) -> Self
     where
         T: Zero + Deserializable + Clone,
@@ -1302,7 +1302,7 @@ impl<Meta, T> CoeffLevel<Meta, T> {
         let meta_window = meta.window();
         let meta = meta_window.custom_range(coeff.dims()).as_block();
         let adapted =
-            GreedyTransformCoefficents::apply_forwards(coeff, meta, filter, skipped, true);
+            GeneralTransformCoefficents::apply_forwards(coeff, meta, filter, skipped, true);
 
         let coeff = adapted.low;
         let meta = adapted.meta;
@@ -1321,7 +1321,7 @@ impl<Meta, T> CoeffLevel<Meta, T> {
     }
 }
 
-impl<Meta, T> Serializable for GreedyTransformCoefficents<Meta, T>
+impl<Meta, T> Serializable for GeneralTransformCoefficents<Meta, T>
 where
     Meta: Serializable,
     T: Serializable,
@@ -1334,7 +1334,7 @@ where
     }
 }
 
-impl<Meta, T> Deserializable for GreedyTransformCoefficents<Meta, T>
+impl<Meta, T> Deserializable for GeneralTransformCoefficents<Meta, T>
 where
     Meta: Deserializable,
     T: Deserializable,
@@ -1391,7 +1391,7 @@ where
 }
 
 fn forwards_window<Meta, T>(
-    f: &impl GreedyFilter<Meta, T>,
+    f: &impl GeneralFilter<Meta, T>,
     data: VolumeWindow<'_, T>,
     meta: VolumeWindow<'_, Meta>,
     dim: usize,
@@ -1447,7 +1447,7 @@ where
 }
 
 fn adjust_window<Meta, T>(
-    f: &impl GreedyFilter<Meta, T>,
+    f: &impl GeneralFilter<Meta, T>,
     data: VolumeWindow<'_, T>,
     meta: VolumeWindow<'_, Meta>,
     dim: usize,
@@ -1503,7 +1503,7 @@ where
 }
 
 fn backwards_window<Meta, T>(
-    f: &impl GreedyFilter<Meta, T>,
+    f: &impl GeneralFilter<Meta, T>,
     data: VolumeWindow<'_, T>,
     meta: VolumeWindow<'_, Meta>,
     coeff: VolumeWindow<'_, T>,
@@ -1580,10 +1580,10 @@ fn adjust_block_size(mut size: usize, skipped: u32) -> usize {
 mod tests {
     use crate::{filter::AverageFilter, volume::VolumeBlock};
 
-    use super::GreedyTransformCoefficents;
+    use super::GeneralTransformCoefficents;
 
     #[test]
-    fn test_greedy() {
+    fn test_general() {
         let data = VolumeBlock::<f32>::new_with_data(
             &[7, 7],
             vec![
@@ -1595,7 +1595,7 @@ mod tests {
         )
         .unwrap();
 
-        let coeff = GreedyTransformCoefficents::new(data, &AverageFilter);
+        let coeff = GeneralTransformCoefficents::new(data, &AverageFilter);
         let _data = coeff.reconstruct(&[3, 2], &AverageFilter);
         let _data = coeff.reconstruct_extend(&[3, 2], &AverageFilter);
     }

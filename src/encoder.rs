@@ -14,8 +14,8 @@ use crate::{
     },
     transformations::{
         wavelet_transform::{write_out_block, BackwardsOperation},
-        BlockCount, Chain, GreedyFilter, GreedyTransformCoefficents, KnownGreedyFilter,
-        ResampleCfg, ResampleClamp, ReversibleTransform, TryToKnownGreedyFilter, WaveletDecompCfg,
+        BlockCount, Chain, GeneralFilter, GeneralTransformCoefficents, KnownGeneralFilter,
+        ResampleCfg, ResampleClamp, ReversibleTransform, TryToKnownGeneralFilter, WaveletDecompCfg,
         WaveletTransform,
     },
     utilities::{flatten_idx, flatten_idx_unchecked, next_multiple_of, strides_for_dims},
@@ -47,7 +47,7 @@ pub(crate) struct OutputHeader<T> {
 pub(crate) enum BlockType {
     #[default]
     Standard,
-    Greedy,
+    General,
 }
 
 impl Serializable for BlockType {
@@ -59,11 +59,11 @@ impl Serializable for BlockType {
 impl Deserializable for BlockType {
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
         const STANDARD: u8 = BlockType::Standard as u8;
-        const GREEDY: u8 = BlockType::Greedy as u8;
+        const GENERAL: u8 = BlockType::General as u8;
 
         match u8::deserialize(stream) {
             STANDARD => Self::Standard,
-            GREEDY => Self::Greedy,
+            GENERAL => Self::General,
             _ => unimplemented!(),
         }
     }
@@ -71,15 +71,18 @@ impl Deserializable for BlockType {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum CoeffBlock<T> {
-    Standard(VolumeBlock<T>, KnownGreedyFilter),
-    Greedy(GreedyTransformCoefficents<BlockCount, T>, KnownGreedyFilter),
+    Standard(VolumeBlock<T>, KnownGeneralFilter),
+    General(
+        GeneralTransformCoefficents<BlockCount, T>,
+        KnownGeneralFilter,
+    ),
 }
 
 impl<T> CoeffBlock<T> {
-    pub fn is_greedy(&self) -> bool {
+    pub fn is_exact(&self) -> bool {
         match self {
             CoeffBlock::Standard(_, _) => false,
-            CoeffBlock::Greedy(_, _) => true,
+            CoeffBlock::General(_, _) => true,
         }
     }
 
@@ -89,24 +92,24 @@ impl<T> CoeffBlock<T> {
     {
         match self {
             CoeffBlock::Standard(b, _) => b.clone(),
-            CoeffBlock::Greedy(_, _) => panic!("Invalid block type"),
+            CoeffBlock::General(_, _) => panic!("Invalid block type"),
         }
     }
 
-    pub fn greedy_coeff(&self) -> &GreedyTransformCoefficents<BlockCount, T>
+    pub fn general_coeff(&self) -> &GeneralTransformCoefficents<BlockCount, T>
     where
         T: Clone,
     {
         match self {
             CoeffBlock::Standard(_, _) => panic!("Invalid block type"),
-            CoeffBlock::Greedy(b, _) => b,
+            CoeffBlock::General(b, _) => b,
         }
     }
 
-    pub fn greedy_filter(&self) -> KnownGreedyFilter {
+    pub fn general_filter(&self) -> KnownGeneralFilter {
         match self {
             CoeffBlock::Standard(_, f) => *f,
-            CoeffBlock::Greedy(_, f) => *f,
+            CoeffBlock::General(_, f) => *f,
         }
     }
 }
@@ -116,14 +119,14 @@ where
     T: Serializable,
 {
     fn serialize(self, stream: &mut SerializeStream) {
-        self.is_greedy().serialize(stream);
+        self.is_exact().serialize(stream);
 
         match self {
             CoeffBlock::Standard(block, filter) => {
                 block.serialize(stream);
                 filter.serialize(stream);
             }
-            CoeffBlock::Greedy(block, filter) => {
+            CoeffBlock::General(block, filter) => {
                 block.serialize(stream);
                 filter.serialize(stream);
             }
@@ -136,15 +139,15 @@ where
     T: Deserializable,
 {
     fn deserialize(stream: &mut crate::stream::DeserializeStreamRef<'_>) -> Self {
-        let is_greedy = bool::deserialize(stream);
-        if !is_greedy {
+        let is_exact = bool::deserialize(stream);
+        if !is_exact {
             let block = Deserializable::deserialize(stream);
             let filter = Deserializable::deserialize(stream);
             Self::Standard(block, filter)
         } else {
             let block = Deserializable::deserialize(stream);
             let filter = Deserializable::deserialize(stream);
-            Self::Greedy(block, filter)
+            Self::General(block, filter)
         }
     }
 }
@@ -265,13 +268,13 @@ where
         &self,
         output: impl AsRef<Path> + Sync,
         block_size: &[usize],
-        filter: impl ToGenericFilter<T> + TryToKnownGreedyFilter + Serializable + Clone,
-        use_greedy_transform: bool,
+        filter: impl ToGenericFilter<T> + TryToKnownGeneralFilter + Serializable + Clone,
+        use_exact_transform: bool,
         compression: CompressionLevel,
     ) where
         T: Sync,
         GenericFilter<T>: Filter<T>,
-        KnownGreedyFilter: GreedyFilter<BlockCount, T>,
+        KnownGeneralFilter: GeneralFilter<BlockCount, T>,
     {
         // We require that the block size is a power of two and has
         // the same dimensionality as the input data.
@@ -280,7 +283,7 @@ where
             .iter()
             .all(|&block| block.is_power_of_two() && block != 0));
 
-        let greedy_filter = filter.to_known_greedy_filter();
+        let general_filter = filter.to_known_general_filter();
         let filter = filter.to_generic();
 
         // The wavelet transformation requires that the block size is a
@@ -351,7 +354,7 @@ where
             }
             std::fs::create_dir(&block_dir).unwrap();
 
-            if transform_is_exact || !use_greedy_transform {
+            if transform_is_exact || !use_exact_transform {
                 let elements_in_block = clamped_block_size
                     .iter()
                     .map(|size| size.next_power_of_two())
@@ -370,9 +373,9 @@ where
 
                 write_out_block(block_dir, block_decomp, compression);
             } else {
-                let greedy_filter = greedy_filter.unwrap();
-                let coeff = GreedyTransformCoefficents::new(block, &greedy_filter);
-                sx.send((i, coeff.low[0].clone(), coeff.meta[0], BlockType::Greedy))
+                let general_filter = general_filter.unwrap();
+                let coeff = GeneralTransformCoefficents::new(block, &general_filter);
+                sx.send((i, coeff.low[0].clone(), coeff.meta[0], BlockType::General))
                     .unwrap();
 
                 coeff.write_out_partial(block_dir, compression);
@@ -408,8 +411,8 @@ where
             .iter()
             .all(|&x| x == superblock_meta[0]);
 
-        let greedy_filter = greedy_filter.unwrap();
-        let coeff_block = if !use_greedy_transform || can_use_standard_transform {
+        let general_filter = general_filter.unwrap();
+        let coeff_block = if !use_exact_transform || can_use_standard_transform {
             let output_transform_cfg = Chain::combine(
                 ResampleCfg::new(&resample_dims),
                 WaveletDecompCfg::new(&steps),
@@ -417,14 +420,14 @@ where
             let output_transform =
                 Chain::combine(ResampleClamp, WaveletTransform::new(filter.clone(), false));
             let transformed = output_transform.forwards(superblock, output_transform_cfg);
-            CoeffBlock::Standard(transformed, greedy_filter)
+            CoeffBlock::Standard(transformed, general_filter)
         } else {
-            let coeff = GreedyTransformCoefficents::new_with_meta(
+            let coeff = GeneralTransformCoefficents::new_with_meta(
                 superblock,
                 superblock_meta,
-                &greedy_filter,
+                &general_filter,
             );
-            CoeffBlock::Greedy(coeff, greedy_filter)
+            CoeffBlock::General(coeff, general_filter)
         };
 
         let output_header = OutputHeader {
@@ -1233,10 +1236,10 @@ mod test {
     }
 
     #[test]
-    fn encode_img_2_greedy() {
+    fn encode_img_2_general() {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let img_path = res_path.join("resources/test/img_2.jpg");
-        res_path.push("resources/test/encode_img_2_greedy");
+        res_path.push("resources/test/encode_img_2_general");
 
         let f = File::open(img_path).unwrap();
         let reader = BufReader::new(f);

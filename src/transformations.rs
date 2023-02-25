@@ -1,14 +1,14 @@
 //! Wavelet based transformations.
 mod basic;
-pub(crate) mod greedy_wavelet_transform;
+pub(crate) mod general_wavelet_transform;
 mod resample;
 pub(crate) mod wavelet_transform;
 
 pub use basic::{Chain, Identity, Reverse};
-pub use greedy_wavelet_transform::{
-    has_known_greedy_filter, BlockCount, DerivableMetadataFilter, GreedyFilter,
-    GreedyTransformCoefficents, GreedyWaveletTransform, GreedyWaveletTransformBackwardsCfg,
-    KnownGreedyFilter, TryToKnownGreedyFilter,
+pub use general_wavelet_transform::{
+    has_known_general_filter, BlockCount, DerivableMetadataFilter, GeneralFilter,
+    GeneralTransformCoefficents, GeneralWaveletTransform, GeneralWaveletTransformBackwardsCfg,
+    KnownGeneralFilter, TryToKnownGeneralFilter,
 };
 pub use resample::{
     Lerp, ResampleCfg, ResampleCfgOwned, ResampleClamp, ResampleExtend, ResampleIScale,

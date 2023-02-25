@@ -18,7 +18,7 @@ use wavelet_rs::{
     filter::{AverageFilter, Filter, GenericFilter},
     range::for_each_range,
     stream::{CompressionLevel, Deserializable, DeserializeStream, Serializable, SerializeStream},
-    transformations::{BlockCount, DerivableMetadataFilter, KnownGreedyFilter},
+    transformations::{BlockCount, DerivableMetadataFilter, KnownGeneralFilter},
     volume::VolumeBlock,
 };
 
@@ -196,7 +196,7 @@ impl DataStats {
         T: ErrorComputable + Zero + NumCast + Serializable + Deserializable + Clone + Send + Sync,
         T: Zero + Add<Output = T> + Div<Output = T> + Mul<Output = T> + FromUsize + Clone,
         GenericFilter<T>: Filter<T>,
-        KnownGreedyFilter: DerivableMetadataFilter<BlockCount, T>,
+        KnownGeneralFilter: DerivableMetadataFilter<BlockCount, T>,
     {
         info!("Creating intermediates");
 
@@ -617,7 +617,7 @@ fn test_with_block_size<T>(
 where
     T: ErrorComputable + Zero + NumCast + Serializable + Deserializable + Clone + Send + Sync,
     GenericFilter<T>: Filter<T>,
-    KnownGreedyFilter: DerivableMetadataFilter<BlockCount, T>,
+    KnownGeneralFilter: DerivableMetadataFilter<BlockCount, T>,
 {
     info!("Creating stats, exact: {exact:?}");
     trace!("Creating directory: {output_path:?}");
@@ -678,7 +678,7 @@ fn decode<T>(steps: &[u32], dims: &[usize], decoder: &VolumeWaveletDecoder<T>) -
 where
     T: Zero + Deserializable + Clone + Send + Sync,
     GenericFilter<T>: Filter<T>,
-    KnownGreedyFilter: DerivableMetadataFilter<BlockCount, T>,
+    KnownGeneralFilter: DerivableMetadataFilter<BlockCount, T>,
 {
     let range = dims.iter().map(|&d| 0..d).collect::<Vec<_>>();
     let mut data = VolumeBlock::new_zero(dims).unwrap();

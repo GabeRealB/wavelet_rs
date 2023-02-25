@@ -14,8 +14,8 @@ use crate::{
     stream::{AnyMap, Deserializable, DeserializeStream},
     transformations::{
         wavelet_transform::load_block, BlockCount, Chain, DerivableMetadataFilter,
-        GreedyTransformCoefficents, KnownGreedyFilter, ResampleCfg, ResampleExtend, ResampleIScale,
-        Reverse, ReversibleTransform, WaveletRecompCfg, WaveletTransform,
+        GeneralTransformCoefficents, KnownGeneralFilter, ResampleCfg, ResampleExtend,
+        ResampleIScale, Reverse, ReversibleTransform, WaveletRecompCfg, WaveletTransform,
     },
     volume::VolumeBlock,
 };
@@ -106,7 +106,7 @@ where
         curr_levels: &[u32],
         refinements: &[u32],
     ) where
-        KnownGreedyFilter: DerivableMetadataFilter<BlockCount, T>,
+        KnownGeneralFilter: DerivableMetadataFilter<BlockCount, T>,
         BR: Fn(usize) -> R + Sync,
         R: Fn(&[usize]) -> T,
         BW: Fn(usize) -> W + Sync,
@@ -158,7 +158,7 @@ where
             .iter()
             .zip(&input_levels)
             .any(|(&r, &l)| r < l)
-            || self.input_block.is_greedy();
+            || self.input_block.is_exact();
         if requires_input_pass {
             let new_levels: Vec<_> = curr_levels
                 .iter()
@@ -324,7 +324,7 @@ where
         roi: &[Range<usize>],
         levels: &[u32],
     ) where
-        KnownGreedyFilter: DerivableMetadataFilter<BlockCount, T>,
+        KnownGeneralFilter: DerivableMetadataFilter<BlockCount, T>,
         BW: Fn(usize) -> W + Sync,
         W: FnMut(&[usize], T),
     {
@@ -373,15 +373,15 @@ where
             ResampleExtend,
             WaveletTransform::new(self.filter.clone(), false),
         );
-        let first_pass = if !self.input_block.is_greedy() {
+        let first_pass = if !self.input_block.is_exact() {
             input_transform.backwards(self.input_block.standard_block(), input_transform_cfg)
         } else {
-            let coeff = self.input_block.greedy_coeff();
-            let filter = self.input_block.greedy_filter();
+            let coeff = self.input_block.general_coeff();
+            let filter = self.input_block.general_filter();
             coeff.reconstruct_extend(&input_backwards_steps, &filter)
         };
 
-        let combined_blocks = if !self.input_block.is_greedy() {
+        let combined_blocks = if !self.input_block.is_exact() {
             input_backwards_steps
                 .iter()
                 .zip(&self.block_counts)
@@ -390,7 +390,7 @@ where
                 .collect::<Vec<_>>()
         } else {
             self.input_block
-                .greedy_coeff()
+                .general_coeff()
                 .combined_blocks(&input_backwards_steps)
         };
         let second_pass_required = block_backwards_steps.iter().any(|&s| s != 0);
@@ -475,7 +475,7 @@ where
                     // pass.
                     let block_path = self.path.join(format!("block_{block_idx}"));
 
-                    let block = if transform_is_exact || !self.input_block.is_greedy() {
+                    let block = if transform_is_exact || !self.input_block.is_exact() {
                         let low = first_pass[block_idx].clone();
                         let (block, block_decomp) =
                             load_block(block_path, &block_backwards_steps, low, &self.filter);
@@ -491,17 +491,17 @@ where
 
                         block_transform.backwards(block, block_transform_cfg)
                     } else {
-                        let (coeff, steps) = GreedyTransformCoefficents::read_for_steps_impl(
+                        let (coeff, steps) = GeneralTransformCoefficents::read_for_steps_impl(
                             &block_backwards_steps,
                             Some(&self.block_size),
                             block_path,
-                            &self.input_block.greedy_filter(),
+                            &self.input_block.general_filter(),
                         );
 
                         coeff.reconstruct_extend_to(
                             &steps,
                             &block_size,
-                            &self.input_block.greedy_filter(),
+                            &self.input_block.general_filter(),
                         )
                     };
 
@@ -564,13 +564,13 @@ where
                         // coefficients and merge them.
                         let block_path = self.path.join(format!("block_{idx}"));
 
-                        let is_greedy = matches!(self.block_types[idx], BlockType::Greedy);
-                        let coeff = if is_greedy {
-                            GreedyTransformCoefficents::read_for_steps_impl(
+                        let is_exact = matches!(self.block_types[idx], BlockType::General);
+                        let coeff = if is_exact {
+                            GeneralTransformCoefficents::read_for_steps_impl(
                                 &block_backwards_steps,
                                 Some(&self.block_size),
                                 block_path,
-                                &self.input_block.greedy_filter(),
+                                &self.input_block.general_filter(),
                             )
                             .0
                         } else {
@@ -578,20 +578,20 @@ where
                             let (block, block_decomp) =
                                 load_block(block_path, &block_backwards_steps, low, &self.filter);
 
-                            GreedyTransformCoefficents::new_from_volume_custom_size(
+                            GeneralTransformCoefficents::new_from_volume_custom_size(
                                 block,
                                 &self.block_size,
                                 &block_decomp,
-                                &self.input_block.greedy_filter(),
+                                &self.input_block.general_filter(),
                             )
                         };
 
                         if let Some(acc) = acc {
-                            Some(GreedyTransformCoefficents::merge(
+                            Some(GeneralTransformCoefficents::merge(
                                 acc,
                                 coeff,
                                 0,
-                                &self.input_block.greedy_filter(),
+                                &self.input_block.general_filter(),
                             ))
                         } else {
                             Some(coeff)
@@ -602,7 +602,7 @@ where
                         block_coeffs = block_coeffs.fold(lane, None, |acc, coeff| {
                             if let Some(acc) = acc {
                                 let coeff = coeff.unwrap();
-                                Some(acc.merge(coeff, lane, &self.input_block.greedy_filter()))
+                                Some(acc.merge(coeff, lane, &self.input_block.general_filter()))
                             } else {
                                 coeff
                             }
@@ -686,7 +686,7 @@ where
                         block,
                         &block_backwards_steps,
                         &block_size,
-                        &self.input_block.greedy_filter(),
+                        &self.input_block.general_filter(),
                     )
                 };
 
@@ -1227,9 +1227,9 @@ mod test {
     }
 
     #[test]
-    fn decode_img_2_greedy() {
+    fn decode_img_2_general() {
         let mut res_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        res_path.push("resources/test/decode_img_2_greedy/");
+        res_path.push("resources/test/decode_img_2_general/");
 
         let data_path = res_path.join("output.bin");
 
