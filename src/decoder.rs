@@ -1197,7 +1197,7 @@ mod test {
 
         let dims = [3024, 4032, 1];
         let range = dims.map(|d| 0..d);
-        let steps = dims.map(|d: usize| d.ilog2());
+        let steps = dims.map(|d: usize| d.next_power_of_two().ilog2());
         let mut data = VolumeBlock::new_zero(&dims).unwrap();
 
         for x in 0..steps[0] + 1 {
@@ -1226,7 +1226,7 @@ mod test {
                 p.0 = *rgb.as_ref();
             }
             let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
-            img.save(res_path.join(format!("img_1_x_{x}.png"))).unwrap();
+            img.save(res_path.join(format!("img_2_x_{x}.png"))).unwrap();
         }
     }
 
@@ -1242,7 +1242,7 @@ mod test {
 
         let dims = [3024, 4032, 1];
         let range = dims.map(|d| 0..d);
-        let steps = dims.map(|d: usize| d.ilog2());
+        let steps = dims.map(|d: usize| d.next_power_of_two().ilog2());
         let mut data = VolumeBlock::new_zero(&dims).unwrap();
 
         for x in 0..steps[0] + 1 {
@@ -1271,7 +1271,7 @@ mod test {
                 p.0 = *rgb.as_ref();
             }
             let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
-            img.save(res_path.join(format!("img_1_x_{x}.png"))).unwrap();
+            img.save(res_path.join(format!("img_2_x_{x}.png"))).unwrap();
         }
     }
 }

@@ -46,6 +46,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config = load_config(&args.config)?;
     let stats = config.create_stats(&args.output, args.repetitions)?;
     stats.write_stats(&args.output.join("stats.txt"), args.filter)?;
+    stats.write_disk_size_stats(&args.output.join("disk_stats.txt"), args.filter)?;
 
     Ok(())
 }
