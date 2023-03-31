@@ -30,12 +30,18 @@ int main()
     // construct the encoder with the dimensions of the dataset.
     wavelet::slice<std::size_t> dims_slice { dims };
     wavelet::encoder<float> enc { dims_slice, num_base_dims };
+    assert(!enc.get_num_threads().has_value());
+
+    enc.set_num_threads(wavelet::option<std::size_t> { 1 });
+    auto num_threads = enc.get_num_threads();
+    assert(num_threads.has_value() && *num_threads == 1);
 
     // the fetcher is a simple lambda, reading a value out of the vector.
     // the vector is only read, therefore the lambda is thread-safe.
-    wavelet::volume_fetcher<float> fetcher {
-        [&input](wavelet::slice<const std::size_t> pos) { return input[pos[0]]; }
-    };
+    wavelet::volume_fetcher<float>
+        fetcher {
+            [&input](wavelet::slice<const std::size_t> pos) { return input[pos[0]]; }
+        };
 
     // insert the constructed fetcher into the encoder at position [0].
     enc.add_fetcher(wavelet::slice<const std::size_t> { 0 }, std::move(fetcher));
@@ -64,6 +70,11 @@ int main()
     wavelet::decoder<float> dec { "encode_cpp/output.bin" };
 
     assert(dec.dims() == dims_slice);
+    assert(!dec.get_num_threads().has_value());
+
+    dec.set_num_threads(wavelet::option<std::size_t> { 2 });
+    num_threads = dec.get_num_threads();
+    assert(num_threads.has_value() && *num_threads == 2);
 
     // metadata added to the encoder are available to the decoder.
     auto i_meta_dec = dec.metadata_get<int>("invalid key");

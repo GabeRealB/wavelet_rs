@@ -28,6 +28,7 @@ pub struct VolumeWaveletEncoder<'a, T> {
     dims: Vec<usize>,
     strides: Vec<usize>,
     num_base_dims: usize,
+    num_threads: Option<usize>,
     fetchers: Vec<Option<VolumeFetcher<'a, T>>>,
 }
 
@@ -316,6 +317,7 @@ where
             dims: dims.into(),
             strides,
             num_base_dims,
+            num_threads: None,
             fetchers,
         }
     }
@@ -345,8 +347,45 @@ where
         self.metadata.insert(key, value)
     }
 
+    /// Gets the number of threads to use for the encoding operation.
+    pub fn get_num_threads(&self) -> Option<usize> {
+        self.num_threads
+    }
+
+    /// Sets the number of threads to use for the encoding operation.
+    pub fn set_num_threads(&mut self, count: Option<usize>) {
+        self.num_threads = count;
+    }
+
     /// Encodes the dataset with the specified block size and filter.
     pub fn encode<Meta>(
+        &self,
+        output: impl AsRef<Path> + Sync,
+        block_size: &[usize],
+        filter: impl DerivableMetadataFilter<Meta, T> + Serializable + Clone + Send,
+        use_exact_transform: bool,
+        compression: CompressionLevel,
+    ) where
+        Meta: Serializable + Zero + Clone + Send + Sync,
+    {
+        if let Some(thread_count) = self.num_threads {
+            if thread_count != 0 {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(thread_count)
+                    .build()
+                    .unwrap();
+                let output = output.as_ref();
+                return pool.install(move || {
+                    self.encode_impl(output, block_size, filter, use_exact_transform, compression)
+                });
+            }
+        }
+
+        self.encode_impl(output, block_size, filter, use_exact_transform, compression)
+    }
+
+    /// Encodes the dataset with the specified block size and filter.
+    fn encode_impl<Meta>(
         &self,
         output: impl AsRef<Path> + Sync,
         block_size: &[usize],

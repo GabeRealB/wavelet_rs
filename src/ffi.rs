@@ -500,7 +500,7 @@ pub struct BlockReaderFetcherBuilder<'a, T> {
         CSlice<'_, usize>,
     ) -> BlockReaderFetcher<'a, T>,
     _phantom: PhantomData<
-        dyn FnOnce(CSlice<'_, usize>, CSlice<'_, usize>) -> BlockReaderFetcher<'a, T> + 'a,
+        dyn FnOnce(CSlice<'_, usize>, CSlice<'_, usize>) -> BlockReaderFetcher<'a, T> + Send + 'a,
     >,
 }
 
@@ -530,6 +530,8 @@ impl<'a, T> Drop for BlockReaderFetcherBuilder<'a, T> {
         unsafe { (self.drop)(self.ctx) }
     }
 }
+
+unsafe impl<'a, T: Send> Send for BlockReaderFetcherBuilderCtx<'a, T> {}
 
 /// Definition of a block writer.
 #[repr(C)]
@@ -617,7 +619,7 @@ pub struct BlockWriterFetcherBuilder<'a, T> {
         CSlice<'_, usize>,
     ) -> BlockWriterFetcher<'a, T>,
     _phantom: PhantomData<
-        dyn FnOnce(CSlice<'_, usize>, CSlice<'_, usize>) -> BlockWriterFetcher<'a, T> + 'a,
+        dyn FnOnce(CSlice<'_, usize>, CSlice<'_, usize>) -> BlockWriterFetcher<'a, T> + Send + 'a,
     >,
 }
 
@@ -647,6 +649,8 @@ impl<'a, T> Drop for BlockWriterFetcherBuilder<'a, T> {
         unsafe { (self.drop)(self.ctx) }
     }
 }
+
+unsafe impl<'a, T: Send> Send for BlockWriterFetcherBuilder<'a, T> {}
 
 macro_rules! decoder_meta {
     (def) => {
@@ -743,6 +747,12 @@ pub trait Decoder<T> {
     /// Fetches the number of blocks along each dimension.
     fn block_counts(&self) -> &[usize];
 
+    /// Gets the number of threads to use for the decode and refine operations.
+    fn get_num_threads(&self) -> COption<usize>;
+
+    /// Sets the number of threads to use for the decode and refine operations.
+    fn set_num_threads(&mut self, count: COption<usize>);
+
     /// Decodes the dataset.
     fn decode(
         &self,
@@ -785,6 +795,14 @@ where
 
     fn block_counts(&self) -> &[usize] {
         self.block_counts()
+    }
+
+    fn get_num_threads(&self) -> COption<usize> {
+        self.get_num_threads().into()
+    }
+
+    fn set_num_threads(&mut self, count: COption<usize>) {
+        self.set_num_threads(count.into())
     }
 
     fn decode(
@@ -885,6 +903,24 @@ macro_rules! encoder_def {
                 let fetcher = (*fetcher).assume_init_read();
                 let f = move |index: &[usize]| fetcher.call(index);
                 (*encoder).add_fetcher(&*index, f);
+            }
+
+            /// Gets the number of threads to use for the encode operation.
+            #[no_mangle]
+            pub unsafe extern "C" fn [<$($N)* _get_num_threads>](
+                encoder: *const VolumeWaveletEncoder<'_, $T>,
+                count: *mut MaybeUninit<COption<usize>>
+            ) {
+                (*count).write((*encoder).get_num_threads().into());
+            }
+
+            /// Sets the number of threads to use for the encode operation.
+            #[no_mangle]
+            pub unsafe extern "C" fn [<$($N)* _set_num_threads>](
+                encoder: *mut VolumeWaveletEncoder<'_, $T>,
+                count: *const COption<usize>
+            ) {
+                (*encoder).set_num_threads((*count).into())
             }
 
             /// Encodes the dataset with the specified block size and the average filter.
@@ -1030,6 +1066,24 @@ macro_rules! decoder_def {
             ) {
                 let counts = (*decoder).block_counts().into();
                 (*output).write(counts);
+            }
+
+            /// Gets the number of threads to use for the decode and refine operations.
+            #[no_mangle]
+            pub unsafe extern "C" fn [<$($N)* _get_num_threads>](
+                decoder: *const Box<dyn Decoder<$T>>,
+                count: *mut MaybeUninit<COption<usize>>
+            ) {
+                (*count).write((*decoder).get_num_threads());
+            }
+
+            /// Sets the number of threads to use for the decode and refine operations.
+            #[no_mangle]
+            pub unsafe extern "C" fn [<$($N)* _set_num_threads>](
+                decoder: *mut Box<dyn Decoder<$T>>,
+                count: *const COption<usize>
+            ) {
+                (*decoder).set_num_threads(*count)
             }
 
             /// Decodes the dataset.
