@@ -2269,8 +2269,7 @@ public:
 
         priv_::maybe_uninit<reader_fetcher<T>> r { std::forward<reader_fetcher<T>>(reader) };
         priv_::maybe_uninit<writer_fetcher<T>> w { std::forward<writer_fetcher<T>>(writer) };
-        decoder_::refine_fn(this->m_dec, &reader, &writer, &input_range,
-            &output_range, &curr_levels, &refinements);
+        decoder_::refine_fn(this->m_dec, &r, &w, &input_range, &output_range, &curr_levels, &refinements);
     }
 
     /// Returns the pointer to the type-erased decoder.
