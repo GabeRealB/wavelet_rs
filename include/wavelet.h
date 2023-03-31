@@ -1810,37 +1810,43 @@ namespace enc_priv_ {
     ENCODER_METADATA_ARRAY_EXTERN(T, N, M, MN) \
     ENCODER_METADATA_SLICE_EXTERN(T, N, M, MN)
 
-#define ENCODER_EXTERN_(T, N)                                                        \
-    extern "C" encoder_* wavelet_rs_encoder_##N##_new(                               \
-        const slice<const std::size_t>*, std::size_t);                               \
-    extern "C" void wavelet_rs_encoder_##N##_free(encoder_*);                        \
-    extern "C" void wavelet_rs_encoder_##N##_add_fetcher(encoder_*,                  \
-        const slice<const std::size_t>*,                                             \
-        const priv_::maybe_uninit<volume_fetcher<T>>*);                              \
-    extern "C" void wavelet_rs_encoder_##N##_encode_average(const encoder_*,         \
-        const char*, const slice<const std::size_t>*, bool);                         \
-    ENCODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                                  \
-    ENCODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                                \
-    ENCODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                                \
-    ENCODER_METADATA_EXTERN(T, N, std::uint64_t, u64)                                \
-    ENCODER_METADATA_EXTERN(T, N, std::int8_t, i8)                                   \
-    ENCODER_METADATA_EXTERN(T, N, std::int16_t, i16)                                 \
-    ENCODER_METADATA_EXTERN(T, N, std::int32_t, i32)                                 \
-    ENCODER_METADATA_EXTERN(T, N, std::int64_t, i64)                                 \
-    ENCODER_METADATA_EXTERN(T, N, float, f32)                                        \
-    ENCODER_METADATA_EXTERN(T, N, double, f64)                                       \
-    ENCODER_METADATA_EXTERN(T, N, string, CString)                                   \
-    template <>                                                                      \
-    struct encoder_impl<T> {                                                         \
-        static constexpr bool implemented = true;                                    \
-        static constexpr auto new_fn = wavelet_rs_encoder_##N##_new;                 \
-        static constexpr auto free_fn = wavelet_rs_encoder_##N##_free;               \
-        static constexpr auto add_fetcher_fn = wavelet_rs_encoder_##N##_add_fetcher; \
-    };                                                                               \
-    template <>                                                                      \
-    struct encoder_enc_impl<T, filters::average_filter> {                            \
-        static constexpr bool implemented = true;                                    \
-        static constexpr auto encode_fn = wavelet_rs_encoder_##N##_encode_average;   \
+#define ENCODER_EXTERN_(T, N)                                                                \
+    extern "C" encoder_* wavelet_rs_encoder_##N##_new(                                       \
+        const slice<const std::size_t>*, std::size_t);                                       \
+    extern "C" void wavelet_rs_encoder_##N##_free(encoder_*);                                \
+    extern "C" void wavelet_rs_encoder_##N##_add_fetcher(encoder_*,                          \
+        const slice<const std::size_t>*,                                                     \
+        const priv_::maybe_uninit<volume_fetcher<T>>*);                                      \
+    extern "C" void wavelet_rs_encoder_##N##_get_num_threads(const encoder_*,                \
+        priv_::maybe_uninit<option<std::size_t>>*);                                          \
+    extern "C" void wavelet_rs_encoder_##N##_set_num_threads(encoder_*,                      \
+        const option<std::size_t>*);                                                         \
+    extern "C" void wavelet_rs_encoder_##N##_encode_average(const encoder_*,                 \
+        const char*, const slice<const std::size_t>*, bool);                                 \
+    ENCODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                                          \
+    ENCODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                                        \
+    ENCODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                                        \
+    ENCODER_METADATA_EXTERN(T, N, std::uint64_t, u64)                                        \
+    ENCODER_METADATA_EXTERN(T, N, std::int8_t, i8)                                           \
+    ENCODER_METADATA_EXTERN(T, N, std::int16_t, i16)                                         \
+    ENCODER_METADATA_EXTERN(T, N, std::int32_t, i32)                                         \
+    ENCODER_METADATA_EXTERN(T, N, std::int64_t, i64)                                         \
+    ENCODER_METADATA_EXTERN(T, N, float, f32)                                                \
+    ENCODER_METADATA_EXTERN(T, N, double, f64)                                               \
+    ENCODER_METADATA_EXTERN(T, N, string, CString)                                           \
+    template <>                                                                              \
+    struct encoder_impl<T> {                                                                 \
+        static constexpr bool implemented = true;                                            \
+        static constexpr auto new_fn = wavelet_rs_encoder_##N##_new;                         \
+        static constexpr auto free_fn = wavelet_rs_encoder_##N##_free;                       \
+        static constexpr auto add_fetcher_fn = wavelet_rs_encoder_##N##_add_fetcher;         \
+        static constexpr auto get_num_threads_fn = wavelet_rs_encoder_##N##_get_num_threads; \
+        static constexpr auto set_num_threads_fn = wavelet_rs_encoder_##N##_set_num_threads; \
+    };                                                                                       \
+    template <>                                                                              \
+    struct encoder_enc_impl<T, filters::average_filter> {                                    \
+        static constexpr bool implemented = true;                                            \
+        static constexpr auto encode_fn = wavelet_rs_encoder_##N##_encode_average;           \
     };
 
 #ifdef WAVELET_RS_IMPORT_VEC
@@ -1922,6 +1928,25 @@ public:
 
         priv_::maybe_uninit<volume_fetcher<T>> f { std::move(fetcher) };
         encoder_::add_fetcher_fn(this->m_enc, &index, &f);
+    }
+
+    /// Gets the number of threads to use for the encode operation.
+    option<std::size_t> get_num_threads() const
+    {
+        static_assert(std::is_standard_layout<option<std::size_t>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<priv_::maybe_uninit<option<std::size_t>>>::value, "invalid layout");
+
+        priv_::maybe_uninit<option<std::size_t>> res {};
+        encoder_::get_num_threads_fn(this->m_enc, &res);
+        return res.get();
+    }
+
+    /// Sets the number of threads to use for the encode operation.
+    void set_num_threads(option<std::size_t> num_threads)
+    {
+        static_assert(std::is_standard_layout<option<std::size_t>>::value, "invalid layout");
+
+        encoder_::set_num_threads_fn(this->m_enc, &num_threads);
     }
 
     /// Encodes the volume using the inserted fetchers and the specified filter.
@@ -2024,47 +2049,53 @@ namespace dec_priv_ {
     DECODER_METADATA_ARRAY_EXTERN(T, N, M, MN) \
     DECODER_METADATA_SLICE_EXTERN(T, N, M, MN)
 
-#define DECODER_EXTERN_(T, N)                                                          \
-    extern "C" decoder_* wavelet_rs_decoder_##N##_new(const char*);                    \
-    extern "C" void wavelet_rs_decoder_##N##_free(decoder_*);                          \
-    extern "C" void wavelet_rs_decoder_##N##_dims(const decoder_*,                     \
-        priv_::maybe_uninit<slice<const std::size_t>>*);                               \
-    extern "C" void wavelet_rs_decoder_##N##_block_size(const decoder_*,               \
-        priv_::maybe_uninit<slice<const std::size_t>>*);                               \
-    extern "C" void wavelet_rs_decoder_##N##_block_counts(const decoder_*,             \
-        priv_::maybe_uninit<slice<const std::size_t>>*);                               \
-    extern "C" void wavelet_rs_decoder_##N##_decode(const decoder_*,                   \
-        const priv_::maybe_uninit<writer_fetcher<T>>*,                                 \
-        const slice<const range<std::size_t>>*,                                        \
-        const slice<const std::uint32_t>*);                                            \
-    extern "C" void wavelet_rs_decoder_##N##_refine(const decoder_*,                   \
-        const priv_::maybe_uninit<reader_fetcher<T>>*,                                 \
-        const priv_::maybe_uninit<writer_fetcher<T>>*,                                 \
-        const slice<const range<std::size_t>>*,                                        \
-        const slice<const range<std::size_t>>*,                                        \
-        const slice<const std::uint32_t>*,                                             \
-        const slice<const std::uint32_t>*);                                            \
-    DECODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                                    \
-    DECODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                                  \
-    DECODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                                  \
-    DECODER_METADATA_EXTERN(T, N, std::uint64_t, u64)                                  \
-    DECODER_METADATA_EXTERN(T, N, std::int8_t, i8)                                     \
-    DECODER_METADATA_EXTERN(T, N, std::int16_t, i16)                                   \
-    DECODER_METADATA_EXTERN(T, N, std::int32_t, i32)                                   \
-    DECODER_METADATA_EXTERN(T, N, std::int64_t, i64)                                   \
-    DECODER_METADATA_EXTERN(T, N, float, f32)                                          \
-    DECODER_METADATA_EXTERN(T, N, double, f64)                                         \
-    DECODER_METADATA_EXTERN(T, N, string, CString)                                     \
-    template <>                                                                        \
-    struct decoder_impl<T> {                                                           \
-        static constexpr bool implemented = true;                                      \
-        static constexpr auto new_fn = wavelet_rs_decoder_##N##_new;                   \
-        static constexpr auto free_fn = wavelet_rs_decoder_##N##_free;                 \
-        static constexpr auto dims_fn = wavelet_rs_decoder_##N##_dims;                 \
-        static constexpr auto block_size_fn = wavelet_rs_decoder_##N##_block_size;     \
-        static constexpr auto block_counts_fn = wavelet_rs_decoder_##N##_block_counts; \
-        static constexpr auto decode_fn = wavelet_rs_decoder_##N##_decode;             \
-        static constexpr auto refine_fn = wavelet_rs_decoder_##N##_refine;             \
+#define DECODER_EXTERN_(T, N)                                                                \
+    extern "C" decoder_* wavelet_rs_decoder_##N##_new(const char*);                          \
+    extern "C" void wavelet_rs_decoder_##N##_free(decoder_*);                                \
+    extern "C" void wavelet_rs_decoder_##N##_dims(const decoder_*,                           \
+        priv_::maybe_uninit<slice<const std::size_t>>*);                                     \
+    extern "C" void wavelet_rs_decoder_##N##_block_size(const decoder_*,                     \
+        priv_::maybe_uninit<slice<const std::size_t>>*);                                     \
+    extern "C" void wavelet_rs_decoder_##N##_block_counts(const decoder_*,                   \
+        priv_::maybe_uninit<slice<const std::size_t>>*);                                     \
+    extern "C" void wavelet_rs_decoder_##N##_get_num_threads(const decoder_*,                \
+        priv_::maybe_uninit<option<std::size_t>>*);                                          \
+    extern "C" void wavelet_rs_decoder_##N##_set_num_threads(decoder_*,                      \
+        const option<std::size_t>*);                                                         \
+    extern "C" void wavelet_rs_decoder_##N##_decode(const decoder_*,                         \
+        const priv_::maybe_uninit<writer_fetcher<T>>*,                                       \
+        const slice<const range<std::size_t>>*,                                              \
+        const slice<const std::uint32_t>*);                                                  \
+    extern "C" void wavelet_rs_decoder_##N##_refine(const decoder_*,                         \
+        const priv_::maybe_uninit<reader_fetcher<T>>*,                                       \
+        const priv_::maybe_uninit<writer_fetcher<T>>*,                                       \
+        const slice<const range<std::size_t>>*,                                              \
+        const slice<const range<std::size_t>>*,                                              \
+        const slice<const std::uint32_t>*,                                                   \
+        const slice<const std::uint32_t>*);                                                  \
+    DECODER_METADATA_EXTERN(T, N, std::uint8_t, u8)                                          \
+    DECODER_METADATA_EXTERN(T, N, std::uint16_t, u16)                                        \
+    DECODER_METADATA_EXTERN(T, N, std::uint32_t, u32)                                        \
+    DECODER_METADATA_EXTERN(T, N, std::uint64_t, u64)                                        \
+    DECODER_METADATA_EXTERN(T, N, std::int8_t, i8)                                           \
+    DECODER_METADATA_EXTERN(T, N, std::int16_t, i16)                                         \
+    DECODER_METADATA_EXTERN(T, N, std::int32_t, i32)                                         \
+    DECODER_METADATA_EXTERN(T, N, std::int64_t, i64)                                         \
+    DECODER_METADATA_EXTERN(T, N, float, f32)                                                \
+    DECODER_METADATA_EXTERN(T, N, double, f64)                                               \
+    DECODER_METADATA_EXTERN(T, N, string, CString)                                           \
+    template <>                                                                              \
+    struct decoder_impl<T> {                                                                 \
+        static constexpr bool implemented = true;                                            \
+        static constexpr auto new_fn = wavelet_rs_decoder_##N##_new;                         \
+        static constexpr auto free_fn = wavelet_rs_decoder_##N##_free;                       \
+        static constexpr auto dims_fn = wavelet_rs_decoder_##N##_dims;                       \
+        static constexpr auto block_size_fn = wavelet_rs_decoder_##N##_block_size;           \
+        static constexpr auto block_counts_fn = wavelet_rs_decoder_##N##_block_counts;       \
+        static constexpr auto get_num_threads_fn = wavelet_rs_decoder_##N##_get_num_threads; \
+        static constexpr auto set_num_threads_fn = wavelet_rs_decoder_##N##_set_num_threads; \
+        static constexpr auto decode_fn = wavelet_rs_decoder_##N##_decode;                   \
+        static constexpr auto refine_fn = wavelet_rs_decoder_##N##_refine;                   \
     };
 
 #ifdef WAVELET_RS_IMPORT_VEC
@@ -2180,6 +2211,25 @@ public:
         return res.get();
     }
 
+    /// Gets the number of threads to use for the decode and refine operations.
+    option<std::size_t> get_num_threads() const
+    {
+        static_assert(std::is_standard_layout<option<std::size_t>>::value, "invalid layout");
+        static_assert(std::is_standard_layout<priv_::maybe_uninit<option<std::size_t>>>::value, "invalid layout");
+
+        priv_::maybe_uninit<option<std::size_t>> res {};
+        decoder_::get_num_threads_fn(this->m_dec, &res);
+        return res.get();
+    }
+
+    /// Sets the number of threads to use for the decode and refine operations.
+    void set_num_threads(option<std::size_t> num_threads)
+    {
+        static_assert(std::is_standard_layout<option<std::size_t>>::value, "invalid layout");
+
+        decoder_::set_num_threads_fn(this->m_dec, &num_threads);
+    }
+
     /// Decodes the dataset to the required detail levels.
     ///
     /// @param writer writer for writing into the requested output volume.
@@ -2219,8 +2269,7 @@ public:
 
         priv_::maybe_uninit<reader_fetcher<T>> r { std::forward<reader_fetcher<T>>(reader) };
         priv_::maybe_uninit<writer_fetcher<T>> w { std::forward<writer_fetcher<T>>(writer) };
-        decoder_::refine_fn(this->m_dec, &reader, &writer, &input_range,
-            &output_range, &curr_levels, &refinements);
+        decoder_::refine_fn(this->m_dec, &r, &w, &input_range, &output_range, &curr_levels, &refinements);
     }
 
     /// Returns the pointer to the type-erased decoder.
@@ -2312,6 +2361,18 @@ public:
     option<U> metadata_get(const char* key) const
     {
         return m_dec.template metadata_get<U>(key);
+    }
+
+    /// Gets the number of threads to use for the decode and refine operations.
+    option<std::size_t> get_num_threads() const
+    {
+        return m_dec.get_num_threads();
+    }
+
+    /// Sets the number of threads to use for the decode and refine operations.
+    void set_num_threads(option<std::size_t> num_threads)
+    {
+        m_dec.set_num_threads(num_threads);
     }
 
     /// Decodes the dataset to the required detail levels.

@@ -27,6 +27,7 @@ pub struct VolumeWaveletDecoder<Meta, T, F: DerivableMetadataFilter<Meta, T>> {
     dims: Vec<usize>,
     block_size: Vec<usize>,
     block_counts: Vec<usize>,
+    num_threads: Option<usize>,
     input_block_dims: Vec<usize>,
     block_blueprints: BlockBlueprints<T>,
     filter: F,
@@ -59,6 +60,7 @@ where
 
         Self {
             path: input_path,
+            num_threads: None,
             metadata: header.metadata,
             dims: header.dims,
             block_size: header.block_size,
@@ -96,11 +98,64 @@ where
         &self.block_counts
     }
 
+    /// Gets the number of threads to use for the decode and refine operations.
+    pub fn get_num_threads(&self) -> Option<usize> {
+        self.num_threads
+    }
+
+    /// Sets the number of threads to use for the decode and refine operations.
+    pub fn set_num_threads(&mut self, count: Option<usize>) {
+        self.num_threads = count;
+    }
+
     /// Applies a partial decoding to a partially decoded dataset.
     pub fn refine<BR, R, BW, W>(
         &self,
-        reader_fetcher: impl FnOnce(&[usize], &[usize]) -> BR,
-        writer_fetcher: impl FnOnce(&[usize], &[usize]) -> BW,
+        reader_fetcher: impl FnOnce(&[usize], &[usize]) -> BR + Send,
+        writer_fetcher: impl FnOnce(&[usize], &[usize]) -> BW + Send,
+        input_range: &[Range<usize>],
+        output_range: &[Range<usize>],
+        curr_levels: &[u32],
+        refinements: &[u32],
+    ) where
+        BR: Fn(usize) -> R + Sync,
+        R: Fn(&[usize]) -> T,
+        BW: Fn(usize) -> W + Sync,
+        W: FnMut(&[usize], T),
+    {
+        if let Some(thread_count) = self.num_threads {
+            if thread_count != 0 {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(thread_count)
+                    .build()
+                    .unwrap();
+                return pool.install(move || {
+                    self.refine_impl(
+                        reader_fetcher,
+                        writer_fetcher,
+                        input_range,
+                        output_range,
+                        curr_levels,
+                        refinements,
+                    )
+                });
+            }
+        }
+
+        self.refine_impl(
+            reader_fetcher,
+            writer_fetcher,
+            input_range,
+            output_range,
+            curr_levels,
+            refinements,
+        )
+    }
+
+    fn refine_impl<BR, R, BW, W>(
+        &self,
+        reader_fetcher: impl FnOnce(&[usize], &[usize]) -> BR + Send,
+        writer_fetcher: impl FnOnce(&[usize], &[usize]) -> BW + Send,
         input_range: &[Range<usize>],
         output_range: &[Range<usize>],
         curr_levels: &[u32],
@@ -318,6 +373,29 @@ where
 
     /// Decodes the dataset.
     pub fn decode<BW, W>(
+        &self,
+        writer_fetcher: impl FnOnce(&[usize], &[usize]) -> BW + Send,
+        roi: &[Range<usize>],
+        levels: &[u32],
+    ) where
+        BW: Fn(usize) -> W + Sync,
+        W: FnMut(&[usize], T),
+    {
+        if let Some(thread_count) = self.num_threads {
+            if thread_count != 0 {
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(thread_count)
+                    .build()
+                    .unwrap();
+                return pool.install(move || self.decode_impl(writer_fetcher, roi, levels));
+            }
+        }
+
+        self.decode_impl(writer_fetcher, roi, levels)
+    }
+
+    /// Decodes the dataset.
+    fn decode_impl<BW, W>(
         &self,
         writer_fetcher: impl FnOnce(&[usize], &[usize]) -> BW,
         roi: &[Range<usize>],
@@ -1197,7 +1275,7 @@ mod test {
 
         let dims = [3024, 4032, 1];
         let range = dims.map(|d| 0..d);
-        let steps = dims.map(|d: usize| d.ilog2());
+        let steps = dims.map(|d: usize| d.next_power_of_two().ilog2());
         let mut data = VolumeBlock::new_zero(&dims).unwrap();
 
         for x in 0..steps[0] + 1 {
@@ -1226,7 +1304,7 @@ mod test {
                 p.0 = *rgb.as_ref();
             }
             let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
-            img.save(res_path.join(format!("img_1_x_{x}.png"))).unwrap();
+            img.save(res_path.join(format!("img_2_x_{x}.png"))).unwrap();
         }
     }
 
@@ -1242,7 +1320,7 @@ mod test {
 
         let dims = [3024, 4032, 1];
         let range = dims.map(|d| 0..d);
-        let steps = dims.map(|d: usize| d.ilog2());
+        let steps = dims.map(|d: usize| d.next_power_of_two().ilog2());
         let mut data = VolumeBlock::new_zero(&dims).unwrap();
 
         for x in 0..steps[0] + 1 {
@@ -1271,7 +1349,7 @@ mod test {
                 p.0 = *rgb.as_ref();
             }
             let img = image::DynamicImage::ImageRgb32F(img).into_rgb8();
-            img.save(res_path.join(format!("img_1_x_{x}.png"))).unwrap();
+            img.save(res_path.join(format!("img_2_x_{x}.png"))).unwrap();
         }
     }
 }

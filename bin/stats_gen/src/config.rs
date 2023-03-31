@@ -180,6 +180,12 @@ struct DatasetStats {
 }
 
 struct DataStats {
+    volume_disk_size: u64,
+    aggregates_disk_size: u64,
+    #[allow(unused)]
+    volume_disk_size_uncompressed: Option<u64>,
+    #[allow(unused)]
+    aggregates_disk_size_uncompressed: Option<u64>,
     exact: BTreeMap<Vec<usize>, RunStats>,
     clamped: BTreeMap<Vec<usize>, RunStats>,
 }
@@ -258,7 +264,27 @@ impl DataStats {
             volume_map.insert(rev_steps, compressed_path);
         });
 
+        let volume_disk_size =
+            std::fs::metadata(compressed_path.join(format!("{steps:?}.bin")))?.len();
+        let aggregates_disk_size = dir_size(compressed_path)?;
+
+        let volume_disk_size_uncompressed = if uncompressed {
+            Some(std::fs::metadata(uncompressed_path.join(format!("{steps:?}.bin")))?.len())
+        } else {
+            None
+        };
+
+        let aggregates_disk_size_uncompressed = if uncompressed {
+            Some(dir_size(uncompressed_path)?)
+        } else {
+            None
+        };
+
         let mut stats = Self {
+            volume_disk_size,
+            aggregates_disk_size,
+            volume_disk_size_uncompressed,
+            aggregates_disk_size_uncompressed,
             exact: BTreeMap::new(),
             clamped: BTreeMap::new(),
         };
@@ -295,6 +321,7 @@ impl DataStats {
 }
 
 struct RunStats {
+    disk_size: u64,
     decompositions: BTreeMap<Vec<u32>, DecompositionStats>,
 }
 
@@ -312,11 +339,31 @@ impl Stats {
 
         writeln!(
             &mut file,
-            "name; data type; shape; block size; decode steps; method; min error; max error; avg error; time (ms)"
+            "name; data type; shape; block size; method; decode steps; min error; max error; avg error; time (ms)"
         )?;
 
         for (name, dataset) in &self.stats {
             dataset.write_stats(filter, &mut file, name)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn write_disk_size_stats(
+        &self,
+        output: &Path,
+        filter: OutputFilter,
+    ) -> Result<(), Box<dyn Error>> {
+        let file = std::fs::File::create(output).unwrap();
+        let mut file = std::io::BufWriter::new(file);
+
+        writeln!(
+            &mut file,
+            "name; data type; block size; method; volume disk size (bytes); aggregates disk size (bytes); encoded disk size (bytes)"
+        )?;
+
+        for (name, dataset) in &self.stats {
+            dataset.write_disk_size_stats(filter, &mut file, name)?;
         }
 
         Ok(())
@@ -332,6 +379,19 @@ impl DatasetStats {
     ) -> Result<(), Box<dyn Error>> {
         for (data_type, x) in &self.stats {
             x.write_stats(filter, f, name, &format!("{data_type:?}"), &self.shape)?;
+        }
+
+        Ok(())
+    }
+
+    fn write_disk_size_stats(
+        &self,
+        filter: OutputFilter,
+        f: &mut impl Write,
+        name: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        for (data_type, x) in &self.stats {
+            x.write_disk_size_stats(filter, f, name, &format!("{data_type:?}"))?;
         }
 
         Ok(())
@@ -361,6 +421,44 @@ impl DataStats {
 
         Ok(())
     }
+
+    fn write_disk_size_stats(
+        &self,
+        filter: OutputFilter,
+        f: &mut impl Write,
+        name: &str,
+        data_type: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        if matches!(filter, OutputFilter::All | OutputFilter::Clamped) {
+            for (block_size, x) in &self.clamped {
+                x.write_disk_size_stats(
+                    f,
+                    name,
+                    data_type,
+                    block_size,
+                    "clamp",
+                    self.volume_disk_size,
+                    self.aggregates_disk_size,
+                )?;
+            }
+        }
+
+        if matches!(filter, OutputFilter::All | OutputFilter::Exact) {
+            for (block_size, x) in &self.exact {
+                x.write_disk_size_stats(
+                    f,
+                    name,
+                    data_type,
+                    block_size,
+                    "exact",
+                    self.volume_disk_size,
+                    self.aggregates_disk_size,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl RunStats {
@@ -377,6 +475,26 @@ impl RunStats {
         for (steps, x) in &self.decompositions {
             x.write_stats(f, name, data_type, shape, block_size, method, steps)?;
         }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn write_disk_size_stats(
+        &self,
+        f: &mut impl Write,
+        name: &str,
+        data_type: &str,
+        block_size: &[usize],
+        method: &str,
+        volume_disk_size: u64,
+        aggregates_disk_size: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        let disk_size = self.disk_size;
+        writeln!(
+            f,
+            r#"{name:?}; {data_type:?}; "{block_size:?}"; {method:?}; {volume_disk_size}; {aggregates_disk_size}; {disk_size}"#
+        )?;
 
         Ok(())
     }
@@ -627,9 +745,11 @@ where
     encoder.add_fetcher(&[0], fetcher);
 
     encoder.encode(output_path, block, AverageFilter, exact, compression);
+    let encoded_size = dir_size(output_path)?;
 
     trace!("Decoding dataset");
     let mut stats = RunStats {
+        disk_size: encoded_size,
         decompositions: BTreeMap::new(),
     };
     let decoder = VolumeWaveletDecoder::new(output_path.join("output.bin"));
@@ -640,33 +760,34 @@ where
             trace!("Steps {steps:?}, repetition {} of {repetitions}", i + 1);
             decoded.replace(decode(steps, data.dims(), &decoder));
         }
-        let decoded = decoded.unwrap();
-        let time_required = Instant::now().duration_since(before) / repetitions;
+        if let Some(decoded) = decoded {
+            let time_required = Instant::now().duration_since(before) / repetitions;
 
-        let f = std::fs::File::open(volume_path)?;
-        let stream = DeserializeStream::new_decode(f)?;
-        let truth = VolumeBlock::<T>::deserialize(&mut stream.stream());
+            let f = std::fs::File::open(volume_path)?;
+            let stream = DeserializeStream::new_decode(f)?;
+            let truth = VolumeBlock::<T>::deserialize(&mut stream.stream());
 
-        let num_elements = truth.dims().iter().product::<usize>();
-        let (mut min, mut max, mut avg) = T::init_errors();
+            let num_elements = truth.dims().iter().product::<usize>();
+            let (mut min, mut max, mut avg) = T::init_errors();
 
-        assert_eq!(truth.dims(), decoded.dims());
-        for (orig, decoded) in truth.flatten().iter().zip(decoded.flatten()) {
-            (min, max, avg) = orig
-                .clone()
-                .error(decoded.clone(), min, max, avg, num_elements);
+            assert_eq!(truth.dims(), decoded.dims());
+            for (orig, decoded) in truth.flatten().iter().zip(decoded.flatten()) {
+                (min, max, avg) = orig
+                    .clone()
+                    .error(decoded.clone(), min, max, avg, num_elements);
+            }
+
+            let (min, max, avg) = (min.into(), max.into(), avg.into());
+            stats.decompositions.insert(
+                steps.clone(),
+                DecompositionStats {
+                    min,
+                    max,
+                    avg,
+                    time: time_required,
+                },
+            );
         }
-
-        let (min, max, avg) = (min.into(), max.into(), avg.into());
-        stats.decompositions.insert(
-            steps.clone(),
-            DecompositionStats {
-                min,
-                max,
-                avg,
-                time: time_required,
-            },
-        );
     }
 
     Ok(stats)
@@ -759,4 +880,19 @@ where
     }
 
     data
+}
+
+fn dir_size(path: impl AsRef<Path>) -> std::io::Result<u64> {
+    fn dir_size(mut dir: std::fs::ReadDir) -> std::io::Result<u64> {
+        dir.try_fold(0, |acc, file| {
+            let file = file?;
+            let size = match file.metadata()? {
+                data if data.is_dir() => dir_size(std::fs::read_dir(file.path())?)?,
+                data => data.len(),
+            };
+            Ok(acc + size)
+        })
+    }
+
+    dir_size(std::fs::read_dir(path)?)
 }
